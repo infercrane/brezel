@@ -4,3 +4,5 @@ bin/
 dist/
 coverage/
 *.log
+/runtime-api
+runtime-state/
