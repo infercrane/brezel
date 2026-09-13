@@ -1,0 +1,15 @@
+apiVersion: sandbox.runtime.dev/v1alpha1
+kind: Connector
+metadata:
+  name: private-model
+spec:
+  destination: https://inference.internal/v1
+  allowedMethods: [POST]
+  allowedPaths:
+    - /chat/completions
+    - /responses
+  credentialRef: secret://file/private-model-api
+  credentialMode: bearer
+  allowPrivateNetwork: true
+  responseScrub: true
+

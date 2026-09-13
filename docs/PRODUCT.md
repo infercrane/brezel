@@ -6,14 +6,16 @@ A self-hosted runtime where AI agents receive an isolated computer, keep useful
 state between turns, call approved tools and models, and disappear when the work
 is over.
 
-For application developers the product is three nouns:
+For application developers the product is four nouns:
 
-1. **Sandbox:** an isolated computer for one agent or session.
-2. **Workspace:** files that can outlive or be shared between sandboxes.
-3. **Job:** bounded work that can run once or fan out many times.
+1. **Environment:** reproducible software, resources, tools, connectors, and
+   policy.
+2. **Sandbox:** an isolated computer for one agent or session.
+3. **Workspace:** files that can outlive or be shared between sandboxes.
+4. **Job:** bounded work that can run once or fan out many times.
 
-Images, snapshots, networks, model routes, policies, and receipts support these
-three concepts but do not lead the user experience.
+Images, checkpoints, networks, connectors, rollouts, policies, and receipts
+support these concepts but do not lead the user experience.
 
 ## Product thesis
 
@@ -62,7 +64,7 @@ machine.
 
 Fork a clean template or checkpoint into many isolated workers, run bounded
 episodes, collect structured artifacts, cancel stragglers, and retain exact
-image, policy, and model-route identities.
+environment, policy, checkpoint-lineage, and model-connector identities.
 
 ### Private data agent
 
@@ -83,8 +85,8 @@ The happy path should require no infrastructure vocabulary:
 ```python
 with client.sandboxes.create(image="ghcr.io/acme/coder:1") as box:
     box.workspace.attach("repo-main", at="/workspace")
-    box.models.allow("coding-model")
-    box.network.allow("api.github.com")
+    box.connectors.attach("coding-model")
+    box.connectors.attach("github-readonly")
     result = box.run("python agent.py")
 ```
 
@@ -164,6 +166,10 @@ systems:
   released.
 - **Inference-aware:** model endpoints are named resources, not arbitrary
   internet destinations.
+- **State is explicit:** filesystem and full-state checkpoints have distinct
+  compatibility, retention, and fork contracts.
+- **Built for durable work:** jobs and rollouts own budgets, retries,
+  cancellation, artifacts, and cleanup.
 - **Enterprise-safe by default:** no ambient credentials or unrestricted egress.
 - **Open substrate:** Firecracker orchestration is inspectable and replaceable.
 - **Provable operations:** lifecycle and policy decisions can be verified after
@@ -205,4 +211,4 @@ Product preview:
 - transparent cross-host live migration;
 - arbitrary TCP egress with credential injection;
 - a browser IDE or agent framework; and
-- Blaxel trademark, code, or undocumented API compatibility.
+- proprietary provider API compatibility without a public conformance profile.

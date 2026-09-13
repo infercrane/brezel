@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sandbox.runtime.dev/spec/v1alpha1/connector.schema.json",
+  "title": "Open Agent Runtime Connector",
+  "description": "An immutable endpoint policy and opaque credential reference. Secret values are never part of this resource.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "sandbox.runtime.dev/v1alpha1" },
+    "kind": { "const": "Connector" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination", "allowedMethods", "allowedPaths", "credentialRef", "credentialMode"],
+      "properties": {
+        "destination": { "type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048 },
+        "allowedMethods": {
+          "type": "array",
+          "items": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "allowedPaths": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/[^?#\\r\\n]{0,2047}$" },
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "credentialRef": { "type": "string", "pattern": "^secret://[a-z0-9][a-z0-9._/-]{0,511}$" },
+        "credentialMode": { "const": "bearer" },
+        "allowPrivateNetwork": { "type": "boolean", "default": false },
+        "responseScrub": { "const": true }
+      }
+    }
+  }
+}

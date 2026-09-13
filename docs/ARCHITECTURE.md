@@ -98,12 +98,15 @@ included in conformance and receipts.
 
 ## Primary resources
 
-### Image
+### Environment and image
 
-An OCI reference plus build instructions resolves to an immutable template
-manifest. The manifest binds container digest, kernel, init/guest version,
-platform, build provenance, and snapshot artifacts. Mutable image tags are
-allowed only as inputs to a build; a sandbox always launches a resolved digest.
+An environment is the reproducible launch contract. It resolves an OCI image,
+resources, startup actions, tool capability manifests, connectors, network
+policy, storage, and retention defaults to immutable revisions.
+
+Its image manifest binds container digest, kernel, init/guest version, platform,
+build provenance, and checkpoint artifacts. Mutable image tags are allowed only
+as build inputs; a sandbox always launches a resolved digest.
 
 ### Sandbox
 
@@ -130,16 +133,27 @@ An idle timer may move `running` to `standby`. It never changes expiration. A
 connection may trigger resume only after identity, policy, and quota are
 revalidated.
 
-### Snapshot
+### Checkpoint
 
-An explicit checkpoint captures VM memory, device state, and root filesystem
-state using the substrate's supported mechanism. A snapshot is immutable and can
-be used for resume, rollback, or fork only on a compatible runtime and CPU
-profile.
+A checkpoint is an immutable resource with an explicit kind:
 
-Snapshot locality is a scheduling input. Cross-node restore may be slower than
+- `filesystem` preserves the declared writable filesystem state; and
+- `full_state` also preserves process memory and supported device state.
+
+Every checkpoint binds source sandbox, parent checkpoint, image, kernel,
+init/guest, runtime, CPU, device, policy, storage, and encryption identities. It
+records compatibility constraints, retention, integrity, and known in-flight
+external effects at the checkpoint boundary.
+
+Checkpoint locality is a scheduling input. Cross-node restore may be slower than
 same-node resume and must be measured separately. Cross-region replication is a
-later storage workflow, not live migration.
+later storage workflow, not live migration. A dependent checkpoint cannot be
+deleted until children are deleted or materialized independently.
+
+The first release checkpoints only at an explicit quiescent boundary. A
+checkpoint cannot undo an external effect such as a message, payment, tool call,
+or model request. Restore and fork must not silently duplicate unresolved
+effects.
 
 ### Volume
 
@@ -173,6 +187,58 @@ handle, request limits, and optional budget controls.
 The sandbox sees a local or private route and a short-lived workload identity.
 The egress gateway resolves the real endpoint and injects the credential only
 after policy checks. Prompt and response content is not logged by default.
+
+### Connector
+
+A connector generalizes the model route to an approved external service. Its
+revision binds destination, protocol, method/path rules, request limits, an
+opaque credential handle, response-scrubbing policy, region, and data boundary.
+The sandbox receives only a placeholder or short lease identity.
+
+The gateway authenticates workload identity, admits each request, injects the
+credential outside the guest, and removes configured sensitive response values.
+A model route is a connector specialization with model, token, concurrency, and
+optional spend controls.
+
+The current developer preview implements a narrow bearer connector. It passes a
+five-minute signed lease to the sandbox, adds only the gateway host to the
+effective egress allowlist, and resolves `secret://file/...` handles from 0600
+operator files. The gateway binds the lease to project, sandbox, and immutable
+connector revisions; checks that the sandbox is still running; strips guest
+authorization and cookie headers; injects the credential outside the VM; and
+scrubs exact credential bytes from bounded responses.
+
+This is not yet the production identity design. Renewal is bearer-based rather
+than proof-of-possession, response buffering does not support streaming model
+output, and the file resolver is a single-host development adapter. ADR 0003
+records the boundary. The private profile requires SPIFFE or equivalent
+workload identity, a managed secret resolver, rate and concurrency budgets, and
+streaming conformance.
+
+### Sandbox group
+
+A sandbox group requests co-located computers with an explicit private link
+network. It supports an agent with a browser, database, trusted helper, or peer
+workers without packing mutually untrusted workloads into one sandbox. Group
+identity, addressability, and teardown are atomic at the control-plane level.
+
+### Rollout
+
+A rollout is a reproducible collection of agent episodes over one environment,
+one or more model connector revisions, a task set, evaluators, budgets, branch
+strategy, stop conditions, and declared artifacts. It is implemented over Jobs;
+it does not own agent reasoning or inference serving.
+
+### Operation event and receipt
+
+Every long operation emits ordered, replayable events suitable for webhooks and
+SDK streams. Events are lifecycle metadata; tenant logs and customer content are
+separate data products.
+
+A receipt binds immutable identities and the controls observed or enforced. It
+uses a standard attestation envelope and never implies hardware attestation
+unless a separately qualified confidential profile supplies verified platform
+measurements.
 
 ## Request flows
 
@@ -231,8 +297,9 @@ resume attempts to prevent a cheap denial of service.
 
 The default is deny. An allowed HTTP route is enforced outside the VM by a
 gateway that independently resolves DNS, blocks metadata and rebinding, checks
-scheme/host/port/method/path, strips caller-supplied auth headers, and optionally
-injects a short-lived credential.
+scheme/host/port/method/path, strips caller-supplied auth headers, optionally
+injects a short-lived credential, and scrubs configured credential or session
+material from the response.
 
 Direct TCP and UDP are separate capabilities. A domain allowlist is not a valid
 claim for traffic that bypasses the HTTP gateway.
@@ -271,7 +338,7 @@ Placement filters before scoring:
 6. snapshot accessibility; and
 7. node qualification and patch policy.
 
-Then score snapshot locality, image cache, model-route proximity, available
+Then score checkpoint locality, image cache, model-route proximity, available
 capacity, failure-domain spread, and estimated transfer cost. A fast but
 unqualified node is not a candidate.
 
@@ -286,8 +353,9 @@ Initial compatibility priorities:
 4. MCP tools for process and filesystem operations; and
 5. provider migration helpers only after conformance tests.
 
-We should not promise a Blaxel-compatible API. Its public concepts inform the
-resource model, but undocumented behavior and trademarks stay out of scope.
+We should not promise compatibility with a proprietary provider API without a
+public conformance profile. Undocumented behavior and trademarks stay out of
+scope.
 
 ## Availability model
 

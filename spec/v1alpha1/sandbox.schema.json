@@ -25,17 +25,23 @@
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["image", "resources", "lifecycle", "network"],
+      "required": ["resources", "lifecycle", "network"],
       "properties": {
+        "environmentRevision": {
+          "type": "string",
+          "description": "An immutable resolved environment revision.",
+          "pattern": "^environment://[a-z0-9]([-a-z0-9]*[a-z0-9])?@sha256:[a-f0-9]{64}$",
+          "maxLength": 1024
+        },
         "image": {
           "type": "string",
-          "description": "An immutable OCI image or resolved template digest.",
+          "description": "An immutable OCI image shorthand from which the server resolves an environment revision.",
           "pattern": "^.+@sha256:[a-f0-9]{64}$",
           "maxLength": 1024
         },
         "environment": {
           "type": "object",
-          "description": "Non-secret configuration only. Use model routes or secret handles for credentials.",
+          "description": "Non-secret configuration only. Use immutable connector revisions for credentialed access.",
           "propertyNames": { "pattern": "^[A-Z_][A-Z0-9_]*$" },
           "additionalProperties": { "type": "string", "maxLength": 8192 },
           "maxProperties": 128
@@ -62,13 +68,34 @@
               "minimum": 0,
               "maximum": 86400
             },
+            "standbyCheckpointKind": {
+              "description": "State promise for automatic standby. full_state must fail admission when not qualified.",
+              "enum": ["filesystem", "full_state"],
+              "default": "filesystem"
+            },
+            "autoResume": {
+              "description": "Automatic resume is valid only for qualified full-state standby.",
+              "type": "boolean",
+              "default": false
+            },
             "expiresAfterSeconds": {
               "description": "Expiration is independent from activity and standby.",
               "type": "integer",
-              "minimum": 60,
+              "minimum": 30,
               "maximum": 2592000
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "autoResume": { "const": true } }, "required": ["autoResume"] },
+              "then": {
+                "properties": {
+                  "standbyAfterSeconds": { "minimum": 1 },
+                  "standbyCheckpointKind": { "const": "full_state" }
+                }
+              }
+            }
+          ]
         },
         "storage": {
           "type": "object",
@@ -129,11 +156,15 @@
                 }
               }
             },
-            "modelRoutes": {
+            "connectors": {
               "type": "array",
-              "items": { "$ref": "#/$defs/name" },
+              "items": {
+                "type": "string",
+                "pattern": "^connector://[a-z0-9]([-a-z0-9]*[a-z0-9])?@sha256:[a-f0-9]{64}$",
+                "maxLength": 1024
+              },
               "uniqueItems": true,
-              "maxItems": 16
+              "maxItems": 32
             }
           },
           "allOf": [
@@ -173,7 +204,11 @@
             "includeContent": { "const": false }
           }
         }
-      }
+      },
+      "oneOf": [
+        { "required": ["environmentRevision"], "not": { "required": ["image"] } },
+        { "required": ["image"], "not": { "required": ["environmentRevision"] } }
+      ]
     }
   },
   "$defs": {

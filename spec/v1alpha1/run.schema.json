@@ -37,11 +37,22 @@
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["image", "command", "capabilities", "timeoutSeconds", "receipt"],
-      "description": "The environment map is non-secret configuration. Credentials are referenced only by opaque credentialRef values.",
+      "required": ["command", "capabilities", "timeoutSeconds", "receipt"],
+      "description": "The environment map is non-secret configuration. Credentials are available only through immutable connector revisions.",
       "properties": {
+        "environmentRevision": {
+          "type": "string",
+          "pattern": "^environment://[a-z0-9]([-a-z0-9]*[a-z0-9])?@sha256:[a-f0-9]{64}$",
+          "maxLength": 1024
+        },
+        "checkpointRevision": {
+          "type": "string",
+          "pattern": "^checkpoint://[a-z0-9]([-a-z0-9]*[a-z0-9])?@sha256:[a-f0-9]{64}$",
+          "maxLength": 1024
+        },
         "image": {
           "type": "string",
+          "description": "Immutable OCI shorthand from which an environment is resolved.",
           "pattern": "^.+@sha256:[a-f0-9]{64}$",
           "maxLength": 1024
         },
@@ -126,21 +137,20 @@
                 }
               ]
             },
-            "inference": {
+            "connectors": {
               "type": "array",
-              "maxItems": 16,
+              "maxItems": 32,
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["alias", "baseUrl", "protocol", "models", "credentialRef"],
+                "required": ["alias", "revision"],
                 "properties": {
                   "alias": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
-                  "baseUrl": { "type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048 },
-                  "protocol": { "enum": ["openai"] },
-                  "models": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 256 }, "minItems": 1, "maxItems": 32, "uniqueItems": true },
-                  "credentialRef": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
-                  "maxConcurrentRequests": { "type": "integer", "minimum": 1, "maximum": 1024 },
-                  "maxRequestBytes": { "type": "integer", "minimum": 1, "maximum": 67108864 }
+                  "revision": {
+                    "type": "string",
+                    "pattern": "^connector://[a-z0-9]([-a-z0-9]*[a-z0-9])?@sha256:[a-f0-9]{64}$",
+                    "maxLength": 1024
+                  }
                 }
               }
             },
@@ -186,7 +196,12 @@
             "includeContent": { "const": false }
           }
         }
-      }
+      },
+      "oneOf": [
+        { "required": ["environmentRevision"], "not": { "anyOf": [{ "required": ["checkpointRevision"] }, { "required": ["image"] }] } },
+        { "required": ["checkpointRevision"], "not": { "anyOf": [{ "required": ["environmentRevision"] }, { "required": ["image"] }] } },
+        { "required": ["image"], "not": { "anyOf": [{ "required": ["environmentRevision"] }, { "required": ["checkpointRevision"] }] } }
+      ]
     }
   }
 }

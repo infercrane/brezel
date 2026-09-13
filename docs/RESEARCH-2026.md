@@ -52,6 +52,84 @@ Design consequence: a credible runtime must combine compute, state, routing, and
 operations. Resume latency is a full-stack property involving snapshots, image
 format, CPU compatibility, cache locality, scheduling, and networking.
 
+The 2026 changelog adds a clearer direction: independent workspace-level
+snapshots, full-state fork, S3-compatible shared storage, method/path-aware
+egress policy, dynamic proxy values, reusable long-running application
+endpoints, framework adapters, agent-led onboarding, process logs, job metrics,
+ephemeral job volumes, private registries, enterprise identity, and telemetry
+that is disabled by default. These are public roadmap signals, not an API or
+implementation specification.
+
+- [Platform changelog](https://docs.blaxel.ai/changelog)
+
+## Stateful runtime patterns from Daytona
+
+Daytona's public documentation separates interface, control, and compute planes
+and distinguishes filesystem, memory, and external-storage persistence. It also
+documents linked co-located sandboxes, webhooks instead of polling, OCI snapshot
+storage, S3-backed multi-writer volumes, and organization tenancy.
+
+Its credential flow is especially relevant: an opaque placeholder is placed in
+the sandbox and an external proxy substitutes the secret only for an approved
+HTTPS destination, then scrubs configured sensitive response values.
+
+- [Architecture](https://www.daytona.io/docs/en/architecture/)
+- [Persistence](https://www.daytona.io/docs/en/persistence/)
+- [Secrets](https://www.daytona.io/docs/en/secrets/)
+- [Network limits](https://www.daytona.io/docs/en/network-limits/)
+- [Scale](https://www.daytona.io/docs/en/scale/)
+
+Design consequence: checkpoint kind, retention, and compatibility must be
+explicit; connector response scrubbing and signed webhooks belong in the plan;
+co-located sandbox groups are useful for agents with browsers, databases, or
+trusted helpers.
+
+Daytona's repository declares AGPL-3.0 at the time of this review. Learn from
+published behavior and standards, but do not copy its source into an
+Apache-licensed codebase without a deliberate licensing decision.
+
+## Snapshot and companion patterns from Modal
+
+Modal separately documents filesystem, directory, and memory snapshots with
+different retention and limitations. Its experimental sidecars can separate an
+agent harness, credential proxy, or local service from the main sandbox, but
+sidecars are not compatible with Modal's VM sandboxes and do not share memory
+snapshots.
+
+- [Sandbox snapshots](https://modal.com/docs/guide/sandbox-snapshots)
+- [Sandbox sidecars](https://modal.com/docs/guide/sandbox-sidecars)
+- [Volumes](https://modal.com/docs/guide/volumes)
+- [Security and retention](https://modal.com/docs/guide/security)
+
+Design consequence: do not hide materially different state promises behind one
+`snapshot` boolean. Trusted companions are a topology feature with their own
+isolation and checkpoint contract, not an automatic addition to the first VM
+profile.
+
+## Reproducible environments and local UX
+
+Docker Sandboxes' 2026 Kit spec and environment files describe the complete
+agent environment declaratively: agent, workspace, setup, permissions,
+networking, credentials, ports, and resources. Its MCP gateway keeps OAuth
+credentials host-side and applies Cedar policy. The release notes also expose
+the value of structured startup progress, validation, signatures, provenance,
+and actionable policy errors.
+
+Fly Sprites presents the sandbox as a stable Linux computer with an object-backed
+persistent disk, checkpoint history, an authenticated URL that wakes it, and
+connectors that keep credentials outside the VM. Cloudflare's Sandbox SDK puts a
+durable identity and lifecycle object in front of replaceable containers, and
+documents that local and production restore semantics differ.
+
+- [Docker Sandboxes release notes](https://docs.docker.com/ai/sandboxes/release-notes/)
+- [Fly Sprites](https://fly.io/sprites/)
+- [Cloudflare Sandbox architecture](https://developers.cloudflare.com/sandbox/concepts/architecture/)
+- [Cloudflare directory backups](https://developers.cloudflare.com/sandbox/concepts/backup-restore/)
+
+Design consequence: add a signed `Environment` manifest, a `doctor` command,
+machine-actionable startup events, stable sandbox identity, authenticated wake,
+and a documented difference between developer and production profiles.
+
 ## Primary substrate: E2B Runtime
 
 E2B Runtime is the closest permissively licensed open-source substrate for the
@@ -108,6 +186,16 @@ and Kata. It is a strong future backend for Kubernetes-native organizations.
 - [Repository](https://github.com/kubernetes-sigs/agent-sandbox)
 - [Quickstart](https://github.com/kubernetes-sigs/agent-sandbox/blob/main/examples/quickstart/README.md)
 - [Threat model](https://github.com/kubernetes-sigs/agent-sandbox/blob/main/docs/security/threat_model.md)
+- [2026 roadmap](https://github.com/kubernetes-sigs/agent-sandbox/blob/main/roadmap.md)
+
+Its roadmap prioritizes a portable runtime backend, first-class routing,
+automatic suspend/resume, smart warm-pool selection, claim-time identity,
+network and storage policy, SDKs, MCP, operator UI, and Time to First Instruction
+measurement.
+
+Design consequence: keep the public API independent from the E2B adapter, make
+TTFI a standard benchmark, and retain Kubernetes Agent Sandbox as the strongest
+future Kubernetes-native backend candidate.
 
 ### NVIDIA OpenShell
 
@@ -201,6 +289,62 @@ trusted runtime observations.
 Design consequence: receipts are useful infrastructure, but not the entire
 product and not proof of an honest host without attestation.
 
+### Semantics-aware checkpoint and restore
+
+Crab aligns checkpointing with agent turns and uses OS-visible effects to avoid
+checkpointing turns with no recovery-relevant state. SpecBox overlaps sandbox
+prewarming with model generation. Separate work on safe execution edits shows
+that restore or fork can duplicate unresolved external actions even when VM
+state itself is valid.
+
+- [Crab](https://arxiv.org/abs/2604.28138)
+- [SpecBox](https://arxiv.org/abs/2607.23933)
+- [Safe checkpoint, fork, restore, and merge](https://arxiv.org/abs/2608.22928)
+
+Design consequence: record tool-turn boundaries, dirty-state signals,
+idempotency identities, and unresolved external effects now. Begin with explicit
+quiescent checkpoints and demand-based warm pools. Treat eBPF-driven checkpoint
+planning and semantic prewarming as later, trace-validated optimizations.
+
+### Runtime safety contracts
+
+Current research argues that agent safety requires preventive controls and
+evidence that required actions actually occurred. Related work on practically
+secure tools combines declared effects with runtime enforcement.
+
+- [Agent Safety Should Be a Runtime Contract](https://arxiv.org/abs/2608.11274)
+- [Towards Practically-Secure Tools for AI Agents](https://atlas.cs.brown.edu/pdf/haven:euromlsys:2026.pdf)
+
+Design consequence: add signed tool capability manifests, deterministic
+admission, and an evidence chain, while keeping the host policy engine as the
+authority.
+
+## Category-level user pain
+
+Independent vendor-specific complaint volume is too small to support confident
+claims about any one provider. Reddit discussions instead expose broad,
+anecdotal category pain:
+
+- developers want a one-command local path with no mandatory hosted account;
+- self-hosting is perceived as Nomad, Terraform, or Kubernetes expertise before
+  reaching a first sandbox;
+- persistence, pause/resume, and external storage are easily confused;
+- isolation without enforced egress does not prevent exfiltration;
+- full desktop, browser, package installation, and Docker workflows exceed the
+  assumptions of small code-interpreter sandboxes; and
+- integrations pay a documentation and API-discovery tax, especially around
+  incomplete lifecycle behavior.
+
+- [Self-hosting and persistence discussion](https://www.reddit.com/r/LocalLLaMA/comments/1rse8gr/im_building_an_opensource_e2b_alternative_with/)
+- [One-command local sandbox discussion](https://www.reddit.com/r/LocalLLaMA/comments/1vrps78/what_sandbox_are_you_all_using_for_ai_agents/)
+- [Provider integration comparison](https://www.reddit.com/r/AI_Agents/comments/1ve5y68/i_compared_5_sandbox_providers_by_making_a/)
+- [Full VM and computer-use discussion](https://www.reddit.com/r/LocalLLaMA/comments/1sf2nwq/running_ai_agents_in_sandboxes_vs_isolated_vms/)
+
+Design consequence: optimize first-use UX, publish exact persistence and
+isolation contracts, make network policy visible, and test whether an agent can
+integrate from the docs without maintainer help. Treat these threads as design
+inputs, not representative market research.
+
 ## Standards to reuse
 
 ### in-toto and DSSE
@@ -233,4 +377,4 @@ The defensible open-source product is an integrated, self-hosted agent runtime:
 - public benchmarks, conformance, and optional signed receipts.
 
 This is more ambitious than a lightweight process sandbox but far more feasible
-than rebuilding Blaxel's entire custom bare-metal stack before serving one user.
+than rebuilding every data-plane component before serving one user.

@@ -1,173 +1,175 @@
 # Milestones
 
-The sequence starts from a working upstream microVM runtime and earns production
-claims through conformance. Estimates assume two experienced infrastructure
-engineers. One engineer should reduce scope rather than pretend the schedule is
-unchanged.
+The sequence earns product claims through conformance. Estimates assume two
+experienced infrastructure engineers. Exit criteria, not elapsed time, authorize
+the next assurance label.
 
 ## M0: substrate qualification
 
-**Time box:** 2 weeks
+**Estimate:** 2 weeks
 
 Build:
 
-- pin and deploy E2B Runtime on one bare-metal Linux/KVM host;
-- document upstream components, APIs, versions, patches, and licenses;
-- run template build, create, exec, files, logs, ports, pause, resume, fork,
-  volume, and destroy probes;
-- trace state across API, PostgreSQL, Redis, object storage, orchestrator, guest,
-  and proxy;
-- create the first compatibility and lifecycle test harness;
-- benchmark cached create, warm exec, snapshot, resume, proxy first byte, memory,
-  disk, and idle resource use; and
-- make an upstream-or-adapter decision for every gap.
+- pin and deploy E2B Runtime on one named Linux/KVM host;
+- generate a source, artifact, license, and SBOM inventory;
+- probe image build, create, exec, files, logs, ports, filesystem checkpoint,
+  full-state checkpoint, resume, fork, volume, and destroy;
+- fault the API, PostgreSQL, Redis, object storage, orchestrator, and host;
+- verify explicit telemetry-off mode and record all outbound traffic;
+- benchmark Time to First Instruction, resume, checkpoint, proxy first byte,
+  density, and cleanup at p50, p95, and p99; and
+- decide upstream contribution, adapter, patch, or rejection for every gap.
 
 Exit criteria:
 
-- every advertised upstream capability has a reproducible passing test;
-- crash and restart behavior is known for API, orchestrator, Redis, and host;
-- exact host prerequisites and unsupported environments are documented;
-- latency distributions are published with hardware and load, not as universal
-  claims; and
-- ADR 0002 is updated from proposed to accepted or rejected.
+- every advertised substrate capability has a reproducible test;
+- exact state preserved by each checkpoint path is documented;
+- cleanup intent survives component restart;
+- host prerequisites, unsupported environments, and patch ownership are known;
+- measurements name hardware, load, runtime revision, and cache state; and
+- ADR 0002 changes from proposed to accepted or rejected.
 
-Stop condition: if upstream pause/resume, isolation, cleanup, or licensing cannot
-meet the project boundary without a large fork, revisit the substrate before
-building a product layer.
+Stop if isolation, lifecycle, cleanup, licensing, or the patch burden cannot meet
+the project boundary without a large fork.
 
-## M1: single-host developer preview
+## M1: private developer preview
 
-**Time box:** 4 to 6 weeks after M0
+**Estimate:** 4 to 6 weeks after M0
 
 Build:
 
-- reproducible installer around E2B Embed or its supported single-host profile;
-- `runtimectl`, a small API facade, and Python and TypeScript SDK previews;
-- image, sandbox, operation, volume, and model-route resources;
-- create, exec, filesystem, logs, terminal, ports, pause, resume, and destroy;
-- idle standby separate from expiration;
-- idempotent mutations and durable cleanup reconciliation;
-- deny-by-default egress with an HTTP allowlist;
-- one approved OpenAI-compatible private model route;
-- content-minimal lifecycle audit and optional signed execution receipt;
-- benchmark and conformance commands; and
-- examples for a coding agent and a private-model evaluation.
+- one-command installer and `doctor` for a KVM-capable Linux host;
+- Environment, Sandbox, Workspace, Checkpoint, Connector, and Operation APIs;
+- `runtimectl` plus Python and TypeScript SDK previews;
+- exec, files, logs, terminal, authenticated previews, automatic standby,
+  resume, filesystem checkpoint, fork, and durable deletion;
+- deny-by-default egress and one private OpenAI-compatible model connector;
+- ordered operation events, webhooks, and machine-actionable errors;
+- content-minimal lifecycle audit and optional signed receipt; and
+- public conformance and benchmark commands.
 
 Exit criteria:
 
-- fresh supported host reaches a first sandbox in under 15 minutes;
-- the SDK happy path fits in the README and needs no Firecracker knowledge;
-- direct egress, metadata access, credential retrieval, and guest-management
-  exposure tests fail closed;
-- standby/resume preserves the state that the profile explicitly promises;
-- expiration cannot be extended by anonymous or unqualified traffic;
-- destroy cleans VM, routes, leases, attachments, and snapshots or reports an
-  actionable terminal failure; and
-- no customer content appears in default telemetry.
+- a fresh supported host reaches first instruction in under 15 minutes of setup;
+- the README happy path needs no Firecracker vocabulary;
+- direct egress, metadata access, credential retrieval, anonymous wake, and
+  guest-management exposure fail closed;
+- standby/resume preserves exactly the state declared by its profile;
+- expiration cannot be extended by ordinary traffic;
+- destroy removes VM, routes, leases, and attachments or records an actionable
+  terminal cleanup failure; and
+- default telemetry contains no prompt, response, source, terminal, or artifact
+  content.
 
-This is the first public release. It is for a trusted operator and does not make
-a production multi-tenant SLA claim.
+This is the first public release. It supports one trusted operator and makes no
+production shared-multitenant claim.
 
-## M2: single-region production preview
+## M2: durable work and full-state preview
 
-**Time box:** 6 to 10 weeks
+**Estimate:** 6 to 8 weeks
 
 Build:
 
-- multiple qualified bare-metal worker nodes;
-- PostgreSQL source of truth, Redis live routing, S3-compatible artifacts, and
-  OpenTelemetry;
-- OIDC, organizations, projects, service accounts, RBAC, and quotas;
-- scheduler with CPU compatibility, snapshot locality, image cache, region,
-  capacity, and failure-domain awareness;
-- authenticated client proxy with bounded wake-on-request;
-- durable job API with map, concurrency, timeout, retry, cancel, and collection;
-- node drain, rolling upgrade, backup, restore, and disaster exercises;
-- policy bundles, registry restrictions, retention, and deletion controls; and
-- Helm/Terraform or equivalent supported deployment automation.
+- qualified `full_state` standby, resume, and fork on compatible nodes;
+- checkpoint lineage, retention, materialization, and deletion constraints;
+- external secret providers, endpoint-bound leases, and response scrubbing;
+- Job API with fan-out, concurrency, retry, cancel, budgets, result collection,
+  straggler handling, and cleanup;
+- a Rollout preview binding environments, model connectors, task artifacts,
+  evaluators, branch strategy, and stop conditions;
+- sandbox groups for co-located agent, browser, database, or helper computers;
+- framework adapters for OpenAI Agents, Anthropic self-hosted sandboxes, and
+  MCP; and
+- rich event streams suited to agents as well as humans.
 
 Exit criteria:
 
-- 100 concurrent batch attempts complete under a published load profile;
-- API/controller/node restarts do not lose desired state or cleanup intent;
-- cross-project authorization, route, object, snapshot, and volume tests pass;
-- node loss produces an explicit restore or failure state, never phantom running;
-- upgrade and rollback preserve supported objects; and
-- an independent security review has no unresolved critical findings.
+- one hundred concurrent attempts complete or fail with bounded cleanup;
+- every attempt reaches a known terminal state after cancellation;
+- retry never reuses unapproved contaminated state;
+- secret canaries never appear in guest files, memory checkpoints, logs, or
+  receipts;
+- restore and fork reject incompatible or unresolved external-effect state; and
+- a real open-weight workload completes through a private model connector.
 
-## M3: collaborative state and inference proximity
+## M3: single-region production preview
 
-**Time box:** 6 to 10 weeks, driven by design partners
+**Estimate:** 8 to 12 weeks
 
 Build:
 
-- shared `Drive` preview using a maintained POSIX filesystem such as JuiceFS;
-- coherent attach/detach, snapshot/backup, quota, and tenant policy;
-- model-route-aware placement and private connectivity to vLLM or SGLang;
-- per-route concurrency, request-size, token, and spend limits;
-- credential broker integrations for Vault and one cloud secret manager;
-- MCP and framework adapters; and
-- optional checkpoint reuse for evaluation and rollout jobs.
+- multiple qualified worker nodes and capability-aware scheduling;
+- demand-based warm pools and published TTFI metrics;
+- OIDC, organizations, projects, service accounts, RBAC, quotas, and approvals;
+- authenticated wake proxy, private networking, and static egress;
+- Vault plus one cloud workload-identity integration;
+- model-route-aware placement, token/concurrency/spend budgets, and private vLLM
+  or SGLang connectivity;
+- node drain, rolling upgrade, rollback, backup, restore, and disaster tooling;
+- shared Workspace preview only after POSIX correctness qualification; and
+- a lightweight operator console over the same control API.
 
 Exit criteria:
 
-- filesystem correctness suite covers locking, rename, fsync, crash, and
-  concurrent readers/writers;
-- a sandbox cannot recover the long-lived model credential;
-- model routes do not grant general network access;
-- a real open-weight agent workload shows measured latency and economics with
-  execution and inference placed in one region; and
-- state recovery succeeds after worker replacement.
+- controller and node restarts do not lose desired state or cleanup intent;
+- cross-project API, route, object, checkpoint, workspace, and cache tests pass;
+- node loss yields an explicit restore or failure state, never phantom running;
+- upgrade and rollback preserve supported resources;
+- shared workspace tests cover locks, rename, fsync, crash, and concurrent I/O;
+- a design partner runs agent execution beside private open-weight inference;
+  and
+- an independent security review has no unresolved critical issue.
 
 ## M4: enterprise and air-gapped release
 
+**Estimate:** 8 to 12 weeks
+
 Build:
 
-- offline installation and signed artifact mirror;
-- SAML/SCIM and organization approval workflows;
-- SPIFFE/SPIRE workload identity option;
-- KMS/HSM signing and credential integrations;
-- static egress, private endpoints, customer-managed DNS, and policy exports;
-- searchable audit and retention controls;
-- capacity planning and fleet upgrade tooling; and
-- hardened release channel with patch-lag policy and security advisories.
+- offline installer and signed artifact mirror;
+- customer-managed keys, retention, deletion, backup, and support bundles;
+- SAML/SCIM, organization approvals, policy bundles, and audit export;
+- SPIFFE/SPIRE and KMS/HSM integration options;
+- private ingress, private endpoints, customer-managed DNS, and static egress;
+- fleet capacity planning, safe upgrades, and long-term-support releases; and
+- reference architectures for one-node, private-region, and disconnected
+  deployments.
 
 Exit criteria:
 
-- an installation succeeds without outbound internet;
-- key rotation, identity revocation, backup restore, and full tenant deletion are
-  exercised;
-- administrators can prove which upstream runtime and image revision ran every
-  sandbox; and
-- an enterprise design partner completes its security review.
+- install, upgrade, rollback, backup restore, key rotation, identity revocation,
+  and full tenant deletion succeed without public internet;
+- administrators can identify the exact environment, runtime, policy,
+  connector, and checkpoint revision behind every sandbox; and
+- an enterprise design partner completes security review and a failure/recovery
+  exercise for the `private-single-tenant` profile.
 
-## M5: advanced runtime research
+## M5: qualified advanced profiles
 
-Qualify separately and ship only with evidence:
+Research and release separately:
 
-- high-throughput VPP or equivalent networking;
-- CPU feature templates and cross-node snapshot movement;
-- cross-region snapshot replication;
+- shared-multitenant isolation after external review;
+- dedicated GPU or accelerator sandboxes and device cleanup;
 - confidential-computing attestation;
-- dedicated GPU sandboxes and accelerator cleanup;
-- model-training or RL data-plane integration; and
-- deeply co-scheduled agent and inference capacity.
+- multi-region checkpoint replication;
+- semantics-aware checkpoint planning from tool-turn and OS-effect signals;
+- trace-driven speculative prewarming; and
+- deeper agent-execution and inference co-scheduling.
 
-Do not put 25 ms resume, live migration, shared-tenant GPU isolation, or hardware
-attestation in release copy until a public profile and conformance result exists.
+Do not publish latency, live-migration, shared-tenant GPU, air-gap, or hardware
+attestation claims until the exact profile has public conformance evidence.
 
-## The fastest valuable path
-
-The product becomes useful at M1. The critical vertical slice is:
+## Fastest valuable path
 
 ```text
-OCI image
+signed environment
   -> isolated Firecracker sandbox
-  -> persistent state across idle pause/resume
-  -> approved private model call
-  -> declared output
-  -> complete cleanup and audit
+  -> durable workspace
+  -> approved private model connector
+  -> automatic standby and declared-state resume
+  -> safe checkpoint or fork
+  -> complete cleanup and lifecycle receipt
 ```
 
-Do not delay this slice for a dashboard, multi-region scheduler, custom
-filesystem, GPU passthrough, or custom virtual network.
+Do not delay this path for a dashboard, custom filesystem, global scheduler,
+accelerator passthrough, or predictive prewarming.

@@ -5,9 +5,9 @@
 
 ## Context
 
-A Blaxel-shaped open-source runtime needs image templates, Firecracker lifecycle,
-snapshot create/resume/fork, per-node orchestration, a guest process/filesystem
-API, port proxying, volumes, and self-host deployment.
+A stateful open-source agent runtime needs image templates, Firecracker
+lifecycle, checkpoint create/resume/fork, per-node orchestration, a guest
+process/filesystem API, port proxying, volumes, and self-host deployment.
 
 Implementing these from scratch would create a long critical path and a large
 security-sensitive maintenance surface. Kubernetes Agent Sandbox, OpenSandbox,
@@ -21,8 +21,8 @@ Qualify a pinned E2B Runtime release as the initial substrate.
 
 - Use supported APIs and deployment profiles first.
 - Contribute generic lifecycle, security, and operability improvements upstream.
-- Keep project-specific identity, policy, jobs, model routes, audit, and product
-  resources in this repository.
+- Keep project-specific identity, policy, jobs, rollouts, connectors, audit, and
+  product resources in this repository.
 - Maintain a small, explicit patch series only when an upstream path is not yet
   available.
 - Do not fork until an ADR documents the blocking gap, upstream outcome,

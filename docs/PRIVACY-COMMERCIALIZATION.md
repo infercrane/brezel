@@ -73,8 +73,9 @@ policy decisions, and redacted failure classes. It must not contain command text
 file contents, prompts, model responses, credentials, or customer-provided URL
 query strings.
 
-Snapshots need the strongest treatment because they can capture process memory,
-tokens, browser sessions, and files. The platform therefore requires:
+Full-state checkpoints need the strongest treatment because they can capture
+process memory, tokens, browser sessions, and files. Filesystem checkpoints also
+contain customer content. The platform therefore requires:
 
 - per-tenant encryption scopes and customer-managed-key support;
 - tenant-bound object names and authorization on create, resume, fork, and delete;
@@ -82,6 +83,12 @@ tokens, browser sessions, and files. The platform therefore requires:
 - durable deletion reconciliation and a deletion audit record;
 - credential revocation or rebinding across pause, resume, and fork; and
 - support-bundle redaction with customer approval before export.
+
+Connector credentials are separate from customer content. Long-lived values
+remain in Vault, KMS, or a cloud identity system. A sandbox receives only an
+opaque handle or short lease, and the external broker binds substitution to the
+approved destination, method, and path. Configured sensitive response material
+is scrubbed before it reaches the guest.
 
 A private model route does not imply that all model calls stay local. The UI and
 API must identify whether a route targets a customer-hosted model, our managed
@@ -104,15 +111,18 @@ distribution and policy plane around it.
 - a production installer, preflight checks, backup, restore, and upgrade path; and
 - a single-tenant private deployment profile with honest assurance labels.
 
-### Release 2: credentials, jobs, and model routes
+### Release 2: connectors, jobs, and model routes
 
 - an open credential broker that never places long-lived secrets in a guest;
+- destination-bound substitution and response scrubbing;
 - Vault, AWS, GCP, and Azure identity integrations;
 - short-lived endpoint-bound credentials and domain, method, path, quota, and
   spend policy;
 - durable jobs with fan-out, concurrency, retry, cancellation, scheduling, and
   result collection;
 - aliases for approved vLLM, SGLang, TGI, NIM, or OpenAI-compatible endpoints;
+- rollout coordination with immutable task, model, evaluator, budget, and
+  checkpoint-lineage identities;
 - route-specific token, concurrency, cost, and data-residency controls; and
 - framework adapters for E2B SDK users, OpenAI Agents, Anthropic, and MCP.
 
@@ -160,4 +170,3 @@ permission to use Apache-licensed code is not evidence for any security claim.
 - E2B Runtime repository and license: <https://github.com/e2b-dev/runtime>
 - Apache License 2.0: <https://www.apache.org/licenses/LICENSE-2.0>
 - Apache licensing FAQ: <https://www.apache.org/foundation/license-faq.html>
-

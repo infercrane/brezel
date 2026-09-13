@@ -43,7 +43,8 @@ The trusted computing base includes:
 
 - physical host, firmware, Linux/KVM, Firecracker, and E2B runtime components;
 - host networking, storage drivers, and node orchestrator;
-- project API, scheduler, lifecycle reconcilers, proxy, and policy engine;
+- project API, scheduler, lifecycle reconcilers, proxy, connector broker, and
+  policy engine;
 - PostgreSQL, Redis routing data, and object storage control paths;
 - identity, secret, KMS, and signing providers; and
 - administrators able to configure or access the platform.
@@ -94,11 +95,13 @@ sandbox identity and are never exposed by public preview routes.
 Plain containers may be useful for trusted development tasks but cannot carry
 the project's microVM or hostile multi-tenant assurance label.
 
-## Snapshot and fork boundary
+## Checkpoint, restore, and fork boundary
 
-Snapshots can contain process memory, tokens, files, browser sessions, and other
-secret material. They are customer-confidential data, encrypted at rest, scoped
-to the tenant, and deleted through durable reconciliation.
+Full-state checkpoints can contain process memory, tokens, files, browser
+sessions, and other secret material. Filesystem checkpoints contain declared
+writable disk state but may still contain credentials or customer content. Both
+are customer-confidential data, encrypted at rest, scoped to the tenant, and
+deleted through durable reconciliation.
 
 Resume and fork validate:
 
@@ -113,6 +116,12 @@ Resume and fork validate:
 Forking a compromised or dirty sandbox copies its state. Jobs default to a clean
 template, not the previous attempt's snapshot.
 
+A checkpoint cannot undo an external effect. Before checkpoint, restore, or
+fork, the runtime records unresolved connector requests and idempotency
+identities. The first release requires an explicit quiescent boundary and rejects
+an execution edit when it could silently duplicate or discard an unresolved
+effect.
+
 ## Network and credential boundary
 
 The default is no egress. Approved HTTP traffic passes through a gateway outside
@@ -124,7 +133,8 @@ the VM. The gateway:
 - rechecks every redirect and connection;
 - applies host, port, scheme, method, path, size, rate, and concurrency limits;
 - strips authorization and routing headers supplied by the guest;
-- injects short-lived endpoint-bound credentials after admission; and
+- injects short-lived endpoint-bound credentials after admission;
+- scrubs configured credential or session material from the response; and
 - emits redacted metadata outside the sandbox.
 
 Direct TCP/UDP access is a separate capability with weaker application-layer
@@ -133,11 +143,36 @@ control. An allowed model route cannot be reused as a generic forward proxy.
 Inbound routes authenticate before wake-up and cap buffered traffic, connection
 count, and resume attempts. Public URLs never expose `envd` or the control API.
 
+### Developer-preview connector limits
+
+The implemented preview lease is a signed bearer capability delivered as
+non-secret sandbox configuration. It contains no provider credential and
+expires after five minutes by default. Authorization is rechecked against the
+current project, sandbox state, and connector attachment on every proxy request.
+
+Bearer renewal does not prove that the requester is the original sandbox. A
+stolen unexpired lease can be replayed and renewed while that sandbox remains
+running. Consequently, the preview is limited to the trusted-operator profile.
+The private and shared profiles require proof-of-possession workload identity,
+rate and concurrency enforcement, revocation tests, and lease canaries across
+full-state checkpoint and restore.
+
+The gateway buffers request and response bodies to bound memory and scrub exact
+credential bytes. It does not yet support streaming responses. Public connector
+destinations are DNS-checked at connection time; private address space requires
+explicit operator opt-in, while loopback, link-local, multicast, unspecified,
+and known metadata addresses remain forbidden.
+
 ## Storage boundary
 
-Templates are immutable and signed or allowlisted. Root snapshots, volumes,
+Templates are immutable and signed or allowlisted. Checkpoints, volumes,
 drives, artifacts, and logs have separate object identities, encryption scopes,
 quotas, retention, and deletion semantics.
+
+Tool and MCP packages may declare a signed capability manifest, but declarations
+are not enforcement. Admission compares requested filesystem, network,
+connector, device, and approval capabilities with deterministic organization
+policy before the tool becomes available.
 
 Shared drives add confused-deputy and cross-agent risks. Their release requires
 filesystem correctness, authorization, namespace, symlink, lock, and cache
@@ -183,6 +218,8 @@ measurement binds runtime identity, policy digest, and a fresh nonce.
 - secret canaries proving credential absence from guest and snapshots;
 - cross-tenant API, object, route, cache, log, volume, drive, and snapshot tests;
 - pause/resume/fork/delete race and fault injection;
+- duplicate-effect and unresolved-connector tests around checkpoint, restore,
+  and fork;
 - job retry contamination and cancellation tests;
 - CPU, memory, disk, IOPS, bandwidth, connection, wake, and snapshot exhaustion;
 - receipt tamper, replay, wrong-tenant, and wrong-key tests; and

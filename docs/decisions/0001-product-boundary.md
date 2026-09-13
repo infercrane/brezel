@@ -7,9 +7,9 @@
 
 An earlier design limited the project to capability admission and signed
 execution receipts over third-party sandboxes. That is useful security plumbing,
-but it does not meet the product opportunity exposed by Blaxel's acquisition:
-customers need an integrated execution primitive with isolation, resumable state,
-storage, networking, jobs, and proximity to inference.
+but it does not meet the product requirement: customers need an integrated
+execution primitive with isolation, resumable state, storage, networking, jobs,
+and proximity to inference.
 
 At the same time, a from-scratch public microVM cloud would consume most of the
 project on undifferentiated Firecracker orchestration before a user can run a
@@ -22,8 +22,8 @@ open-source microVM data plane.
 
 The project owns:
 
-- the developer-facing image, sandbox, workspace, job, model-route, and policy
-  experience;
+- the developer-facing environment, sandbox, workspace, checkpoint, connector,
+  job, rollout, and policy experience;
 - installation, upgrades, operations, and conformance;
 - durable lifecycle and cleanup semantics;
 - tenant identity, policy, quota, placement, and audit;
@@ -38,14 +38,15 @@ The project does not initially own:
 - a custom distributed filesystem;
 - a model server, training system, or agent framework;
 - a global public capacity fleet; or
-- compatibility with proprietary Blaxel internals.
+- compatibility with undocumented proprietary provider internals.
 
 ## Consequences
 
 Positive:
 
 - the repository describes a real end-to-end product rather than one subsystem;
-- users can self-host a Blaxel-shaped runtime without waiting for a new VMM;
+- users can self-host a complete stateful agent runtime without waiting for a
+  new VMM;
 - private inference and enterprise operation create a distinct position; and
 - upstream runtime improvements benefit more than one project.
 

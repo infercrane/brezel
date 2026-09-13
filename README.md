@@ -3,7 +3,8 @@
 Architecture and contract prototype for a self-hosted runtime for long-running AI
 agents.
 
-> Status: pre-implementation design. Nothing here is production-safe yet.
+> Status: early control-plane implementation. It is not production-safe or a
+> qualified hostile shared-multitenant service yet.
 
 The project name and API namespace are provisional. The repository is deliberately
 separate from InferCrane so the runtime can become a useful open-source product on
@@ -15,7 +16,7 @@ Run stateful agents in fast microVM sandboxes with durable workspaces, controlle
 network access, private model connectivity, and resumable execution on your own
 infrastructure.
 
-The product should feel like one small SDK:
+The future SDK should feel like one small surface:
 
 ```python
 sandbox = client.sandboxes.create(
@@ -36,14 +37,14 @@ control plane to run an agent.
 
 ## Why build this now
 
-Blaxel demonstrated that agent infrastructure is not merely `docker run`: an
-agent needs isolated compute, state that survives idle periods, fast resume,
-networking, and shared artifacts. Its acquisition by Baseten also makes the
-strategic direction clear: agent execution and inference are converging.
+Agent infrastructure is no longer merely `docker run`. An agent needs isolated
+compute, state that survives idle periods, fast resume, networking, shared
+artifacts, and controlled access to tools and models. Agent execution,
+inference, evaluation, and training workflows are converging around the same
+durable compute primitive.
 
-We should not recreate Blaxel's proprietary implementation byte for byte, nor
-build a Firecracker fleet from an empty repository. The open-source E2B Runtime
-already provides the strongest available substrate for this shape of product:
+We should not build a Firecracker fleet from an empty repository. The
+open-source E2B Runtime already provides a strong candidate substrate:
 Firecracker sandboxes, templates, pause/resume, fork, volumes, a guest daemon,
 node orchestration, a client proxy, and self-hosted deployment.
 
@@ -68,12 +69,13 @@ enterprise boundary, and conformance profile.
 
 | Primitive | User promise | Initial implementation |
 | --- | --- | --- |
-| **Image** | Turn an OCI image into a reproducible boot template | E2B template builder and immutable artifacts |
+| **Environment** | Resolve software, resources, tools, connectors, and policy into one reproducible revision | Project manifest plus E2B template builder |
 | **Sandbox** | Create, exec, inspect, expose a port, pause, resume, fork, destroy | E2B Firecracker runtime and guest `envd` |
-| **Volume** | Keep one sandbox's durable working state beyond a VM lifetime | E2B persistent volume capability |
-| **Drive** | Share a durable POSIX workspace across agents | Later milestone; evaluate JuiceFS rather than inventing a filesystem |
+| **Workspace** | Keep working state beyond compute; single-writer first | E2B volume capability; shared mode later |
+| **Checkpoint** | Restore or fork explicit filesystem or full machine state | E2B snapshots plus project lineage and policy |
 | **Job** | Fan out bounded work, retry safely, collect results, cancel | Project-owned durable job coordinator |
-| **Model route** | Reach an approved private or managed model by alias | E2B egress/workload identity plus a project route gateway |
+| **Connector** | Reach an approved tool or private model without possessing its credential | Project broker over E2B egress/workload identity |
+| **Rollout** | Run reproducible agent episodes across model routes and evaluators | Project-owned job specialization |
 | **Policy** | Limit image, network, data, resources, region, and lifetime | Project-owned admission and organization policy |
 | **Receipt** | Explain exactly what ran and what controls applied | Project-owned signed, content-minimal record |
 
@@ -108,6 +110,53 @@ Telemetry: OpenTelemetry; ClickHouse is optional at scale
 
 Read the full design in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## What runs now
+
+The repository includes a small Go control plane with no third-party Go
+dependencies. It implements immutable Environment registration; tenant-scoped
+Sandbox create, inspect, pause, resume, filesystem checkpoint, expiration, and
+delete; durable idempotency and lifecycle events; an audited E2B Runtime HTTP
+adapter; Ed25519-signed DSSE lifecycle receipts; and a narrow private-model/tool
+connector preview that keeps long-lived credentials outside the sandbox.
+
+Production execution fails closed unless `RUNTIME_BACKEND=e2b` and the required
+backend, service-token, state, and receipt-key configuration are present. The
+only fake backend exists in `_test.go` files and cannot be enabled in a release
+binary. Connector attachment is available only when its gateway and 0600 file
+resolver are explicitly configured. The current bearer-renewal design remains a
+trusted-operator preview, not a production shared-tenant claim.
+
+```bash
+make check
+mkdir -p runtime-state
+go run ./cmd/runtime-api keygen -out runtime-state/receipt.key
+
+# Copy config/runtime.env.example into your secret/configuration system.
+# Never commit the substituted values.
+go run ./cmd/runtime-api
+```
+
+The configurable `E2B_API_URL` may target the managed API or a separately
+deployed self-hosted E2B Runtime control API. Remote plaintext endpoints and HTTP
+redirects are rejected so the backend API key cannot silently leave its origin.
+
+See [`docs/IMPLEMENTATION-STATUS.md`](docs/IMPLEMENTATION-STATUS.md) for the
+precise availability boundary.
+
+The conformance command creates and deletes a real sandbox, so it requires an
+explicit execution flag. It checks the current control API lifecycle,
+idempotency, cross-project denial, filesystem checkpoint, cleanup, and signed
+receipt. It does not qualify the host isolation boundary or performance:
+
+```bash
+RUNTIME_SERVICE_TOKEN=... go run ./cmd/runtime-conformance \
+  -base-url https://runtime.example.com \
+  -backend-template existing-template-id \
+  -project isolated-conformance-project \
+  -target staging-linux-kvm-2026-09-13 \
+  -execute
+```
+
 ## What ships first
 
 The first useful release is a single-host Linux distribution for a trusted
@@ -128,9 +177,9 @@ multi-region migration, GPU passthrough, and hardware attestation come later.
 
 ## Honest performance targets
 
-Blaxel reports approximately 25 ms resume on its custom bare-metal runtime. That
-number depends on snapshot format, local caches, CPU compatibility, networking,
-and fleet placement. It is not an acceptable MVP promise for this project.
+Resume and creation latency depend on snapshot format, local caches, CPU
+compatibility, networking, and fleet placement. A number measured by another
+system is not an acceptable MVP promise for this project.
 
 For the first release we will publish a reproducible benchmark suite and report
 p50, p95, and p99 for:
@@ -163,13 +212,14 @@ It is not initially:
 - a promise of hostile multi-tenant GPU safety;
 - a custom distributed filesystem;
 - a clean-room rewrite of Firecracker or E2B Runtime; or
-- API-compatible with Blaxel unless a public conformance suite proves it.
+- a blanket compatibility promise for proprietary provider APIs.
 
 ## Repository map
 
 - [`docs/PRODUCT.md`](docs/PRODUCT.md): users, jobs, UX, and positioning
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): control plane, data plane, and state
-- [`docs/BLAXEL-GAP-MAP.md`](docs/BLAXEL-GAP-MAP.md): what to reproduce, reuse, or defer
+- [`docs/STRATEGY-2026.md`](docs/STRATEGY-2026.md): source-backed product and engineering plan
+- [`docs/CAPABILITY-MAP.md`](docs/CAPABILITY-MAP.md): what to build, integrate, qualify, or defer
 - [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md): isolation and enterprise boundaries
 - [`docs/MILESTONES.md`](docs/MILESTONES.md): build sequence and exit criteria
 - [`docs/MVP-API.md`](docs/MVP-API.md): initial resources and lifecycle semantics
@@ -177,11 +227,15 @@ It is not initially:
 - [`docs/UPSTREAM-AUDIT.md`](docs/UPSTREAM-AUDIT.md): pinned substrate inspection
 - [`docs/PRIVACY-COMMERCIALIZATION.md`](docs/PRIVACY-COMMERCIALIZATION.md): license,
   privacy, product boundary, and commercial model
+- [`docs/IMPLEMENTATION-STATUS.md`](docs/IMPLEMENTATION-STATUS.md): implemented,
+  unavailable, and unqualified capabilities
 - [`spec/v1alpha1/sandbox.schema.json`](spec/v1alpha1/sandbox.schema.json): lifecycle contract
 - [`spec/v1alpha1/run.schema.json`](spec/v1alpha1/run.schema.json): bounded job-run contract
 - [`docs/decisions/`](docs/decisions): architectural decisions
 
-## License
+## Contributing and license
 
-Apache-2.0 is the proposed license. Every bundled component and distribution
-artifact still needs a dependency and trademark review before public release.
+The project is licensed under [Apache-2.0](LICENSE). Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before changing runtime behavior. Every
+bundled component and distribution artifact still needs a dependency and
+trademark review before a public binary distribution.

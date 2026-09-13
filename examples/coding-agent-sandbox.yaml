@@ -8,7 +8,6 @@ spec:
   image: ghcr.io/example/coding-agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   environment:
     WORKSPACE: /workspace
-    MODEL_BASE_URL: http://model-route.local/v1
   resources:
     vcpu: 4
     memoryMiB: 8192
@@ -28,8 +27,8 @@ spec:
         port: 443
         methods: [GET, POST, PATCH]
         pathPrefixes: [/repos/acme/project]
-    modelRoutes:
-      - private-coding-model
+    connectors:
+      - connector://private-coding-model@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   ports:
     - name: application-preview
       port: 3000

@@ -31,8 +31,8 @@ Product convenience must not weaken the declared assurance model.
 
 - Extend or contribute to the maintained E2B Runtime before forking its data
   plane. Pin the exact upstream revision used by a release.
-- Do not copy proprietary Blaxel code or private API behavior. Public product
-  concepts can inform clean-room interfaces.
+- Do not copy proprietary competitor code, private API behavior, written copy,
+  or trademarks. Publicly documented concepts may inform clean-room interfaces.
 - Prefer adapters to maintained storage, identity, policy, and networking
   systems over in-repository reinvention.
 - Add a conformance test before advertising a capability or compatibility claim.

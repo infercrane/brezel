@@ -25,13 +25,9 @@ spec:
         - /workspace/out
     network:
       mode: deny
-    inference:
+    connectors:
       - alias: private-model
-        baseUrl: https://inference.internal/v1
-        protocol: openai
-        models:
-          - qwen3-coder
-        credentialRef: model-serving
+        revision: connector://private-model@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   resources:
     cpu: "2"
     memory: 4Gi
