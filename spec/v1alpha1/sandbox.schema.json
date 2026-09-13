@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sandbox.runtime.dev/spec/v1alpha1/sandbox.schema.json",
+  "title": "Open Agent Runtime Sandbox",
+  "description": "Provisional create contract for one stateful microVM sandbox.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "sandbox.runtime.dev/v1alpha1" },
+    "kind": { "const": "Sandbox" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "maxLength": 128 },
+          "maxProperties": 32
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "resources", "lifecycle", "network"],
+      "properties": {
+        "image": {
+          "type": "string",
+          "description": "An immutable OCI image or resolved template digest.",
+          "pattern": "^.+@sha256:[a-f0-9]{64}$",
+          "maxLength": 1024
+        },
+        "environment": {
+          "type": "object",
+          "description": "Non-secret configuration only. Use model routes or secret handles for credentials.",
+          "propertyNames": { "pattern": "^[A-Z_][A-Z0-9_]*$" },
+          "additionalProperties": { "type": "string", "maxLength": 8192 },
+          "maxProperties": 128
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["vcpu", "memoryMiB"],
+          "properties": {
+            "vcpu": { "type": "integer", "minimum": 1, "maximum": 64 },
+            "memoryMiB": { "type": "integer", "minimum": 256, "maximum": 262144 },
+            "diskMiB": { "type": "integer", "minimum": 512, "maximum": 1048576 },
+            "pids": { "type": "integer", "minimum": 1, "maximum": 65536 }
+          }
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["standbyAfterSeconds", "expiresAfterSeconds"],
+          "properties": {
+            "standbyAfterSeconds": {
+              "description": "Zero disables automatic standby.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 86400
+            },
+            "expiresAfterSeconds": {
+              "description": "Expiration is independent from activity and standby.",
+              "type": "integer",
+              "minimum": 60,
+              "maximum": 2592000
+            }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "volume": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "mountPath"],
+              "properties": {
+                "name": { "$ref": "#/$defs/name" },
+                "mountPath": { "$ref": "#/$defs/absolutePath" },
+                "readOnly": { "type": "boolean", "default": false }
+              }
+            },
+            "drives": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "mountPath"],
+                "properties": {
+                  "name": { "$ref": "#/$defs/name" },
+                  "mountPath": { "$ref": "#/$defs/absolutePath" },
+                  "readOnly": { "type": "boolean", "default": false }
+                }
+              }
+            }
+          }
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["egress"],
+          "properties": {
+            "egress": { "enum": ["deny", "allowlist"] },
+            "allow": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["host", "port"],
+                "properties": {
+                  "host": { "type": "string", "format": "hostname", "maxLength": 253 },
+                  "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                  "methods": {
+                    "type": "array",
+                    "items": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] },
+                    "uniqueItems": true
+                  },
+                  "pathPrefixes": {
+                    "type": "array",
+                    "items": { "type": "string", "pattern": "^/", "maxLength": 2048 },
+                    "uniqueItems": true
+                  }
+                }
+              }
+            },
+            "modelRoutes": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/name" },
+              "uniqueItems": true,
+              "maxItems": 16
+            }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "egress": { "const": "deny" } } },
+              "then": { "not": { "required": ["allow"] } }
+            },
+            {
+              "if": { "properties": { "egress": { "const": "allowlist" } } },
+              "then": {
+                "required": ["allow"],
+                "properties": { "allow": { "minItems": 1 } }
+              }
+            }
+          ]
+        },
+        "ports": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "port", "protocol", "access"],
+            "properties": {
+              "name": { "$ref": "#/$defs/name" },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "protocol": { "enum": ["http", "tcp"] },
+              "access": { "enum": ["private", "authenticated-preview"] }
+            }
+          }
+        },
+        "receipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "includeContent": { "const": false }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      "maxLength": 63
+    },
+    "absolutePath": {
+      "type": "string",
+      "pattern": "^/",
+      "maxLength": 4096
+    }
+  }
+}

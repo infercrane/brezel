@@ -1,0 +1,40 @@
+apiVersion: sandbox.runtime.dev/v1alpha1
+kind: Sandbox
+metadata:
+  name: coding-agent-session
+  labels:
+    workload: coding-agent
+spec:
+  image: ghcr.io/example/coding-agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  environment:
+    WORKSPACE: /workspace
+    MODEL_BASE_URL: http://model-route.local/v1
+  resources:
+    vcpu: 4
+    memoryMiB: 8192
+    diskMiB: 20480
+    pids: 512
+  lifecycle:
+    standbyAfterSeconds: 30
+    expiresAfterSeconds: 86400
+  storage:
+    volume:
+      name: repository-main
+      mountPath: /workspace
+  network:
+    egress: allowlist
+    allow:
+      - host: api.github.com
+        port: 443
+        methods: [GET, POST, PATCH]
+        pathPrefixes: [/repos/acme/project]
+    modelRoutes:
+      - private-coding-model
+  ports:
+    - name: application-preview
+      port: 3000
+      protocol: http
+      access: authenticated-preview
+  receipt:
+    enabled: true
+    includeContent: false

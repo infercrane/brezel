@@ -1,0 +1,46 @@
+apiVersion: sandbox.runtime.dev/v1alpha1
+kind: Run
+metadata:
+  name: private-code-review
+  labels:
+    purpose: evaluation
+spec:
+  image: ghcr.io/example/reviewer@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  command:
+    - python
+    - /workspace/review.py
+  environment:
+    REPORT_PATH: /workspace/out/report.json
+  inputs:
+    - source: artifact://sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      destination: /workspace
+      access: cow
+  capabilities:
+    filesystem:
+      read:
+        - /usr
+        - /lib
+        - /workspace
+      write:
+        - /workspace/out
+    network:
+      mode: deny
+    inference:
+      - alias: private-model
+        baseUrl: https://inference.internal/v1
+        protocol: openai
+        models:
+          - qwen3-coder
+        credentialRef: model-serving
+  resources:
+    cpu: "2"
+    memory: 4Gi
+    pids: 128
+  timeoutSeconds: 900
+  outputs:
+    - path: /workspace/out/report.json
+      required: true
+  receipt:
+    minimumAssurance: enforced
+    includeCommandDigests: true
+    includeContent: false
