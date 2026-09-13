@@ -35,6 +35,13 @@
   source secret-injection path.
 - No durable batch/job coordinator was found by repository search for job or
   batch APIs. Revalidate before implementation because upstream changes quickly.
+- The reviewed Embed pins E2B-hosted container images and downloads kernel,
+  Firecracker, BusyBox, and `envd` artifacts from E2B's public artifact storage.
+  A private or air-gapped distribution needs its own verified and signed mirror.
+- The API constructs a PostHog client and enqueues lifecycle analytics. With no
+  API key the reviewed implementation silences client logs, but it does not
+  select an explicit no-op implementation. Treat outbound behavior as unproven
+  until packet-tested and patch a real telemetry-off mode before private release.
 - A root Apache-2.0 license is encouraging but does not replace a generated
   dependency, image, and trademark review.
 - Public README feature statements are not project conformance results. Every
@@ -45,6 +52,8 @@
 Use this exact revision only for an M0 evaluation. Do not vendor or fork it yet.
 Build a thin conformance harness against its public API, document the missing
 secret and job paths, and open upstream issues before deciding where code lives.
+The commercialization and private-deployment requirements are recorded in
+[`PRIVACY-COMMERCIALIZATION.md`](PRIVACY-COMMERCIALIZATION.md).
 
 ## JuiceFS
 

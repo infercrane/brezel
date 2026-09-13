@@ -175,6 +175,8 @@ It is not initially:
 - [`docs/MVP-API.md`](docs/MVP-API.md): initial resources and lifecycle semantics
 - [`docs/RESEARCH-2026.md`](docs/RESEARCH-2026.md): current projects and papers
 - [`docs/UPSTREAM-AUDIT.md`](docs/UPSTREAM-AUDIT.md): pinned substrate inspection
+- [`docs/PRIVACY-COMMERCIALIZATION.md`](docs/PRIVACY-COMMERCIALIZATION.md): license,
+  privacy, product boundary, and commercial model
 - [`spec/v1alpha1/sandbox.schema.json`](spec/v1alpha1/sandbox.schema.json): lifecycle contract
 - [`spec/v1alpha1/run.schema.json`](spec/v1alpha1/run.schema.json): bounded job-run contract
 - [`docs/decisions/`](docs/decisions): architectural decisions
