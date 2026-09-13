@@ -20,11 +20,11 @@ and credit the reporter when requested. No bug-bounty payment is promised.
   a specific deployment is not qualified until the conformance suite passes.
 - The local file state store is a single-controller developer profile, not a
   clustered production database.
-- Connector definitions are registrable, but attachment fails before sandbox
-  creation until the credential broker is implemented and qualified.
+- Connector attachment requires the explicitly configured preview broker. Its
+  signed bearer renewal is limited to a trusted-operator profile until
+  proof-of-possession identity and deployment conformance are complete.
 - Signed receipts are control-plane claims, not hardware attestation.
 - Content telemetry is outside the control plane and is not collected by
   default.
 
 Read [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) before deployment.
-
