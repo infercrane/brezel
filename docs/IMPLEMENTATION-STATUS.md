@@ -19,7 +19,7 @@ qualified product behavior. A green unit test is not a deployment qualification.
 | Tenant isolation at API/store boundary | Implemented | Project-scoped keys and cross-project denial test |
 | Connector definition | Implemented | HTTPS, method/path, and opaque secret-handle validation |
 | Connector credential enforcement | Developer preview | Five-minute signed lease, current-state checks, route policy, external file resolver, header stripping, DNS/metadata guard, response scrub |
-| Release backend | E2B adapter only | API key over TLS, redirects disabled, unknown backend state remains unknown |
+| Release backend | E2B adapter only | API key over TLS, redirects disabled, secured guest-management token required in responses, unknown backend state remains unknown |
 | Test backend | Tests only | Defined exclusively in `_test.go`; cannot be selected by release code |
 | Deployment conformance | Implemented for the current control API subset | Explicit paid-resource acknowledgement, lifecycle, idempotency, cross-project denial, checkpoint, cleanup, and receipt verification |
 

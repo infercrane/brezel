@@ -25,6 +25,12 @@
   Kubernetes manifest described by the repository; and
 - public API fields for per-sandbox network policy and workload identity.
 
+The adapter now requests secured guest access and requires the create, inspect,
+resume, and recovery responses to confirm a non-empty per-sandbox `envd` access
+token. The token is not written into project state. Guest process and file
+proxying remains unavailable until its separate short-lived connection and
+streaming contract is implemented and qualified.
+
 ### Important gaps or caveats
 
 - E2B's README describes Embed as an evaluation package, not a production

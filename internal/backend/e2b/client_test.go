@@ -29,7 +29,7 @@ func TestCreateMapsSecurityLifecycleAndTenantMetadata(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"sandboxID":"upstream-1"}`))
+		_, _ = w.Write([]byte(`{"sandboxID":"upstream-1","envdAccessToken":"guest-token"}`))
 	}))
 	defer server.Close()
 
@@ -49,7 +49,7 @@ func TestCreateMapsSecurityLifecycleAndTenantMetadata(t *testing.T) {
 
 func TestUnknownRemoteStateStaysUnknown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"sandboxID":"upstream-1","state":"migrating"}`))
+		_, _ = w.Write([]byte(`{"sandboxID":"upstream-1","state":"migrating","envdAccessToken":"guest-token"}`))
 	}))
 	defer server.Close()
 	client, _ := New(server.URL, "test-key", server.Client())
@@ -70,13 +70,30 @@ func TestFindRecoversByTenantBoundMetadata(t *testing.T) {
 		if r.URL.Query().Get("metadata") != "runtime.sandbox_id=local-1&runtime.project_id=project-a" {
 			t.Fatalf("metadata = %q", r.URL.Query().Get("metadata"))
 		}
-		_, _ = w.Write([]byte(`[{"sandboxID":"upstream-1","state":"paused","metadata":{"runtime.sandbox_id":"local-1","runtime.project_id":"project-a"}}]`))
+		_, _ = w.Write([]byte(`[{"sandboxID":"upstream-1","state":"paused","envdAccessToken":"guest-token","metadata":{"runtime.sandbox_id":"local-1","runtime.project_id":"project-a"}}]`))
 	}))
 	defer server.Close()
 	client, _ := New(server.URL, "test-key", server.Client())
 	got, err := client.Find(context.Background(), "local-1", "project-a")
 	if err != nil || got.ID != "upstream-1" || got.State != domain.SandboxStandby {
 		t.Fatalf("Find() = %#v, %v", got, err)
+	}
+}
+
+func TestRejectsBackendThatDoesNotConfirmSecuredGuestAccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"sandboxID":"upstream-1"}`))
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, "test-key", server.Client())
+	_, err := client.Create(context.Background(), backend.CreateRequest{
+		LocalSandboxID: "sbx-1", ProjectID: "project-a", TemplateID: "template-1",
+		Lifecycle: domain.Lifecycle{ExpiresAfterSeconds: 3600},
+		Network:   domain.NetworkPolicy{AllowInternet: false},
+	})
+	if err == nil {
+		t.Fatal("backend response without secured guest access was accepted")
 	}
 }
 

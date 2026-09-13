@@ -67,8 +67,9 @@ func (c *Client) Capabilities() backend.Capabilities {
 }
 
 type sandboxResponse struct {
-	SandboxID string `json:"sandboxID"`
-	State     string `json:"state"`
+	SandboxID       string  `json:"sandboxID"`
+	State           string  `json:"state"`
+	EnvdAccessToken *string `json:"envdAccessToken"`
 }
 
 func (c *Client) Create(ctx context.Context, in backend.CreateRequest) (backend.Sandbox, error) {
@@ -103,12 +104,18 @@ func (c *Client) Create(ctx context.Context, in backend.CreateRequest) (backend.
 	if out.SandboxID == "" {
 		return backend.Sandbox{}, errors.New("E2B returned an empty sandbox id")
 	}
+	if err := requireSecureGuestAccess(out.EnvdAccessToken); err != nil {
+		return backend.Sandbox{}, err
+	}
 	return backend.Sandbox{ID: out.SandboxID, State: domain.SandboxRunning}, nil
 }
 
 func (c *Client) Inspect(ctx context.Context, id string) (backend.Sandbox, error) {
 	var out sandboxResponse
 	if err := c.do(ctx, http.MethodGet, "/sandboxes/"+url.PathEscape(id), nil, &out, http.StatusOK); err != nil {
+		return backend.Sandbox{}, err
+	}
+	if err := requireSecureGuestAccess(out.EnvdAccessToken); err != nil {
 		return backend.Sandbox{}, err
 	}
 	state := domain.SandboxUnknown
@@ -127,15 +134,19 @@ func (c *Client) Find(ctx context.Context, localID, projectID string) (backend.S
 	query.Set("metadata", "runtime.sandbox_id="+localID+"&runtime.project_id="+projectID)
 	u.RawQuery = query.Encode()
 	var out []struct {
-		SandboxID string            `json:"sandboxID"`
-		State     string            `json:"state"`
-		Metadata  map[string]string `json:"metadata"`
+		SandboxID       string            `json:"sandboxID"`
+		State           string            `json:"state"`
+		Metadata        map[string]string `json:"metadata"`
+		EnvdAccessToken *string           `json:"envdAccessToken"`
 	}
 	if err := c.doURL(ctx, http.MethodGet, u, nil, &out, http.StatusOK); err != nil {
 		return backend.Sandbox{}, err
 	}
 	for _, candidate := range out {
 		if candidate.Metadata["runtime.sandbox_id"] == localID && candidate.Metadata["runtime.project_id"] == projectID {
+			if err := requireSecureGuestAccess(candidate.EnvdAccessToken); err != nil {
+				return backend.Sandbox{}, err
+			}
 			state := domain.SandboxUnknown
 			switch candidate.State {
 			case "running":
@@ -160,7 +171,20 @@ func (c *Client) Resume(ctx context.Context, id string, kind domain.CheckpointKi
 	if err := c.do(ctx, http.MethodPost, "/sandboxes/"+url.PathEscape(id)+"/resume", body, &out, http.StatusCreated); err != nil {
 		return backend.Sandbox{}, err
 	}
+	if out.SandboxID == "" {
+		return backend.Sandbox{}, errors.New("E2B returned an empty sandbox id after resume")
+	}
+	if err := requireSecureGuestAccess(out.EnvdAccessToken); err != nil {
+		return backend.Sandbox{}, err
+	}
 	return backend.Sandbox{ID: out.SandboxID, State: domain.SandboxRunning}, nil
+}
+
+func requireSecureGuestAccess(token *string) error {
+	if token == nil || strings.TrimSpace(*token) == "" {
+		return errors.New("E2B did not confirm secured guest-management access")
+	}
+	return nil
 }
 
 func (c *Client) Delete(ctx context.Context, id string) error {
