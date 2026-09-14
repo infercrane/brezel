@@ -115,7 +115,7 @@ run_active_recovery() {
     echo "active restart qualification did not return a sandbox ID" >&2
     return 1
   fi
-  cli exec "$ACTIVE_SANDBOX_ID" /bin/sh -lc 'printf %s "$1" > /workspace/controller-restart.txt' runtime-recovery "$marker"
+  cli exec "$ACTIVE_SANDBOX_ID" /bin/sh -c 'printf %s "$1" > /workspace/controller-restart.txt' runtime-recovery "$marker"
 
   compose restart brezeld >/dev/null
   wait_ready
@@ -201,7 +201,7 @@ run_node_restart_recovery() {
     echo "node restart qualification did not return a sandbox ID" >&2
     return 1
   }
-  cli exec "$ACTIVE_SANDBOX_ID" /bin/sh -lc 'printf %s "$1" > /workspace/node-restart.txt' runtime-recovery "$marker"
+  cli exec "$ACTIVE_SANDBOX_ID" /bin/sh -c 'printf %s "$1" > /workspace/node-restart.txt' runtime-recovery "$marker"
 
   compose restart brezel-node >/dev/null
   wait_ready

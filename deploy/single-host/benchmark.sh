@@ -29,6 +29,14 @@ IO_BYTES=${BREZEL_BENCH_IO_BYTES:-1048576}
 PREVIEW_PORT=${BREZEL_BENCH_PREVIEW_PORT:-8080}
 BASE_URL=${BREZEL_BENCH_BASE_URL:-http://127.0.0.1:8080}
 BASE_URL=${BASE_URL%/}
+
+# Compose interpolation is also used while capturing the exact running image.
+# Keep it aligned with the installed single-host service identity even when the
+# benchmark is invoked from a fresh login shell.
+export BREZEL_STATE_DIR=${BREZEL_STATE_DIR:-"$INSTALL_DIR/state"}
+export BREZEL_SECRETS_DIR=${BREZEL_SECRETS_DIR:-"$INSTALL_DIR/secrets"}
+export BREZEL_UID=${BREZEL_UID:-"$(id -u)"}
+export BREZEL_GID=${BREZEL_GID:-"$(id -g)"}
 SCENARIOS="tti warm-exec resume filesystem-checkpoint filesystem-restore preview-first-byte preview-warm workspace-io"
 SCENARIO_COUNT=$(printf '%s\n' $SCENARIOS | wc -l | tr -d ' ')
 EXPECTED_CASES=$((SCENARIO_COUNT * 3))
