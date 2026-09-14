@@ -1,5 +1,6 @@
 services:
   host-setup:
+    pull_policy: never
     environment:
       # Lazy Firecracker snapshot mappings reserve virtual commit before guest
       # pages are faulted in. The product-level global sandbox limit remains
@@ -35,9 +36,6 @@ services:
     pull_policy: never
 
   preflight:
-    pull_policy: never
-
-  host-setup:
     pull_policy: never
 
   fetch-artifacts:

@@ -280,6 +280,9 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	override := string(overrideData)
+	if got := strings.Count(override, "\n  host-setup:\n"); got != 1 {
+		t.Fatalf("engine override defines host-setup %d times, want exactly once", got)
+	}
 	for _, required := range []string{
 		"BREZEL_ENGINE_POSTGRES_IMAGE", "BREZEL_ENGINE_REDIS_IMAGE",
 		"BREZEL_ENGINE_CLICKHOUSE_IMAGE", "BREZEL_ENGINE_VECTOR_IMAGE",
