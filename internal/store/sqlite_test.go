@@ -17,7 +17,7 @@ import (
 )
 
 func TestSQLiteStoreUpdateReopenAndRollback(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
+	path := privateTestPath(t, "state.db")
 	s, err := OpenSQLite(path, "")
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestSQLiteStoreUpdateReopenAndRollback(t *testing.T) {
 }
 
 func TestSQLiteStoreMigratesLegacyFileWithoutModifyingIt(t *testing.T) {
-	directory := t.TempDir()
+	directory := privateTestDirectory(t)
 	legacyPath := filepath.Join(directory, "state.json")
 	legacy, err := OpenFile(legacyPath)
 	if err != nil {
@@ -126,7 +126,7 @@ func TestSQLiteStoreMigratesLegacyFileWithoutModifyingIt(t *testing.T) {
 }
 
 func TestSQLiteStoreRejectsConcurrentOpenSymlinkAndUnsafePermissions(t *testing.T) {
-	directory := t.TempDir()
+	directory := privateTestDirectory(t)
 	path := filepath.Join(directory, "state.db")
 	first, err := OpenSQLite(path, "")
 	if err != nil {
@@ -159,7 +159,7 @@ func TestSQLiteStoreRejectsConcurrentOpenSymlinkAndUnsafePermissions(t *testing.
 }
 
 func TestSQLiteStoreActivityAndEventsAreKeyedDurableOperations(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
+	path := privateTestPath(t, "state.db")
 	s, err := OpenSQLite(path, "")
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestSQLiteStoreActivityAndEventsAreKeyedDurableOperations(t *testing.T) {
 }
 
 func TestSQLiteStoreRejectsSemanticallyCorruptPayloadOnOpen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
+	path := privateTestPath(t, "state.db")
 	s, err := OpenSQLite(path, "")
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +264,7 @@ func TestSQLiteStoreRejectsSemanticallyCorruptPayloadOnOpen(t *testing.T) {
 }
 
 func TestSQLiteStoreReadyFailsAfterClose(t *testing.T) {
-	s, err := OpenSQLite(filepath.Join(t.TempDir(), "state.db"), "")
+	s, err := OpenSQLite(privateTestPath(t, "state.db"), "")
 	if err != nil {
 		t.Fatal(err)
 	}

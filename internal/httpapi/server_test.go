@@ -409,7 +409,11 @@ func newHarness(t *testing.T) harness {
 
 func newHarnessWithServiceOptions(t *testing.T, options ...service.Option) harness {
 	t.Helper()
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(directory, "state.json")
 	st, err := store.OpenFile(statePath)
 	if err != nil {
 		t.Fatal(err)
@@ -434,6 +438,9 @@ func newHarnessWithServiceOptions(t *testing.T, options ...service.Option) harne
 func newBrokerHarness(t *testing.T) harness {
 	t.Helper()
 	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	statePath := filepath.Join(directory, "state.json")
 	st, err := store.OpenFile(statePath)
 	if err != nil {

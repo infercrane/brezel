@@ -3,6 +3,8 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -113,7 +115,7 @@ func BenchmarkUpdatePreparation(b *testing.B) {
 
 func BenchmarkFileStoreView(b *testing.B) {
 	state := makeBenchmarkState(1000)
-	store, err := OpenFile(b.TempDir() + "/state.json")
+	store, err := OpenFile(privateTestPath(b, "state.json"))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -135,7 +137,7 @@ func BenchmarkFileStoreView(b *testing.B) {
 
 func BenchmarkFileStoreGetSandbox(b *testing.B) {
 	state := makeBenchmarkState(1000)
-	store, err := OpenFile(b.TempDir() + "/state.json")
+	store, err := OpenFile(privateTestPath(b, "state.json"))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -156,7 +158,7 @@ func BenchmarkFileStoreGetSandbox(b *testing.B) {
 
 func BenchmarkFileStoreUpdate(b *testing.B) {
 	state := makeBenchmarkState(1000)
-	store, err := OpenFile(b.TempDir() + "/state.json")
+	store, err := OpenFile(privateTestPath(b, "state.json"))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -203,7 +205,7 @@ func BenchmarkFileStoreSandboxEventAppend(b *testing.B) {
 	} {
 		b.Run(benchmark.name, func(b *testing.B) {
 			state := makeBenchmarkState(1000)
-			store, err := OpenFile(b.TempDir() + "/state.json")
+			store, err := OpenFile(privateTestPath(b, "state.json"))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -287,7 +289,7 @@ func BenchmarkSQLiteStoreHotPath(b *testing.B) {
 
 func benchmarkSQLiteStore(b *testing.B, resources int) *SQLiteStore {
 	b.Helper()
-	store, err := OpenSQLite(b.TempDir()+"/state.db", "")
+	store, err := OpenSQLite(privateTestPath(b, "state.db"), "")
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -300,6 +302,20 @@ func benchmarkSQLiteStore(b *testing.B, resources int) *SQLiteStore {
 		b.Fatal(err)
 	}
 	return store
+}
+
+func privateTestPath(tb testing.TB, name string) string {
+	tb.Helper()
+	return filepath.Join(privateTestDirectory(tb), name)
+}
+
+func privateTestDirectory(tb testing.TB) string {
+	tb.Helper()
+	directory := tb.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		tb.Fatalf("secure temporary directory: %v", err)
+	}
+	return directory
 }
 
 func cloneStateWithJSON(in State) (State, error) {

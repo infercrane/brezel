@@ -167,7 +167,7 @@ connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)
 try:
     row = connection.execute(
         "SELECT payload FROM resources WHERE kind = ? AND resource_key = ?",
-        ("sandbox", "brezel-conformance\x00" + sandbox_id),
+        ("sandbox", sqlite3.Binary(("brezel-conformance\x00" + sandbox_id).encode())),
     ).fetchone()
     if row is not None:
         print(json.loads(row[0])["backend_id"])

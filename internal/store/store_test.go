@@ -14,7 +14,7 @@ import (
 )
 
 func TestFileStorePersistsAtomicallyAndScopesResources(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
+	path := privateTestPath(t, "state.json")
 	s, err := OpenFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +46,7 @@ func TestFileStorePersistsAtomicallyAndScopesResources(t *testing.T) {
 }
 
 func TestFailedUpdateDoesNotMutateMemoryOrDisk(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
+	path := privateTestPath(t, "state.json")
 	s, err := OpenFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestFailedUpdateDoesNotMutateMemoryOrDisk(t *testing.T) {
 }
 
 func TestFailedUpdateDoesNotAliasNestedState(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
+	path := privateTestPath(t, "state.json")
 	s, err := OpenFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestFailedUpdateDoesNotAliasNestedState(t *testing.T) {
 }
 
 func TestFileStoreRejectsConcurrentOpenAndUnsafePermissions(t *testing.T) {
-	directory := t.TempDir()
+	directory := privateTestDirectory(t)
 	path := filepath.Join(directory, "state.json")
 	first, err := OpenFile(path)
 	if err != nil {
@@ -143,7 +143,7 @@ func TestFileStoreRejectsConcurrentOpenAndUnsafePermissions(t *testing.T) {
 }
 
 func TestFileStoreRejectsSymlinkState(t *testing.T) {
-	directory := t.TempDir()
+	directory := privateTestDirectory(t)
 	target := filepath.Join(directory, "target.json")
 	if err := os.WriteFile(target, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestFileStoreRejectsSymlinkState(t *testing.T) {
 }
 
 func TestFileStoreReadinessFailsAfterClose(t *testing.T) {
-	s, err := OpenFile(filepath.Join(t.TempDir(), "state.json"))
+	s, err := OpenFile(privateTestPath(t, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestFileStoreReadinessFailsAfterClose(t *testing.T) {
 }
 
 func TestFileStoreGetSandboxIsKeyedAndDoesNotAliasState(t *testing.T) {
-	s, err := OpenFile(filepath.Join(t.TempDir(), "state.json"))
+	s, err := OpenFile(privateTestPath(t, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestFileStoreGetSandboxIsKeyedAndDoesNotAliasState(t *testing.T) {
 }
 
 func TestFileStoreAppendSandboxEventIsOrderedDurableAndDoesNotAlias(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
+	path := privateTestPath(t, "state.json")
 	s, err := OpenFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ func TestFileStoreAppendSandboxEventIsOrderedDurableAndDoesNotAlias(t *testing.T
 }
 
 func TestFileStoreAppendSandboxEventFailsClosed(t *testing.T) {
-	s, err := OpenFile(filepath.Join(t.TempDir(), "state.json"))
+	s, err := OpenFile(privateTestPath(t, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestFileStoreAppendSandboxEventFailsClosed(t *testing.T) {
 }
 
 func TestFileStoreAppendSandboxEventPublishFollowsPersistence(t *testing.T) {
-	directory := t.TempDir()
+	directory := privateTestDirectory(t)
 	originalPath := filepath.Join(directory, "state.json")
 	s, err := OpenFile(originalPath)
 	if err != nil {
@@ -370,7 +370,7 @@ func TestFileStoreAppendSandboxEventPublishFollowsPersistence(t *testing.T) {
 }
 
 func TestFileStoreMigratesLegacyStateAndRejectsFutureSchema(t *testing.T) {
-	directory := t.TempDir()
+	directory := privateTestDirectory(t)
 	legacyPath := filepath.Join(directory, "legacy.json")
 	if err := os.WriteFile(legacyPath, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -418,7 +418,7 @@ func TestFileStoreMigratesLegacyStateAndRejectsFutureSchema(t *testing.T) {
 }
 
 func TestFileStoreRejectsCrossProjectIdentityCorruptionBeforeCommit(t *testing.T) {
-	s, err := OpenFile(filepath.Join(t.TempDir(), "state.json"))
+	s, err := OpenFile(privateTestPath(t, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,7 +40,11 @@ func TestBrokerInjectsCredentialOutsideGuestAndScrubsResponse(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	st, err := store.OpenFile(filepath.Join(t.TempDir(), "state.json"))
+	stateDirectory := t.TempDir()
+	if err := os.Chmod(stateDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenFile(filepath.Join(stateDirectory, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +108,15 @@ func TestBrokerInjectsCredentialOutsideGuestAndScrubsResponse(t *testing.T) {
 }
 
 func TestLeaseExpiresAndCannotRenewAfterSandboxStops(t *testing.T) {
-	st, _ := store.OpenFile(filepath.Join(t.TempDir(), "state.json"))
+	stateDirectory := t.TempDir()
+	if err := os.Chmod(stateDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenFile(filepath.Join(stateDirectory, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
 	connectorRevision, sandboxID := "connr_test", "sbx_test"
 	_ = st.Update(func(state *store.State) error {
 		state.Connectors[store.ScopedKey("project-a", connectorRevision)] = domain.Connector{RevisionID: connectorRevision, ProjectID: "project-a"}
