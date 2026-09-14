@@ -59,6 +59,19 @@ command -v tar >/dev/null 2>&1 || { echo "tar is required" >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required" >&2; exit 1; }
 docker buildx version >/dev/null 2>&1 || { echo "Docker Buildx is required" >&2; exit 1; }
 
+# Docker's Linux user parser accepts signed 32-bit IDs. Cloud OS Login and
+# directory-backed identities can legitimately allocate larger host IDs, but
+# passing one to --user or Compose fails only after an expensive engine build.
+# Fail before downloading or mutating runtime state and require the operator to
+# use a dedicated, unprivileged service account with representable IDs.
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+if [ "$HOST_UID" -gt 2147483647 ] || [ "$HOST_GID" -gt 2147483647 ]; then
+  echo "The current host identity cannot be represented by Docker (uid=$HOST_UID gid=$HOST_GID)." >&2
+  echo "Run the installer as a dedicated unprivileged service account whose UID and GID are at most 2147483647." >&2
+  exit 1
+fi
+
 check_ufw_guest_network() {
   if [ "${BREZEL_SKIP_UFW_PREFLIGHT:-}" = "true" ] || ! command -v ufw >/dev/null 2>&1; then
     return
