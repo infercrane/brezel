@@ -50,16 +50,20 @@ type Report struct {
 }
 
 type Runner struct {
-	base         *url.URL
-	token        string
-	project      string
-	otherProject string
-	template     string
-	target       string
-	client       *http.Client
-	report       Report
-	sandboxID    string
-	deleted      bool
+	base              *url.URL
+	token             string
+	project           string
+	otherProject      string
+	template          string
+	target            string
+	client            *http.Client
+	report            Report
+	sandboxID         string
+	deleted           bool
+	checkpointID      string
+	checkpointDeleted bool
+	workspaceID       string
+	workspaceDeleted  bool
 }
 
 func New(config Config) (*Runner, error) {
@@ -104,7 +108,7 @@ func New(config Config) (*Runner, error) {
 func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 	r.report = Report{
 		Target:    r.target,
-		Scope:     "control API lifecycle, tenant isolation, filesystem checkpoint, cleanup, and receipt signature",
+		Scope:     "real guest command, file, authenticated HTTP port, and durable workspace paths; pause/resume persistence; tenant isolation; idempotency input binding; checkpoint; cleanup; and receipt signature",
 		StartedAt: time.Now().UTC(), Qualification: "failed",
 	}
 	defer func() {
@@ -114,6 +118,30 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 			started := time.Now()
 			cleanupErr := r.delete(cleanupCtx, "cleanup_after_failure")
 			cleanupStep := Step{Name: "cleanup_after_failure", Status: "passed", DurationMS: time.Since(started).Milliseconds()}
+			if cleanupErr != nil {
+				cleanupStep.Status = "failed"
+				cleanupStep.Detail = cleanupErr.Error()
+			}
+			r.report.Steps = append(r.report.Steps, cleanupStep)
+		}
+		if r.checkpointID != "" && !r.checkpointDeleted {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			started := time.Now()
+			cleanupErr := r.deleteCheckpoint(cleanupCtx, "cleanup_checkpoint_after_failure")
+			cleanupStep := Step{Name: "cleanup_checkpoint_after_failure", Status: "passed", DurationMS: time.Since(started).Milliseconds()}
+			if cleanupErr != nil {
+				cleanupStep.Status = "failed"
+				cleanupStep.Detail = cleanupErr.Error()
+			}
+			r.report.Steps = append(r.report.Steps, cleanupStep)
+		}
+		if r.workspaceID != "" && !r.workspaceDeleted {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			started := time.Now()
+			cleanupErr := r.deleteWorkspace(cleanupCtx, "cleanup_workspace_after_failure")
+			cleanupStep := Step{Name: "cleanup_workspace_after_failure", Status: "passed", DurationMS: time.Since(started).Milliseconds()}
 			if cleanupErr != nil {
 				cleanupStep.Status = "failed"
 				cleanupStep.Detail = cleanupErr.Error()
@@ -132,6 +160,9 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 	if err := r.step(ctx, "capability_disclosure", func() error {
 		var out struct {
 			Qualification string `json:"qualification"`
+			Implemented   struct {
+				DurableWorkspaces bool `json:"durable_workspaces"`
+			} `json:"implemented"`
 		}
 		if err := r.expect(ctx, http.MethodGet, "/v1/capabilities", r.project, "", nil, http.StatusOK, &out); err != nil {
 			return err
@@ -139,7 +170,29 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 		if out.Qualification == "" {
 			return errors.New("capability response omitted qualification state")
 		}
+		if !out.Implemented.DurableWorkspaces {
+			return errors.New("runtime did not disclose durable workspace support")
+		}
 		return nil
+	}); err != nil {
+		return r.report, err
+	}
+
+	if err := r.step(ctx, "create_workspace", func() error {
+		var out mutationEnvelope
+		if err := r.expect(ctx, http.MethodPost, "/v1/workspaces", r.project, randomKey("conformance-workspace"), map[string]any{"name": "conformance-state"}, http.StatusAccepted, &out); err != nil {
+			return err
+		}
+		r.workspaceID = out.Resource.ID
+		if r.workspaceID == "" || out.Resource.State != "ready" {
+			return fmt.Errorf("workspace was not confirmed ready; state=%q", out.Resource.State)
+		}
+		return nil
+	}); err != nil {
+		return r.report, err
+	}
+	if err := r.step(ctx, "cross_project_workspace_denial", func() error {
+		return r.expect(ctx, http.MethodGet, "/v1/workspaces/"+url.PathEscape(r.workspaceID), r.otherProject, "", nil, http.StatusNotFound, nil)
 	}); err != nil {
 		return r.report, err
 	}
@@ -168,7 +221,7 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 	if err := r.step(ctx, "create_environment", func() error {
 		var out mutationEnvelope
 		body := map[string]any{
-			"name": "conformance", "backend": "e2b", "backend_template": r.template,
+			"name": "conformance", "template": r.template,
 			"policy_revision": "conformance-v1",
 		}
 		if err := r.expect(ctx, http.MethodPost, "/v1/environments", r.project, createEnvironmentKey, body, http.StatusCreated, &out); err != nil {
@@ -190,7 +243,8 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 			"standby_after_seconds": 0, "expires_after_seconds": 600,
 			"standby_checkpoint_kind": "full_state", "auto_resume": false,
 		},
-		"network": map[string]any{"allow_internet": false},
+		"network":          map[string]any{"allow_internet": false},
+		"workspace_mounts": []map[string]string{{"workspace_id": r.workspaceID, "path": "/workspace"}},
 	}
 	if err := r.step(ctx, "create_sandbox", func() error {
 		var out mutationEnvelope
@@ -218,10 +272,102 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 	}); err != nil {
 		return r.report, err
 	}
+	if err := r.step(ctx, "idempotency_payload_binding", func() error {
+		changed := map[string]any{
+			"environment_revision": environmentRevision,
+			"lifecycle": map[string]any{
+				"standby_after_seconds": 0, "expires_after_seconds": 601,
+				"standby_checkpoint_kind": "full_state", "auto_resume": false,
+			},
+			"network":          map[string]any{"allow_internet": false},
+			"workspace_mounts": []map[string]string{{"workspace_id": r.workspaceID, "path": "/workspace"}},
+		}
+		return r.expect(ctx, http.MethodPost, "/v1/sandboxes", r.project, createSandboxKey, changed, http.StatusConflict, nil)
+	}); err != nil {
+		return r.report, err
+	}
 
 	if err := r.step(ctx, "cross_project_denial", func() error {
 		return r.expect(ctx, http.MethodGet, "/v1/sandboxes/"+url.PathEscape(r.sandboxID), r.otherProject, "", nil, http.StatusNotFound, nil)
 	}); err != nil {
+		return r.report, err
+	}
+
+	marker := randomKey("guest-state")
+	guestPath := "/workspace/runtime-conformance.txt"
+	if err := r.step(ctx, "guest_file_write_read", func() error {
+		if err := r.writeFile(ctx, r.project, guestPath, []byte(marker), http.StatusOK); err != nil {
+			return err
+		}
+		data, err := r.readFile(ctx, r.project, guestPath, http.StatusOK)
+		if err != nil {
+			return err
+		}
+		if string(data) != marker {
+			return errors.New("guest file read did not match the uploaded bytes")
+		}
+		return nil
+	}); err != nil {
+		return r.report, err
+	}
+	if err := r.step(ctx, "guest_command_stream", func() error {
+		return r.runCommand(ctx, r.project, []string{"/bin/sh", "-lc", "cat /workspace/runtime-conformance.txt"}, marker, http.StatusOK)
+	}); err != nil {
+		return r.report, err
+	}
+	if err := r.step(ctx, "cross_project_guest_denial", func() error {
+		if _, err := r.readFile(ctx, r.otherProject, guestPath, http.StatusNotFound); err != nil {
+			return err
+		}
+		return r.runCommand(ctx, r.otherProject, []string{"/bin/true"}, "", http.StatusNotFound)
+	}); err != nil {
+		return r.report, err
+	}
+	if err := r.step(ctx, "start_preview_server", func() error {
+		serve := []string{"/bin/sh", "-lc", "mkdir -p /tmp/runtime-conformance-web && printf '%s' '" + marker + "' > /tmp/runtime-conformance-web/index.html && busybox httpd -p 8080 -h /tmp/runtime-conformance-web"}
+		return r.runCommand(ctx, r.project, serve, "", http.StatusOK)
+	}); err != nil {
+		return r.report, err
+	}
+	var leasePath string
+	if err := r.step(ctx, "create_port_lease", func() error {
+		var lease struct {
+			Path string `json:"path"`
+		}
+		if err := r.expect(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(r.sandboxID)+"/ports/8080/leases", r.project, "", map[string]any{"ttl_seconds": 60}, http.StatusCreated, &lease); err != nil {
+			return err
+		}
+		if !strings.HasPrefix(lease.Path, "/p/") {
+			return errors.New("port lease omitted an opaque preview path")
+		}
+		leasePath = lease.Path
+		return nil
+	}); err != nil {
+		return r.report, err
+	}
+	requestPreview := func() error {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.base.String()+leasePath, nil)
+		if err != nil {
+			return err
+		}
+		response, err := r.client.Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+		if err != nil {
+			return err
+		}
+		if response.StatusCode != http.StatusOK || string(data) != marker {
+			return fmt.Errorf("authenticated port response=%d body=%q", response.StatusCode, compact(data))
+		}
+		return nil
+	}
+	if err := r.step(ctx, "authenticated_port_first_request", requestPreview); err != nil {
+		return r.report, err
+	}
+	if err := r.step(ctx, "authenticated_port_warm_request", requestPreview); err != nil {
 		return r.report, err
 	}
 	if err := r.step(ctx, "pause", func() error {
@@ -248,6 +394,19 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 	}); err != nil {
 		return r.report, err
 	}
+	if err := r.step(ctx, "workspace_survives_resume", func() error {
+		data, err := r.readFile(ctx, r.project, guestPath, http.StatusOK)
+		if err != nil {
+			return err
+		}
+		if string(data) != marker {
+			return errors.New("guest workspace marker did not survive pause and resume")
+		}
+		return nil
+	}); err != nil {
+		return r.report, err
+	}
+	checkpointKey := randomKey("checkpoint")
 	if err := r.step(ctx, "filesystem_checkpoint", func() error {
 		var out struct {
 			Resource struct {
@@ -256,13 +415,20 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 			} `json:"resource"`
 		}
 		body := map[string]any{"name": "conformance", "kind": "filesystem"}
-		if err := r.expect(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(r.sandboxID)+"/checkpoints", r.project, randomKey("checkpoint"), body, http.StatusAccepted, &out); err != nil {
+		if err := r.expect(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(r.sandboxID)+"/checkpoints", r.project, checkpointKey, body, http.StatusAccepted, &out); err != nil {
 			return err
 		}
 		if out.Resource.ID == "" || out.Resource.Kind != "filesystem" {
 			return errors.New("checkpoint response did not confirm filesystem checkpoint")
 		}
+		r.checkpointID = out.Resource.ID
 		return nil
+	}); err != nil {
+		return r.report, err
+	}
+	if err := r.step(ctx, "checkpoint_idempotency_payload_binding", func() error {
+		body := map[string]any{"name": "changed", "kind": "filesystem"}
+		return r.expect(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(r.sandboxID)+"/checkpoints", r.project, checkpointKey, body, http.StatusConflict, nil)
 	}); err != nil {
 		return r.report, err
 	}
@@ -275,8 +441,8 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 		if err := r.expect(ctx, http.MethodGet, "/v1/sandboxes/"+url.PathEscape(r.sandboxID)+"/events", r.project, "", nil, http.StatusOK, &out); err != nil {
 			return err
 		}
-		if len(out.Events) < 5 {
-			return fmt.Errorf("event log contained %d events, want at least 5", len(out.Events))
+		if len(out.Events) < 9 {
+			return fmt.Errorf("event log contained %d events, want at least 9", len(out.Events))
 		}
 		for index := 1; index < len(out.Events); index++ {
 			if out.Events[index].Sequence <= out.Events[index-1].Sequence {
@@ -313,10 +479,155 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 	}); err != nil {
 		return r.report, err
 	}
+	if err := r.step(ctx, "delete_checkpoint", func() error { return r.deleteCheckpoint(ctx, "delete_checkpoint") }); err != nil {
+		return r.report, err
+	}
 
-	r.report.Qualification = "control_plane_conformant"
+	if err := r.step(ctx, "workspace_survives_sandbox_replacement", func() error {
+		var out mutationEnvelope
+		if err := r.expect(ctx, http.MethodPost, "/v1/sandboxes", r.project, randomKey("conformance-workspace-replacement"), createBody, http.StatusAccepted, &out); err != nil {
+			return err
+		}
+		r.sandboxID, r.deleted = out.Resource.ID, false
+		if r.sandboxID == "" || out.Resource.State != "running" {
+			return fmt.Errorf("replacement sandbox was not confirmed running; state=%q", out.Resource.State)
+		}
+		data, err := r.readFile(ctx, r.project, guestPath, http.StatusOK)
+		if err != nil {
+			return err
+		}
+		if string(data) != marker {
+			return errors.New("durable workspace marker did not survive sandbox replacement")
+		}
+		return nil
+	}); err != nil {
+		return r.report, err
+	}
+	if err := r.step(ctx, "delete_replacement", func() error { return r.delete(ctx, "delete_replacement") }); err != nil {
+		return r.report, err
+	}
+	if err := r.step(ctx, "delete_workspace", func() error { return r.deleteWorkspace(ctx, "delete_workspace") }); err != nil {
+		return r.report, err
+	}
+
+	r.report.Qualification = "sandbox_runtime_conformant"
 	r.report.FinishedAt = time.Now().UTC()
 	return r.report, nil
+}
+
+func (r *Runner) writeFile(ctx context.Context, project, path string, data []byte, wantStatus int) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, r.base.String()+"/v1/sandboxes/"+url.PathEscape(r.sandboxID)+"/files?path="+url.QueryEscape(path), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	r.authorize(request, project, "")
+	request.Header.Set("Content-Type", "application/octet-stream")
+	response, err := r.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
+	if response.StatusCode != wantStatus {
+		return fmt.Errorf("guest file write returned %d, want %d: %s", response.StatusCode, wantStatus, compact(body))
+	}
+	return nil
+}
+
+func (r *Runner) readFile(ctx context.Context, project, path string, wantStatus int) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.base.String()+"/v1/sandboxes/"+url.PathEscape(r.sandboxID)+"/files?path="+url.QueryEscape(path), nil)
+	if err != nil {
+		return nil, err
+	}
+	r.authorize(request, project, "")
+	response, err := r.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxResponseBytes {
+		return nil, errors.New("guest file response exceeded conformance limit")
+	}
+	if response.StatusCode != wantStatus {
+		return nil, fmt.Errorf("guest file read returned %d, want %d: %s", response.StatusCode, wantStatus, compact(body))
+	}
+	return body, nil
+}
+
+func (r *Runner) runCommand(ctx context.Context, project string, argv []string, wantOutput string, wantStatus int) error {
+	body, _ := json.Marshal(map[string]any{"argv": argv, "timeout_seconds": 30})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.base.String()+"/v1/sandboxes/"+url.PathEscape(r.sandboxID)+"/commands", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	r.authorize(request, project, "")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := r.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxResponseBytes {
+		return errors.New("guest command response exceeded conformance limit")
+	}
+	if response.StatusCode != wantStatus {
+		return fmt.Errorf("guest command returned %d, want %d: %s", response.StatusCode, wantStatus, compact(data))
+	}
+	if wantStatus != http.StatusOK {
+		return nil
+	}
+	var started, exited bool
+	var output bytes.Buffer
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var event struct {
+			Type     string `json:"type"`
+			Data     string `json:"data"`
+			ExitCode int32  `json:"exit_code"`
+		}
+		if err := json.Unmarshal(line, &event); err != nil {
+			return fmt.Errorf("decode command event: %w", err)
+		}
+		switch event.Type {
+		case "started":
+			started = true
+		case "stdout":
+			decoded, err := base64.StdEncoding.DecodeString(event.Data)
+			if err != nil {
+				return errors.New("stdout event was not valid base64")
+			}
+			output.Write(decoded)
+		case "exited":
+			if event.ExitCode != 0 {
+				return fmt.Errorf("guest command exit code=%d", event.ExitCode)
+			}
+			exited = true
+		case "error":
+			return errors.New("guest command stream reported an error")
+		}
+	}
+	if !started || !exited || (wantOutput != "" && output.String() != wantOutput) {
+		return fmt.Errorf("guest command stream incomplete or output mismatch: started=%t exited=%t", started, exited)
+	}
+	return nil
+}
+
+func (r *Runner) authorize(request *http.Request, project, idempotency string) {
+	request.Header.Set("Authorization", "Bearer "+r.token)
+	request.Header.Set("X-Project-ID", project)
+	if idempotency != "" {
+		request.Header.Set("Idempotency-Key", idempotency)
+	}
 }
 
 type mutationEnvelope struct {
@@ -327,6 +638,12 @@ type mutationEnvelope struct {
 	} `json:"resource"`
 }
 
+type operationEnvelope struct {
+	Operation struct {
+		State string `json:"state"`
+	} `json:"operation"`
+}
+
 func (r *Runner) delete(ctx context.Context, keyPrefix string) error {
 	var out mutationEnvelope
 	err := r.expect(ctx, http.MethodDelete, "/v1/sandboxes/"+url.PathEscape(r.sandboxID), r.project, randomKey(keyPrefix), nil, http.StatusAccepted, &out)
@@ -335,6 +652,30 @@ func (r *Runner) delete(ctx context.Context, keyPrefix string) error {
 	}
 	if err == nil {
 		r.deleted = true
+	}
+	return err
+}
+
+func (r *Runner) deleteWorkspace(ctx context.Context, keyPrefix string) error {
+	var out mutationEnvelope
+	err := r.expect(ctx, http.MethodDelete, "/v1/workspaces/"+url.PathEscape(r.workspaceID), r.project, randomKey(keyPrefix), nil, http.StatusAccepted, &out)
+	if err == nil && out.Resource.State != "deleted" {
+		err = fmt.Errorf("workspace delete state=%q, want deleted", out.Resource.State)
+	}
+	if err == nil {
+		r.workspaceDeleted = true
+	}
+	return err
+}
+
+func (r *Runner) deleteCheckpoint(ctx context.Context, keyPrefix string) error {
+	var out operationEnvelope
+	err := r.expect(ctx, http.MethodDelete, "/v1/checkpoints/"+url.PathEscape(r.checkpointID), r.project, randomKey(keyPrefix), nil, http.StatusAccepted, &out)
+	if err == nil && out.Operation.State != "succeeded" {
+		err = fmt.Errorf("checkpoint delete operation=%q, want succeeded", out.Operation.State)
+	}
+	if err == nil {
+		r.checkpointDeleted = true
 	}
 	return err
 }
@@ -367,11 +708,7 @@ func (r *Runner) expect(ctx context.Context, method, path, project, idempotency 
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+r.token)
-	request.Header.Set("X-Project-ID", project)
-	if idempotency != "" {
-		request.Header.Set("Idempotency-Key", idempotency)
-	}
+	r.authorize(request, project, idempotency)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

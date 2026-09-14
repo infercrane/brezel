@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "principals": [
+    {
+      "name": "local-operator",
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "projects": [
+        "runtime-default"
+      ]
+    }
+  ]
+}

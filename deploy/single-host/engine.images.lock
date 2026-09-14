@@ -1,0 +1,13 @@
+# Exact linux/amd64 manifests consumed by the pinned single-host engine.
+# Keep tag names for operator readability, but the digest is authoritative.
+architecture=linux/amd64
+RUNTIME_ENGINE_POSTGRES_IMAGE=postgres:18.6-alpine@sha256:63bdc97d67b5133bf0e5ebd500bec6d046fa851dc81340d838f0347e616107e8
+RUNTIME_ENGINE_REDIS_IMAGE=redis:7.4.6@sha256:6a11fed904cf317684ebb75bfe987d4f777c605d6f4e98d1bf3066db6c58f0c1
+RUNTIME_ENGINE_CLICKHOUSE_IMAGE=clickhouse/clickhouse-server:25.8.30.16@sha256:8871a033082990296d3ae3fb0ea9f8ce56bba9d526236bfbb65ded92e8c6b24e
+RUNTIME_ENGINE_VECTOR_IMAGE=timberio/vector:0.51.1-alpine@sha256:e63f87843d1ff0e5ad5e23e8a7c94527373e74b6827b54e701c03a9dd93b9374
+E2B_DB_MIGRATOR_IMAGE=us-docker.pkg.dev/e2b-artifacts/api/db-migrator:v0.14.1@sha256:ee086a150181c8bbe55b99919682f0c25c82c7024aed68080c61fd30257d6720
+E2B_CLIENT_PROXY_IMAGE=us-docker.pkg.dev/e2b-artifacts/client-proxy/client-proxy:v0.2.1@sha256:56474a0c6102adde0a93a46826308e69576cf56647ff79b8ead7996d9fad422a
+E2B_CLICKHOUSE_MIGRATOR_IMAGE=us-docker.pkg.dev/e2b-artifacts/clickhouse-migrator/clickhouse-migrator:v0.4.0@sha256:f91a71a763b283a8521a2ed4a8ff1a0b0e2709f6942168ad4c431612a59bccec
+E2B_TOOLS_IMAGE=us-docker.pkg.dev/e2b-artifacts/embed/tools:v0.3.202609110002-08f7323aaa9@sha256:56391f5a9d01635412878288f40159e2dc54f33b26dfe6ab46c611aecbf4e59c
+E2B_NODE_E2B_IMAGE=us-docker.pkg.dev/e2b-artifacts/embed/node-e2b:v0.3.202609110002-08f7323aaa9@sha256:8f34eb2d37d53ee84e4e368c68e2e29c5bcbccd5d9a609758fd10a47e0c7030e
+E2B_SEED_IMAGE=us-docker.pkg.dev/e2b-artifacts/embed/seed:v0.3.202609110002-08f7323aaa9@sha256:bf07e47556927c1bf4f0c12efe927424f2b9c931fdb061add337627a17fdf184

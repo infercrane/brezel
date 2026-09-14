@@ -34,6 +34,35 @@ const (
 	CheckpointFullState  CheckpointKind = "full_state"
 )
 
+type WorkspaceState string
+
+const (
+	WorkspacePreparing WorkspaceState = "preparing"
+	WorkspaceReady     WorkspaceState = "ready"
+	WorkspaceDeleting  WorkspaceState = "deleting"
+	WorkspaceDeleted   WorkspaceState = "deleted"
+	WorkspaceFailed    WorkspaceState = "failed"
+	WorkspaceUnknown   WorkspaceState = "unknown"
+)
+
+type WorkspaceMount struct {
+	WorkspaceID string `json:"workspace_id"`
+	Path        string `json:"path"`
+}
+
+type Workspace struct {
+	ID            string         `json:"id"`
+	ProjectID     string         `json:"project_id"`
+	Name          string         `json:"name"`
+	BackendID     string         `json:"backend_id,omitempty"`
+	BackendName   string         `json:"backend_name,omitempty"`
+	State         WorkspaceState `json:"state"`
+	CleanupTarget WorkspaceState `json:"cleanup_target,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	Failure       *Failure       `json:"failure,omitempty"`
+}
+
 type Environment struct {
 	RevisionID      string    `json:"revision_id"`
 	ProjectID       string    `json:"project_id"`
@@ -47,6 +76,7 @@ type Environment struct {
 
 type Lifecycle struct {
 	StandbyAfterSeconds int64          `json:"standby_after_seconds,omitempty"`
+	StandbyGraceSeconds int64          `json:"standby_grace_seconds,omitempty"`
 	ExpiresAfterSeconds int64          `json:"expires_after_seconds"`
 	StandbyCheckpoint   CheckpointKind `json:"standby_checkpoint_kind,omitempty"`
 	AutoResume          bool           `json:"auto_resume,omitempty"`
@@ -59,21 +89,25 @@ type NetworkPolicy struct {
 }
 
 type Sandbox struct {
-	ID                  string        `json:"id"`
-	ProjectID           string        `json:"project_id"`
-	EnvironmentRevision string        `json:"environment_revision"`
-	Backend             string        `json:"backend"`
-	BackendID           string        `json:"backend_id,omitempty"`
-	State               SandboxState  `json:"state"`
-	CleanupTarget       SandboxState  `json:"cleanup_target,omitempty"`
-	Lifecycle           Lifecycle     `json:"lifecycle"`
-	Network             NetworkPolicy `json:"network"`
-	ConnectorRevisions  []string      `json:"connector_revisions,omitempty"`
-	CreatedAt           time.Time     `json:"created_at"`
-	UpdatedAt           time.Time     `json:"updated_at"`
-	ExpiresAt           time.Time     `json:"expires_at"`
-	Revision            int64         `json:"revision"`
-	Failure             *Failure      `json:"failure,omitempty"`
+	ID                  string           `json:"id"`
+	ProjectID           string           `json:"project_id"`
+	EnvironmentRevision string           `json:"environment_revision"`
+	SourceCheckpointID  string           `json:"source_checkpoint_id,omitempty"`
+	Backend             string           `json:"backend"`
+	BackendID           string           `json:"backend_id,omitempty"`
+	State               SandboxState     `json:"state"`
+	CleanupTarget       SandboxState     `json:"cleanup_target,omitempty"`
+	Lifecycle           Lifecycle        `json:"lifecycle"`
+	Network             NetworkPolicy    `json:"network"`
+	ConnectorRevisions  []string         `json:"connector_revisions,omitempty"`
+	WorkspaceMounts     []WorkspaceMount `json:"workspace_mounts,omitempty"`
+	CreatedAt           time.Time        `json:"created_at"`
+	UpdatedAt           time.Time        `json:"updated_at"`
+	LastActiveAt        time.Time        `json:"last_active_at,omitempty"`
+	StandbyEligibleAt   time.Time        `json:"standby_eligible_at,omitempty"`
+	ExpiresAt           time.Time        `json:"expires_at"`
+	Revision            int64            `json:"revision"`
+	Failure             *Failure         `json:"failure,omitempty"`
 }
 
 type Failure struct {

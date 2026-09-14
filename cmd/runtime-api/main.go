@@ -8,20 +8,24 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/infercrane/sandbox-runtime-lab/internal/access"
 	"github.com/infercrane/sandbox-runtime-lab/internal/backend/e2b"
 	"github.com/infercrane/sandbox-runtime-lab/internal/connector"
 	"github.com/infercrane/sandbox-runtime-lab/internal/httpapi"
 	"github.com/infercrane/sandbox-runtime-lab/internal/receipt"
 	"github.com/infercrane/sandbox-runtime-lab/internal/service"
 	"github.com/infercrane/sandbox-runtime-lab/internal/store"
+	"github.com/infercrane/sandbox-runtime-lab/internal/telemetry"
 )
 
 func main() {
@@ -61,15 +65,24 @@ func keygen(args []string) error {
 }
 
 func run() error {
-	backendName := env("RUNTIME_BACKEND", "")
-	if backendName != "e2b" {
-		return fmt.Errorf("RUNTIME_BACKEND must be explicitly set to e2b; got %q", backendName)
+	engineToken, err := loadSecretFile(env("RUNTIME_ENGINE_TOKEN_FILE", "./runtime-state/engine.token"))
+	if err != nil {
+		return fmt.Errorf("load microVM engine token: %w", err)
 	}
-	apiKey := os.Getenv("E2B_API_KEY")
-	if apiKey == "" {
-		return errors.New("E2B_API_KEY is required")
+	guestURL := env("RUNTIME_GUEST_URL_TEMPLATE", "http://127.0.0.1:3002")
+	durableWorkspaces, err := parseBoolEnv("RUNTIME_DURABLE_WORKSPACES", false)
+	if err != nil {
+		return err
 	}
-	client, err := e2b.New(env("E2B_API_URL", "https://api.e2b.app"), apiKey, nil)
+	phaseMetrics := telemetry.NewRegistry()
+	client, err := e2b.New(
+		env("RUNTIME_ENGINE_API_URL", "http://127.0.0.1:3000"),
+		engineToken,
+		nil,
+		e2b.WithGuestURLTemplate(guestURL),
+		e2b.WithDurableWorkspaces(durableWorkspaces),
+		e2b.WithPhaseObserver(phaseMetrics),
+	)
 	if err != nil {
 		return err
 	}
@@ -77,6 +90,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	defer state.Close()
 	private, err := loadPrivateKey(os.Getenv("RUNTIME_RECEIPT_PRIVATE_KEY_FILE"))
 	if err != nil {
 		return err
@@ -87,6 +101,11 @@ func run() error {
 	}
 	var serviceOptions []service.Option
 	var apiOptions []httpapi.Option
+	limits, err := loadLimits()
+	if err != nil {
+		return err
+	}
+	serviceOptions = append(serviceOptions, service.WithLimits(limits), service.WithPhaseObserver(phaseMetrics))
 	gatewayURL := os.Getenv("RUNTIME_CONNECTOR_GATEWAY_URL")
 	secretDirectory := os.Getenv("RUNTIME_SECRET_FILE_DIR")
 	if (gatewayURL == "") != (secretDirectory == "") {
@@ -108,7 +127,35 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	token := os.Getenv("RUNTIME_SERVICE_TOKEN")
+	accessPolicyFile := strings.TrimSpace(os.Getenv("RUNTIME_ACCESS_POLICY_FILE"))
+	trustedOperatorMode, err := parseBoolEnv("RUNTIME_TRUSTED_OPERATOR_MODE", false)
+	if err != nil {
+		return err
+	}
+	if accessPolicyFile != "" && trustedOperatorMode {
+		return errors.New("RUNTIME_ACCESS_POLICY_FILE and RUNTIME_TRUSTED_OPERATOR_MODE are mutually exclusive")
+	}
+	var token string
+	if accessPolicyFile != "" {
+		policy, policyErr := access.LoadFile(accessPolicyFile)
+		if policyErr != nil {
+			return fmt.Errorf("load runtime access policy: %w", policyErr)
+		}
+		apiOptions = append(apiOptions, httpapi.WithAuthorizer(policy))
+	} else {
+		if !trustedOperatorMode {
+			return errors.New("RUNTIME_ACCESS_POLICY_FILE is required; set RUNTIME_TRUSTED_OPERATOR_MODE=true only for an isolated development host")
+		}
+		token, err = loadSecretFile(env("RUNTIME_SERVICE_TOKEN_FILE", "./runtime-state/service.token"))
+		if err != nil {
+			return fmt.Errorf("load runtime service token: %w", err)
+		}
+	}
+	maxInFlight, err := parsePositiveIntEnv("RUNTIME_MAX_IN_FLIGHT_REQUESTS", 512)
+	if err != nil {
+		return err
+	}
+	apiOptions = append(apiOptions, httpapi.WithMaxInFlightRequests(maxInFlight), httpapi.WithRequestLogger(log.Default()), httpapi.WithPhaseMetrics(phaseMetrics))
 	api, err := httpapi.New(svc, token, apiOptions...)
 	if err != nil {
 		return err
@@ -126,13 +173,15 @@ func run() error {
 		Handler:           api.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      45 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		// Command and file responses are bounded by handler-level limits and
+		// contexts. A server-wide write deadline would corrupt long streams.
+		WriteTimeout:   0,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 	serveErr := make(chan error, 1)
 	go func() {
-		log.Printf("runtime API listening on %s with backend %s", httpServer.Addr, backendName)
+		log.Printf("runtime API listening on %s with bundled microVM engine", httpServer.Addr)
 		serveErr <- httpServer.ListenAndServe()
 	}()
 	select {
@@ -146,6 +195,89 @@ func run() error {
 		}
 		return err
 	}
+}
+
+func parseBoolEnv(name string, fallback bool) (bool, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean: %w", name, err)
+	}
+	return value, nil
+}
+
+func parsePositiveIntEnv(name string, fallback int) (int, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 1 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return value, nil
+}
+
+func loadLimits() (service.Limits, error) {
+	limits := service.DefaultLimits
+	var err error
+	limits.MaxActiveSandboxesPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_ACTIVE_SANDBOXES_PER_PROJECT", limits.MaxActiveSandboxesPerProject)
+	if err != nil {
+		return limits, err
+	}
+	limits.MaxWorkspacesPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_WORKSPACES_PER_PROJECT", limits.MaxWorkspacesPerProject)
+	if err != nil {
+		return limits, err
+	}
+	limits.MaxConcurrentGuestOpsPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_CONCURRENT_GUEST_OPS_PER_PROJECT", limits.MaxConcurrentGuestOpsPerProject)
+	if err != nil {
+		return limits, err
+	}
+	limits.MaxEnvironmentsPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_ENVIRONMENTS_PER_PROJECT", limits.MaxEnvironmentsPerProject)
+	if err != nil {
+		return limits, err
+	}
+	limits.MaxConnectorsPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_CONNECTORS_PER_PROJECT", limits.MaxConnectorsPerProject)
+	return limits, err
+}
+
+func loadSecretFile(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", errors.New("secret file path is required")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("secret path must be a regular file")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return "", errors.New("secret file permissions must not allow group or other access")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (16<<10)+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > 16<<10 {
+		return "", errors.New("secret file exceeds 16384 bytes")
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "", errors.New("secret file is empty")
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return "", errors.New("secret file contains embedded line breaks")
+	}
+	return value, nil
 }
 
 func reconcileLoop(ctx context.Context, svc *service.Service) {
@@ -169,11 +301,11 @@ func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	if path == "" {
 		return nil, errors.New("RUNTIME_RECEIPT_PRIVATE_KEY_FILE is required")
 	}
-	data, err := os.ReadFile(path)
+	value, err := loadSecretFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read receipt key: %w", err)
 	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
+	raw, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
 		return nil, errors.New("receipt key file must contain base64")
 	}

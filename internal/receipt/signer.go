@@ -39,22 +39,24 @@ type Subject struct {
 }
 
 type Predicate struct {
-	ProjectID           string              `json:"project_id"`
-	SandboxID           string              `json:"sandbox_id"`
-	SandboxRevision     int64               `json:"sandbox_revision"`
-	State               domain.SandboxState `json:"state"`
-	EnvironmentRevision string              `json:"environment_revision"`
-	ImageDigest         string              `json:"image_digest,omitempty"`
-	PolicyRevision      string              `json:"policy_revision,omitempty"`
-	Backend             string              `json:"backend"`
-	BackendIDDigest     string              `json:"backend_id_digest,omitempty"`
-	Lifecycle           domain.Lifecycle    `json:"lifecycle"`
-	NetworkPolicyDigest string              `json:"network_policy_digest"`
-	EventLogDigest      string              `json:"event_log_digest"`
-	InputIdentity       string              `json:"input_identity"`
-	OutputIdentity      string              `json:"output_identity"`
-	CleanupIdentity     string              `json:"cleanup_identity"`
-	Assurance           string              `json:"assurance"`
+	ProjectID             string              `json:"project_id"`
+	SandboxID             string              `json:"sandbox_id"`
+	SandboxRevision       int64               `json:"sandbox_revision"`
+	State                 domain.SandboxState `json:"state"`
+	EnvironmentRevision   string              `json:"environment_revision"`
+	SourceCheckpointID    string              `json:"source_checkpoint_id,omitempty"`
+	ImageDigest           string              `json:"image_digest,omitempty"`
+	PolicyRevision        string              `json:"policy_revision,omitempty"`
+	Backend               string              `json:"backend"`
+	BackendIDDigest       string              `json:"backend_id_digest,omitempty"`
+	Lifecycle             domain.Lifecycle    `json:"lifecycle"`
+	NetworkPolicyDigest   string              `json:"network_policy_digest"`
+	WorkspaceMountsDigest string              `json:"workspace_mounts_digest,omitempty"`
+	EventLogDigest        string              `json:"event_log_digest"`
+	InputIdentity         string              `json:"input_identity"`
+	OutputIdentity        string              `json:"output_identity"`
+	CleanupIdentity       string              `json:"cleanup_identity"`
+	Assurance             string              `json:"assurance"`
 }
 
 type Signer struct {

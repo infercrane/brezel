@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sandbox.runtime.dev/spec/v1alpha1/port-lease.schema.json",
+  "title": "Open Agent Runtime HTTP Port Lease",
+  "description": "A short-lived opaque path for authenticated HTTP access to one sandbox application port.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sandboxId", "port", "ttlSeconds"],
+  "properties": {
+    "sandboxId": {
+      "type": "string",
+      "pattern": "^sbx_[a-f0-9]{32}$"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "not": { "const": 49983 }
+    },
+    "ttlSeconds": {
+      "type": "integer",
+      "minimum": 30,
+      "maximum": 900
+    }
+  }
+}

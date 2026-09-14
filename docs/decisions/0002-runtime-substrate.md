@@ -1,6 +1,6 @@
 # ADR 0002: Use E2B Runtime as the initial microVM substrate
 
-- Status: proposed pending M0 qualification
+- Status: accepted for the single-host preview; deployment qualification pending
 - Date: 2026-09-13
 
 ## Context
@@ -27,6 +27,9 @@ Qualify a pinned E2B Runtime release as the initial substrate.
   available.
 - Do not fork until an ADR documents the blocking gap, upstream outcome,
   compatibility cost, security ownership, and migration plan.
+- Keep its endpoint, credential, and resource names out of the public product
+  contract. The default distribution starts it locally and passes its generated
+  credential through a protected file; no managed E2B account is required.
 
 ## Qualification gates
 

@@ -1,0 +1,41 @@
+name: open-agent-runtime
+
+services:
+  runtime-api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    user: ${RUNTIME_UID:?set RUNTIME_UID}:${RUNTIME_GID:?set RUNTIME_GID}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      RUNTIME_ENGINE_API_URL: http://127.0.0.1:3000
+      RUNTIME_ENGINE_TOKEN_FILE: /run/runtime-secrets/engine.token
+      RUNTIME_GUEST_URL_TEMPLATE: http://127.0.0.1:3002
+      RUNTIME_DURABLE_WORKSPACES: "true"
+      RUNTIME_LISTEN_ADDR: 127.0.0.1:8080
+      RUNTIME_DATA_FILE: /var/lib/runtime/state.json
+      RUNTIME_ACCESS_POLICY_FILE: /run/runtime-secrets/access-policy.json
+      # The API ignores this raw token when a policy is configured; the
+      # conformance binary in the same image reads it for authenticated probes.
+      RUNTIME_SERVICE_TOKEN_FILE: /run/runtime-secrets/service.token
+      RUNTIME_RECEIPT_PRIVATE_KEY_FILE: /run/runtime-secrets/receipt.key
+      RUNTIME_MAX_ACTIVE_SANDBOXES_PER_PROJECT: ${RUNTIME_MAX_ACTIVE_SANDBOXES_PER_PROJECT:-64}
+      RUNTIME_MAX_WORKSPACES_PER_PROJECT: ${RUNTIME_MAX_WORKSPACES_PER_PROJECT:-64}
+      RUNTIME_MAX_CONCURRENT_GUEST_OPS_PER_PROJECT: ${RUNTIME_MAX_CONCURRENT_GUEST_OPS_PER_PROJECT:-128}
+      RUNTIME_MAX_ENVIRONMENTS_PER_PROJECT: ${RUNTIME_MAX_ENVIRONMENTS_PER_PROJECT:-256}
+      RUNTIME_MAX_CONNECTORS_PER_PROJECT: ${RUNTIME_MAX_CONNECTORS_PER_PROJECT:-256}
+      RUNTIME_MAX_IN_FLIGHT_REQUESTS: ${RUNTIME_MAX_IN_FLIGHT_REQUESTS:-512}
+    volumes:
+      - ${RUNTIME_STATE_DIR:?set RUNTIME_STATE_DIR to an absolute protected directory}:/var/lib/runtime
+      - ${RUNTIME_SECRETS_DIR:?set RUNTIME_SECRETS_DIR to an absolute protected directory}:/run/runtime-secrets:ro
+    healthcheck:
+      test: [CMD, wget, -qO-, http://127.0.0.1:8080/readyz]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 5s

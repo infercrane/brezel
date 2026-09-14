@@ -27,3 +27,8 @@ jobs:
         run: |
           go build -trimpath -o bin/runtime-api ./cmd/runtime-api
           go build -trimpath -o bin/runtime-conformance ./cmd/runtime-conformance
+          go build -trimpath -o bin/runtimectl ./cmd/runtimectl
+      - name: Validate release shell entrypoints
+        run: |
+          sh -n deploy/single-host/install.sh
+          sh -n deploy/single-host/qualify.sh

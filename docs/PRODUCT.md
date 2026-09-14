@@ -27,6 +27,51 @@ The open-source opportunity is not a generic code interpreter. It is a cohesive,
 self-hosted agent compute plane that an enterprise can run next to its source,
 data, tools, and open-weight models.
 
+## Product wedge: branchable agent trials
+
+Fast startup is table stakes. The opinionated behavior is a safe branch-and-
+compare loop for agents:
+
+```text
+start from one declared environment and workspace
+  -> run until an explicit safe checkpoint
+  -> fork isolated attempts from exactly that state
+  -> bind each attempt to approved tools, one model route, and hard budgets
+  -> evaluate outcomes without collecting customer content by default
+  -> keep one useful branch or discard every attempt with cleanup evidence
+```
+
+This turns a sandbox from a disposable remote shell into a reproducible agent
+experiment. A coding team can compare models from the same repository and test
+state. An evaluation or RL team can fan out episodes from a clean checkpoint.
+An enterprise can do both beside its private data and open-weight inference
+without putting long-lived model or tool credentials in the guest.
+
+The simplest product sentence is:
+
+> Fork one trusted agent state into controlled trials, keep the useful branch,
+> and verify exactly what ran.
+
+The execution remains real microVM compute. The trial coordinator does not
+replace the sandbox data plane, pretend to evaluate arbitrary work, or become a
+recommendation-only control plane.
+
+### What makes the behavior distinctive
+
+| Behavior | User value | Runtime requirement |
+| --- | --- | --- |
+| Same-state comparison | Alternatives start from the same repository, dependencies, processes, and declared data | Qualified checkpoint and fork semantics with lineage |
+| Model routes as capabilities | Agent code names an approved route but never receives its long-lived credential | Endpoint-bound short-lived lease, separate from general egress |
+| Budgets that terminate work | A runaway attempt cannot silently consume unlimited time, tokens, processes, or network | Enforced wall-clock, compute, model, and connection limits |
+| Evidence-bearing result | Teams can reproduce or reject an attempt without trusting a dashboard claim | Signed environment, checkpoint, policy, route, outcome, and cleanup identities |
+| Useful-state promotion | The chosen filesystem/workspace state can continue; rejected branches are reclaimed | Explicit promotion, retention, deletion, and failed-cleanup states |
+| Private-by-default evaluation | Source, prompts, responses, and terminal streams remain customer content | Content-minimal telemetry and self-hosted data paths |
+
+No single item is an exclusive invention. The wedge is their integration in a
+self-hosted, open runtime with one conformance profile. Startup leaderboards,
+provider adapters, a chat UI, and a long feature checklist are not the product
+moat.
+
 ## Ideal first users
 
 ### AI product team
@@ -174,10 +219,29 @@ systems:
 - **Open substrate:** Firecracker orchestration is inspectable and replaceable.
 - **Provable operations:** lifecycle and policy decisions can be verified after
   the run without storing customer content.
+- **Branch and compare:** trials start from one declared checkpoint, run with
+  different approved model/tool capabilities and budgets, and retain explicit
+  result and cleanup lineage.
 
 Fast resume is necessary, not the moat. The durable position is the integration
 of agent compute, storage, network, inference, and policy in a distribution that
 an enterprise can actually operate.
+
+## Claims ladder
+
+The product message must follow implemented and qualified behavior:
+
+1. **Now:** hardened single-host sandbox lifecycle, workspace, command/file
+   paths, authenticated preview, narrow connector preview, signed lifecycle
+   receipts, and reproducible benchmarks. This is not a hostile shared-
+   multitenant production claim.
+2. **Next:** qualified full-state fork, endpoint-bound private model routes, hard
+   per-attempt budgets, and a durable trial coordinator on one private fleet.
+3. **Then:** same-state model/evaluator matrices, cross-node restore, useful-
+   branch promotion, and enterprise identity/network/storage profiles.
+4. **Later:** managed regions, inference-aware placement, high-scale evaluation
+   and RL rollouts, and confidential-computing profiles where attestation is
+   real.
 
 ## Success metrics
 

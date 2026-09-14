@@ -1,226 +1,141 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sandbox.runtime.dev/spec/v1alpha1/sandbox.schema.json",
-  "title": "Open Agent Runtime Sandbox",
-  "description": "Provisional create contract for one stateful microVM sandbox.",
+  "title": "Create sandbox",
+  "description": "Request body accepted by POST /v1/sandboxes. Exactly one immutable environment revision or filesystem checkpoint is required.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "required": ["lifecycle", "network"],
   "properties": {
-    "apiVersion": { "const": "sandbox.runtime.dev/v1alpha1" },
-    "kind": { "const": "Sandbox" },
-    "metadata": {
+    "environment_revision": {
+      "type": "string",
+      "pattern": "^envr_[a-f0-9]{64}$",
+      "maxLength": 69
+    },
+    "checkpoint_id": {
+      "type": "string",
+      "pattern": "^chk_[a-f0-9]{32}$",
+      "maxLength": 36
+    },
+    "lifecycle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name"],
+      "required": ["expires_after_seconds"],
       "properties": {
-        "name": { "$ref": "#/$defs/name" },
-        "labels": {
-          "type": "object",
-          "additionalProperties": { "type": "string", "maxLength": 128 },
-          "maxProperties": 32
+        "standby_after_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2591999,
+          "default": 0
+        },
+        "standby_grace_seconds": {
+          "description": "Additional inactivity grace before the runtime initiates standby. Zero uses the runtime default when standby is enabled.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 300,
+          "default": 0
+        },
+        "expires_after_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 2592000
+        },
+        "standby_checkpoint_kind": {
+          "enum": ["filesystem", "full_state"],
+          "default": "full_state"
+        },
+        "auto_resume": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "auto_resume": { "const": true } },
+            "required": ["auto_resume"]
+          },
+          "then": {
+            "required": ["standby_after_seconds", "standby_checkpoint_kind"],
+            "properties": {
+              "standby_after_seconds": { "minimum": 1 },
+              "standby_checkpoint_kind": { "const": "full_state" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "standby_grace_seconds": { "minimum": 1 } },
+            "required": ["standby_grace_seconds"]
+          },
+          "then": {
+            "required": ["standby_after_seconds"],
+            "properties": { "standby_after_seconds": { "minimum": 1 } }
+          }
+        }
+      ]
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow_internet"],
+      "properties": {
+        "allow_internet": { "type": "boolean", "default": false },
+        "allow_out": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "deny_out": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "maxItems": 128,
+          "uniqueItems": true
         }
       }
     },
-    "spec": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["resources", "lifecycle", "network"],
-      "properties": {
-        "environmentRevision": {
-          "type": "string",
-          "description": "An immutable resolved environment revision.",
-          "pattern": "^environment://[a-z0-9]([-a-z0-9]*[a-z0-9])?@sha256:[a-f0-9]{64}$",
-          "maxLength": 1024
-        },
-        "image": {
-          "type": "string",
-          "description": "An immutable OCI image shorthand from which the server resolves an environment revision.",
-          "pattern": "^.+@sha256:[a-f0-9]{64}$",
-          "maxLength": 1024
-        },
-        "environment": {
-          "type": "object",
-          "description": "Non-secret configuration only. Use immutable connector revisions for credentialed access.",
-          "propertyNames": { "pattern": "^[A-Z_][A-Z0-9_]*$" },
-          "additionalProperties": { "type": "string", "maxLength": 8192 },
-          "maxProperties": 128
-        },
-        "resources": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["vcpu", "memoryMiB"],
-          "properties": {
-            "vcpu": { "type": "integer", "minimum": 1, "maximum": 64 },
-            "memoryMiB": { "type": "integer", "minimum": 256, "maximum": 262144 },
-            "diskMiB": { "type": "integer", "minimum": 512, "maximum": 1048576 },
-            "pids": { "type": "integer", "minimum": 1, "maximum": 65536 }
-          }
-        },
-        "lifecycle": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["standbyAfterSeconds", "expiresAfterSeconds"],
-          "properties": {
-            "standbyAfterSeconds": {
-              "description": "Zero disables automatic standby.",
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 86400
-            },
-            "standbyCheckpointKind": {
-              "description": "State promise for automatic standby. full_state must fail admission when not qualified.",
-              "enum": ["filesystem", "full_state"],
-              "default": "filesystem"
-            },
-            "autoResume": {
-              "description": "Automatic resume is valid only for qualified full-state standby.",
-              "type": "boolean",
-              "default": false
-            },
-            "expiresAfterSeconds": {
-              "description": "Expiration is independent from activity and standby.",
-              "type": "integer",
-              "minimum": 30,
-              "maximum": 2592000
-            }
+    "connector_revisions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^connr_[a-f0-9]{64}$",
+        "maxLength": 70
+      },
+      "maxItems": 32,
+      "uniqueItems": true
+    },
+    "workspace_mounts": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspace_id", "path"],
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^wrk_[a-f0-9]{32}$",
+            "maxLength": 36
           },
-          "allOf": [
-            {
-              "if": { "properties": { "autoResume": { "const": true } }, "required": ["autoResume"] },
-              "then": {
-                "properties": {
-                  "standbyAfterSeconds": { "minimum": 1 },
-                  "standbyCheckpointKind": { "const": "full_state" }
-                }
-              }
-            }
-          ]
-        },
-        "storage": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "volume": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["name", "mountPath"],
-              "properties": {
-                "name": { "$ref": "#/$defs/name" },
-                "mountPath": { "$ref": "#/$defs/absolutePath" },
-                "readOnly": { "type": "boolean", "default": false }
-              }
-            },
-            "drives": {
-              "type": "array",
-              "maxItems": 8,
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["name", "mountPath"],
-                "properties": {
-                  "name": { "$ref": "#/$defs/name" },
-                  "mountPath": { "$ref": "#/$defs/absolutePath" },
-                  "readOnly": { "type": "boolean", "default": false }
-                }
-              }
-            }
-          }
-        },
-        "network": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["egress"],
-          "properties": {
-            "egress": { "enum": ["deny", "allowlist"] },
-            "allow": {
-              "type": "array",
-              "maxItems": 64,
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["host", "port"],
-                "properties": {
-                  "host": { "type": "string", "format": "hostname", "maxLength": 253 },
-                  "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                  "methods": {
-                    "type": "array",
-                    "items": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] },
-                    "uniqueItems": true
-                  },
-                  "pathPrefixes": {
-                    "type": "array",
-                    "items": { "type": "string", "pattern": "^/", "maxLength": 2048 },
-                    "uniqueItems": true
-                  }
-                }
-              }
-            },
-            "connectors": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "pattern": "^connector://[a-z0-9]([-a-z0-9]*[a-z0-9])?@sha256:[a-f0-9]{64}$",
-                "maxLength": 1024
-              },
-              "uniqueItems": true,
-              "maxItems": 32
-            }
-          },
-          "allOf": [
-            {
-              "if": { "properties": { "egress": { "const": "deny" } } },
-              "then": { "not": { "required": ["allow"] } }
-            },
-            {
-              "if": { "properties": { "egress": { "const": "allowlist" } } },
-              "then": {
-                "required": ["allow"],
-                "properties": { "allow": { "minItems": 1 } }
-              }
-            }
-          ]
-        },
-        "ports": {
-          "type": "array",
-          "maxItems": 16,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["name", "port", "protocol", "access"],
-            "properties": {
-              "name": { "$ref": "#/$defs/name" },
-              "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-              "protocol": { "enum": ["http", "tcp"] },
-              "access": { "enum": ["private", "authenticated-preview"] }
-            }
-          }
-        },
-        "receipt": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean", "default": true },
-            "includeContent": { "const": false }
+          "path": {
+            "type": "string",
+            "description": "A clean absolute path below root. The API also rejects dot segments, duplicate paths, and root itself.",
+            "pattern": "^/[^\\u0000]{1,4095}$",
+            "maxLength": 4096
           }
         }
-      },
-      "oneOf": [
-        { "required": ["environmentRevision"], "not": { "required": ["image"] } },
-        { "required": ["image"], "not": { "required": ["environmentRevision"] } }
-      ]
+      }
     }
   },
-  "$defs": {
-    "name": {
-      "type": "string",
-      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
-      "maxLength": 63
+  "oneOf": [
+    {
+      "required": ["environment_revision"],
+      "not": { "required": ["checkpoint_id"] }
     },
-    "absolutePath": {
-      "type": "string",
-      "pattern": "^/",
-      "maxLength": 4096
+    {
+      "required": ["checkpoint_id"],
+      "not": { "required": ["environment_revision"] }
     }
-  }
+  ]
 }

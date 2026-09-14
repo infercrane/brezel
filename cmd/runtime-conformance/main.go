@@ -6,7 +6,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/infercrane/sandbox-runtime-lab/internal/conformance"
@@ -29,9 +31,9 @@ func run() error {
 	execute := flag.Bool("execute", false, "create and delete real backend resources")
 	flag.Parse()
 
-	token := os.Getenv("RUNTIME_SERVICE_TOKEN")
-	if token == "" {
-		return errors.New("RUNTIME_SERVICE_TOKEN is required; it is intentionally not accepted as a CLI argument")
+	token, err := loadServiceToken()
+	if err != nil {
+		return err
 	}
 	runner, err := conformance.New(conformance.Config{
 		BaseURL: *baseURL, Token: token, ProjectID: *project,
@@ -51,4 +53,43 @@ func run() error {
 		return fmt.Errorf("conformance failed: %w", runErr)
 	}
 	return nil
+}
+
+func loadServiceToken() (string, error) {
+	tokenFile := os.Getenv("RUNTIME_SERVICE_TOKEN_FILE")
+	if tokenFile == "" {
+		return "", errors.New("RUNTIME_SERVICE_TOKEN_FILE is required; the token is intentionally not accepted in argv or environment values")
+	}
+	token, err := readTokenFile(tokenFile)
+	if err != nil {
+		return "", fmt.Errorf("read runtime service token: %w", err)
+	}
+	return token, nil
+}
+
+func readTokenFile(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return "", errors.New("token file must be a private regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (16<<10)+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > 16<<10 {
+		return "", errors.New("token file exceeds 16384 bytes")
+	}
+	token := strings.TrimSpace(string(data))
+	if len(token) < 32 || strings.ContainsAny(token, "\r\n") {
+		return "", errors.New("token file does not contain a valid service token")
+	}
+	return token, nil
 }

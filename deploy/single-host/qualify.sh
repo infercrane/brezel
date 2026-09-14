@@ -1,0 +1,239 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+INSTALL_DIR=${RUNTIME_INSTALL_DIR:-"$REPO_DIR/.runtime"}
+TOKEN_FILE="$INSTALL_DIR/secrets/service.token"
+QUALIFICATION_DIR="$INSTALL_DIR/qualification"
+ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
+ENGINE_ENV="$INSTALL_DIR/engine/embed/compose/.env"
+ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
+
+if [ ! -s "$TOKEN_FILE" ]; then
+  echo "runtime service token is missing; run install.sh first" >&2
+  exit 1
+fi
+
+TARGET=${RUNTIME_CONFORMANCE_TARGET:-"developer-single-host-$(hostname)-$(date -u +%Y%m%dT%H%M%SZ)"}
+case "$TARGET" in
+  ""|*[!A-Za-z0-9._-]*)
+    echo "RUNTIME_CONFORMANCE_TARGET may contain only letters, numbers, dots, underscores, and hyphens" >&2
+    exit 1
+    ;;
+esac
+
+umask 077
+mkdir -p "$QUALIFICATION_DIR"
+chmod 700 "$QUALIFICATION_DIR"
+
+export RUNTIME_STATE_DIR="$INSTALL_DIR/state"
+export RUNTIME_SECRETS_DIR="$INSTALL_DIR/secrets"
+export RUNTIME_UID="$(id -u)"
+export RUNTIME_GID="$(id -g)"
+
+compose() {
+  docker compose -f "$SCRIPT_DIR/compose.yaml" "$@"
+}
+
+engine_compose() {
+  docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" "$@"
+}
+
+cli() {
+  compose exec -T runtime-api \
+    /usr/local/bin/runtimectl \
+      -url http://127.0.0.1:8080 \
+      -token-file /run/runtime-secrets/service.token \
+      -project runtime-conformance "$@"
+}
+
+ACTIVE_SANDBOX_ID=
+ACTIVE_WORKSPACE_ID=
+cleanup_active_recovery() {
+  set +e
+  if [ -n "$ACTIVE_SANDBOX_ID" ]; then
+    cli sandbox delete "$ACTIVE_SANDBOX_ID" >/dev/null 2>&1
+  fi
+  if [ -n "$ACTIVE_WORKSPACE_ID" ]; then
+    cli workspace delete "$ACTIVE_WORKSPACE_ID" >/dev/null 2>&1
+  fi
+}
+trap cleanup_active_recovery EXIT HUP INT TERM
+
+run_conformance() {
+  run_target=$1
+  report_tmp=$(mktemp "$QUALIFICATION_DIR/.report.XXXXXX")
+  if ! compose exec -T runtime-api \
+    /usr/local/bin/runtime-conformance \
+      -base-url http://127.0.0.1:8080 \
+      -backend-template base \
+      -project runtime-conformance \
+      -other-project runtime-conformance-isolation \
+      -target "$run_target" \
+      -timeout 10m \
+      -execute > "$report_tmp"; then
+    rm -f -- "$report_tmp"
+    return 1
+  fi
+  chmod 600 "$report_tmp"
+  if [ -e "$QUALIFICATION_DIR/$run_target.json" ]; then
+    echo "qualification report already exists for $run_target" >&2
+    rm -f -- "$report_tmp"
+    return 1
+  fi
+  mv -- "$report_tmp" "$QUALIFICATION_DIR/$run_target.json"
+}
+
+wait_ready() {
+  attempts=0
+  while [ "$attempts" -lt 60 ]; do
+    if compose exec -T runtime-api wget -qO- http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 2
+  done
+  echo "runtime API did not become ready after restart" >&2
+  return 1
+}
+
+run_active_recovery() {
+  recovery_target=$1
+  report_tmp=$(mktemp "$QUALIFICATION_DIR/.report.XXXXXX")
+  recovery_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  recovery_started_ms=$(date +%s%3N)
+  marker="controller-restart-$recovery_started_ms"
+
+  ACTIVE_WORKSPACE_ID=$(cli workspace create controller-restart-recovery | awk 'NR == 1 {print $1}')
+  if [ -z "$ACTIVE_WORKSPACE_ID" ]; then
+    echo "active restart qualification did not return a workspace ID" >&2
+    return 1
+  fi
+  ACTIVE_SANDBOX_ID=$(cli new --template base --workspace "$ACTIVE_WORKSPACE_ID:/workspace" --ttl 600 | awk 'NR == 1 {print $1}')
+  if [ -z "$ACTIVE_SANDBOX_ID" ]; then
+    echo "active restart qualification did not return a sandbox ID" >&2
+    return 1
+  fi
+  cli exec "$ACTIVE_SANDBOX_ID" /bin/sh -lc 'printf %s "$1" > /workspace/controller-restart.txt' runtime-recovery "$marker"
+
+  compose restart runtime-api >/dev/null
+  wait_ready
+  if ! cli sandbox inspect "$ACTIVE_SANDBOX_ID" | grep -q '"state": "running"'; then
+    echo "active sandbox was not reconciled as running after controller restart" >&2
+    return 1
+  fi
+  observed=$(cli exec "$ACTIVE_SANDBOX_ID" /bin/cat /workspace/controller-restart.txt)
+  if [ "$observed" != "$marker" ]; then
+    echo "active workspace data did not survive controller restart" >&2
+    return 1
+  fi
+
+  cli sandbox delete "$ACTIVE_SANDBOX_ID" >/dev/null
+  ACTIVE_SANDBOX_ID=
+  cli workspace delete "$ACTIVE_WORKSPACE_ID" >/dev/null
+  ACTIVE_WORKSPACE_ID=
+
+  recovery_finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  recovery_duration=$(( $(date +%s%3N) - recovery_started_ms ))
+  printf '%s\n' \
+    "{\"target\":\"$recovery_target\",\"scope\":\"active sandbox identity and durable workspace data across a runtime controller restart\",\"qualification\":\"controller_restart_recovery_conformant\",\"started_at\":\"$recovery_started\",\"finished_at\":\"$recovery_finished\",\"steps\":[{\"name\":\"controller_restart_with_active_sandbox\",\"status\":\"passed\",\"duration_ms\":$recovery_duration}]}" \
+    > "$report_tmp"
+  chmod 600 "$report_tmp"
+  if [ -e "$QUALIFICATION_DIR/$recovery_target.json" ]; then
+    echo "qualification report already exists for $recovery_target" >&2
+    rm -f -- "$report_tmp"
+    return 1
+  fi
+  mv -- "$report_tmp" "$QUALIFICATION_DIR/$recovery_target.json"
+}
+
+resolve_engine_sandbox_id() {
+  product_sandbox_id=$1
+  state_file="$RUNTIME_STATE_DIR/state.json"
+  [ -s "$state_file" ] || {
+    echo "runtime state is unavailable while resolving the engine sandbox ID" >&2
+    return 1
+  }
+  # The state store is compact JSON. Sandbox fields before backend_id contain
+  # no nested object, so this extracts only the record with the exact public ID
+  # without exposing the backend identifier through the public API.
+  engine_sandbox_id=$(sed -n \
+    's/.*"id":"'"$product_sandbox_id"'"[^{}]*"backend_id":"\([^"]*\)".*/\1/p' \
+    "$state_file")
+  case "$engine_sandbox_id" in
+    ""|*[!A-Za-z0-9._-]*)
+      echo "could not resolve a valid engine sandbox ID for the live capability probe" >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$engine_sandbox_id"
+}
+
+run_engine_fast_path_qualification() {
+  fast_path_target=$1
+  if [ -e "$QUALIFICATION_DIR/$fast_path_target.json" ]; then
+    echo "qualification report already exists for $fast_path_target" >&2
+    return 1
+  fi
+  fast_path_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  fast_path_started_ms=$(date +%s%3N)
+
+  ACTIVE_SANDBOX_ID=$(cli new --template base --ttl 600 | awk 'NR == 1 {print $1}')
+  if [ -z "$ACTIVE_SANDBOX_ID" ]; then
+    echo "engine fast-path qualification did not return a sandbox ID" >&2
+    return 1
+  fi
+  cli exec "$ACTIVE_SANDBOX_ID" /bin/true >/dev/null
+  engine_sandbox_id=$(resolve_engine_sandbox_id "$ACTIVE_SANDBOX_ID")
+  min_network_slots=${RUNTIME_MIN_READY_NETWORK_SLOTS:-16}
+
+  if ! capability_json=$(engine_compose exec -T orchestrator \
+    nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" \
+    < "$ENGINE_CAPABILITY_PROBE"); then
+    echo "the installed engine did not satisfy the live fast-path contract" >&2
+    return 1
+  fi
+
+  cli sandbox delete "$ACTIVE_SANDBOX_ID" >/dev/null
+  ACTIVE_SANDBOX_ID=
+
+  fast_path_finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  fast_path_duration=$(( $(date +%s%3N) - fast_path_started_ms ))
+  report_tmp=$(mktemp "$QUALIFICATION_DIR/.report.XXXXXX")
+  printf '%s\n' \
+    "{\"target\":\"$fast_path_target\",\"scope\":\"installed engine snapshot, paging, rootfs, cache, and network fast paths\",\"qualification\":\"engine_fast_path_conformant\",\"started_at\":\"$fast_path_started\",\"finished_at\":\"$fast_path_finished\",\"duration_ms\":$fast_path_duration,\"observed\":$capability_json}" \
+    > "$report_tmp"
+  chmod 600 "$report_tmp"
+  mv -- "$report_tmp" "$QUALIFICATION_DIR/$fast_path_target.json"
+}
+
+run_conformance "$TARGET"
+
+# A valid credential must not be able to manufacture a new tenant identity by
+# changing X-Project-ID. runtimectl reads the token from the protected mount.
+if compose exec -T runtime-api \
+  /usr/local/bin/runtimectl \
+    -url http://127.0.0.1:8080 \
+    -token-file /run/runtime-secrets/service.token \
+    -project runtime-unbound-project \
+    list >/dev/null 2>&1; then
+  echo "project binding qualification failed: unbound project was accepted" >&2
+  exit 1
+fi
+
+# Source inspection proves the pinned implementation contains these fast
+# paths. This live gate proves the installed host is actually using them and
+# that the best-effort upstream template optimizer produced a usable mapping.
+run_engine_fast_path_qualification "$TARGET-engine-fast-path"
+
+# Keep an actual microVM and workspace active while the controller is replaced.
+# This detects reconciliation paths that a clean restart cannot exercise.
+run_active_recovery "$TARGET-active-restart"
+
+# Repeat the destructive suite after recovery to catch lock-release, decode,
+# dependency readiness, idempotency-index, and engine reconnection failures.
+run_conformance "$TARGET-post-restart"
+
+trap - EXIT HUP INT TERM
+echo "Qualification reports: $QUALIFICATION_DIR/$TARGET.json, $QUALIFICATION_DIR/$TARGET-engine-fast-path.json, $QUALIFICATION_DIR/$TARGET-active-restart.json, and $QUALIFICATION_DIR/$TARGET-post-restart.json"

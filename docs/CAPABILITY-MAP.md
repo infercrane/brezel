@@ -58,6 +58,9 @@ resolve signed environment
    and cleanup occurred.
 5. **Self-hosting that feels like a product:** preflight, one-command preview,
    signed mirrors, upgrades, rollback, backup, and air-gap support.
+6. **Branchable agent trials:** begin from one qualified state, bind each branch
+   to explicit model/tool capabilities and budgets, retain the useful result,
+   and prove cleanup for every rejected attempt.
 
 ## Deferred distractions
 

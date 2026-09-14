@@ -18,6 +18,38 @@ Design consequence: the project should be a complete agent compute primitive and
 make private inference proximity first-class. A policy-only wrapper would miss
 the strategic product.
 
+## AWS Lambda MicroVMs and operator feedback
+
+AWS Lambda MicroVMs makes managed Firecracker lifecycle a hyperscaler primitive:
+Dockerfile-derived images are initialized into memory-and-disk snapshots;
+instances receive a dedicated HTTPS endpoint and short-lived authentication;
+idle policy can suspend and transparently resume state; and AWS names sessions,
+jobs, AI sandboxes, and RL environments as direct uses. Its documented eight-
+hour runtime and ARM64-only initial profile are AWS product boundaries, not
+limits of the underlying architecture.
+
+- [AWS launch architecture](https://aws.amazon.com/blogs/aws/run-isolated-sandboxes-with-full-lifecycle-control-aws-lambda-introduces-microvms/)
+- [AWS Lambda MicroVMs guide](https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html)
+
+Design consequence: Firecracker isolation, pre-initialized snapshots, suspend,
+resume, and authenticated routing are necessary capabilities but no longer a
+standalone product wedge. A self-hosted system must offer a stronger developer
+contract above them.
+
+The associated Hacker News discussion is anecdotal operator feedback rather
+than technical evidence. Repeated themes include snapshot/fork, usable SSH or
+VPN access, credentials hidden at the network boundary, GPU and UDP needs, and
+concern that fixed CPU/memory microVM shapes waste capacity under bursty agent
+loads. It also reinforces that teams distinguish a raw compute primitive from a
+complete developer product.
+
+- [Hacker News discussion](https://news.ycombinator.com/item?id=48642510)
+
+Design consequence: measure utilization and idle economics, but do not divert
+the first release into a new elastic hypervisor. Lead with branchable,
+evidence-bearing private agent trials; treat resource elasticity as a later
+scheduler/runtime research profile.
+
 ## Blaxel's public runtime architecture
 
 Blaxel documents an evolution from Kubernetes/Knative, to managed containers, to

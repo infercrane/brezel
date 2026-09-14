@@ -2,8 +2,9 @@
 
 ## Design principles
 
-1. **Use a proven microVM data plane.** Build on the Apache-2.0 E2B Runtime and
-   upstream missing primitives rather than starting with a Firecracker fork.
+1. **Own the runtime, reuse a proven engine.** The product owns the API, data
+   paths, lifecycle, policy, packaging, and conformance while a pinned
+   Apache-2.0 Firecracker engine remains an internal dependency.
 2. **Session state and compute lifetime are different.** An idle sandbox may
    stop consuming CPU while its checkpoint and explicit storage remain.
 3. **One API, honest states.** Active, standby, archived, expired, deleting, and
@@ -44,7 +45,7 @@
         |                           |                           |
 +-------v--------+          +-------v--------+          +-------v--------+
 | worker node A  |          | worker node B  |          | worker node C  |
-| E2B orchestrator|         | E2B orchestrator|         | E2B orchestrator|
+| microVM worker |          | microVM worker |          | microVM worker |
 | Firecracker VMs|          | Firecracker VMs|          | Firecracker VMs|
 | snapshot cache |          | snapshot cache |          | snapshot cache |
 +-------+--------+          +-------+--------+          +-------+--------+
@@ -59,18 +60,19 @@
 +--------------+             +--------------+             +--------------+
 ```
 
-### Upstream E2B Runtime
+### Internal microVM engine
 
-Use E2B's control API, per-node orchestrator, Firecracker virtual machines,
-template builder, guest `envd`, client proxy, snapshot mechanics, and persistent
-volume support. Pin one upstream release or commit per distribution release.
+The first engine implementation uses the open-source E2B Runtime's node
+orchestrator, Firecracker virtual machines, template builder, guest agent,
+client proxy, snapshot mechanics, and persistent volume support. It is fetched
+by an immutable commit during installation and is not a customer-selected API.
 
 Changes that improve generic lifecycle or isolation should be contributed
 upstream first. A maintained patch set is acceptable during incubation. A hard
 fork requires an ADR explaining why compatibility and maintenance cost are
 worth it.
 
-### Project control plane
+### Product runtime service
 
 The project adds the opinionated product surface and missing system behavior:
 
@@ -83,14 +85,29 @@ The project adds the opinionated product surface and missing system behavior:
 - self-host packaging, upgrades, backup, and air-gap support; and
 - conformance and performance qualification.
 
-The facade initially maps to stable E2B APIs. It does not hide E2B states or
-invent success when the substrate reports an unknown condition.
+The service maps its stable contract to the pinned engine protocol. Engine
+states are translated without inventing success when the engine reports an
+unknown condition.
+
+The implemented single-host profile binds hashed bearer credentials to an
+explicit project allowlist, applies positive per-project primitive and live
+operation limits, and runs exactly one controller over an exclusively locked,
+bounded, schema-versioned JSON state file whose project/resource identities are
+validated before open and commit. A process-wide admission limit keeps
+ordinary traffic bounded while health, readiness, and content-free Prometheus
+counters and fixed-dimension phase histograms remain available. Phase labels
+are closed operation, phase, and outcome enums; tenant, resource, path,
+command, and content dimensions are structurally unavailable. Access logs use
+matched route patterns rather than raw paths. This is a hardened local authority, not the
+PostgreSQL/Redis multi-writer design shown above. `/readyz` verifies both that
+state boundary and the authenticated engine health route.
 
 ### Guest API
 
-The E2B guest daemon remains the authority for process, filesystem, terminal,
-and port operations inside a sandbox. The initial SDK should use that surface
-rather than install a second privileged agent.
+The bundled guest agent remains the authority for operations inside a sandbox.
+The product currently exposes streamed commands, bounded file transfer, and
+authenticated HTTP previews through its own API rather than installing a second
+privileged guest agent.
 
 Project metadata is attached outside the guest. If a guest extension becomes
 necessary, it must be unprivileged where possible, versioned independently, and
@@ -155,10 +172,23 @@ checkpoint cannot undo an external effect such as a message, payment, tool call,
 or model request. Restore and fork must not silently duplicate unresolved
 effects.
 
-### Volume
+### Workspace
 
-A durable volume is a single-writer workspace attached to one sandbox at a time.
-Its lifetime is independent from the sandbox and deletion is explicit.
+A durable workspace is a single-writer filesystem whose lifetime is independent
+from any sandbox. The public API uses project-scoped workspace IDs; substrate
+volume IDs, names, and content tokens never leave the runtime service.
+
+The current single-host profile persists a creation or deletion intent before
+calling the pinned engine. A workspace must be `ready` before attachment. The
+service rejects a second attachment while any non-terminal sandbox owns it and
+rejects deletion while attached. Unknown create or cleanup outcomes remain
+`unknown` for reconciliation instead of being reported as success.
+
+The installer enables the engine volume path explicitly, binds its backing
+directory from protected host state, reads its signing key from a protected
+file, and applies a pinned patch that confirms physical data removal before
+deleting engine metadata. This is local-host durability, not replicated storage,
+backup, secure erase, or host-loss recovery.
 
 ### Drive
 
@@ -250,12 +280,21 @@ measurements.
 4. Select a qualified worker with matching architecture, CPU profile, capacity,
    snapshot locality, and region policy.
 5. Persist a creation operation and idempotency key.
-6. Ask the E2B node orchestrator to create or resume the Firecracker VM.
+6. Ask the selected microVM worker to create or resume the Firecracker VM.
 7. Install routing and egress policy before returning a usable endpoint.
 8. Mark `running` only after the guest health check and policy report succeed.
-9. Proxy process, filesystem, terminal, and port requests to `envd`.
+9. Proxy process, filesystem, terminal, and port requests to the authenticated
+   guest agent without exposing its credential.
 10. Refresh activity with bounded leases; activity does not extend expiration
     unless the caller is authorized to do so.
+
+The single-host adapter accepts a persisted engine `running` observation only
+with an authenticated guest-health proof no older than one second. Create and
+resume establish the same short proof. Pause, unknown state, and delete revoke
+it, and the proof cache is process-local, so controller or host restart always
+forces a fresh guest probe. This bounded lease removes duplicate probes from a
+request burst without allowing an engine metadata row to survive a lost VM as
+a false `running` state.
 
 ### Automatic standby and resume
 
@@ -323,8 +362,14 @@ latency, or density limits.
 | logs and terminal output | tenant-scoped object/log store | opt-in retention; never control-plane truth |
 | secret values | Vault/KMS/cloud secret manager | only opaque handles in project databases |
 
-Single-host development may combine services through E2B Embed and local object
-storage, but the API semantics must remain identical.
+The single-host distribution combines the pinned engine, local stores, a
+host-backed workspace directory, and the product runtime API. Clustered profiles
+must preserve the same identity, exclusivity, and confirmed-cleanup semantics.
+The file-backed control store uses keyed sandbox reads and a specialized
+content-free sandbox-event append path to avoid copying unrelated records on
+guest operations. Event append still atomically replaces the complete state
+file and fsyncs both the file and containing directory before publishing the
+event in memory; this optimization does not weaken its durability boundary.
 
 ## Scheduling
 
@@ -346,8 +391,7 @@ unqualified node is not a candidate.
 
 Initial compatibility priorities:
 
-1. E2B SDK semantics for common sandbox operations where the substrate already
-   supports them;
+1. the product's compact sandbox API and CLI;
 2. OpenAI Agents SDK sandbox adapter;
 3. Anthropic self-hosted sandbox adapter;
 4. MCP tools for process and filesystem operations; and
@@ -380,7 +424,7 @@ internal/
   auth/
   admission/
   audit/
-  e2b/
+  backend/
   image/
   job/
   lifecycle/

@@ -2,7 +2,7 @@
 
 ## E2B Runtime
 
-- Reviewed: 2026-09-13
+- Reviewed: 2026-09-14
 - Repository: <https://github.com/e2b-dev/runtime>
 - Commit: `767ceb4b2ec0e598f512767c8da9e5e6618da368`
 - Declared license: Apache-2.0 at repository root
@@ -25,11 +25,40 @@
   Kubernetes manifest described by the repository; and
 - public API fields for per-sandbox network policy and workload identity.
 
-The adapter now requests secured guest access and requires the create, inspect,
-resume, and recovery responses to confirm a non-empty per-sandbox `envd` access
-token. The token is not written into project state. Guest process and file
-proxying remains unavailable until its separate short-lived connection and
-streaming contract is implemented and qualified.
+The internal adapter requests secured guest access and requires create, inspect,
+resume, and recovery responses to confirm a non-empty per-sandbox guest token.
+The token is fetched transiently and never written into project state. Process
+streaming and file transfer use the authenticated guest protocol. Application
+HTTP previews require a distinct traffic token, which is injected only on the
+internal hop and never returned through the product API.
+
+### Resume fast-path audit
+
+The pinned source contains the following mechanisms. These are implementation
+facts, not portable performance claims:
+
+| Mechanism | Pinned implementation | Release evidence |
+| --- | --- | --- |
+| Snapshot restore | `fc/client.go` loads a Firecracker snapshot with a UFFD memory backend, keeps `ResumeVM` false, waits for the UFFD server, then resumes the VM | Installer checks the exact source contract; live qualification requires a running UFFD-backed sandbox |
+| Lazy memory paging | `uffd/uffd.go` receives Firecracker's descriptor and serves page faults from the snapshot memory device | Live qualification requires both the sandbox UFFD socket and an orchestrator-owned `anon_inode:[userfaultfd]` descriptor |
+| Startup prefetch | The template builder always runs the optimize phase, which intersects two startup traces and persists the result in template metadata | Upstream treats collection and upload failures as warnings. The release qualification therefore fails if local metadata has no non-empty memory-prefetch map |
+| Copy-on-write root filesystem | Normal sandbox resume constructs `rootfs.NewNBDProvider` over a per-sandbox `rootfs-<id>-<nonce>.cow` file | Live qualification requires a non-empty COW file for the exact engine sandbox being tested |
+| Local template cache | The single-host profile uses local template storage and the orchestrator cache rooted at `/orchestrator/template` | Live qualification requires a complete local snapshot artifact set and populated local cache metadata |
+| Pooled devices and networking | Embed config pins an NBD pool of 64. The audited network implementation has a 32-slot new pool and 100-slot reused pool | Live qualification requires a configurable minimum of ready `ns-*` namespaces; the release default is 16 so active and transient slots do not make the gate flaky |
+
+The source contract is revision-bound in
+`deploy/single-host/engine-capabilities.sh` and runs after the pinned patch is
+applied, before an image can be built. The same script runs inside the host
+namespaces during `qualify.sh`. A source match cannot substitute for the live
+gate, and the live gate cannot substitute for the latency benchmark.
+
+The release profile intentionally keeps `NETWORK_VERSION=1` and the default
+build-time (`init`) prefetch source. The reviewed tree also contains a version-2
+network path and pause/resume last-cycle prefetch flags, but neither is enabled:
+they need an isolated correctness qualification and measured A/B result first.
+`vm.unprivileged_userfaultfd=1` is not required by this profile because the
+host-namespace orchestrator runs as root; enabling it would broaden host attack
+surface without helping the release path.
 
 ### Important gaps or caveats
 
@@ -44,6 +73,13 @@ streaming contract is implemented and qualified.
 - The reviewed Embed pins E2B-hosted container images and downloads kernel,
   Firecracker, BusyBox, and `envd` artifacts from E2B's public artifact storage.
   A private or air-gapped distribution needs its own verified and signed mirror.
+- The reviewed Embed disables volume-token signing and has no protected-file
+  input for its signing key. The product installer applies a pinned patch that
+  adds a private-file input and refuses group- or world-readable key files.
+- The reviewed volume delete handler removes its database row before deleting
+  data asynchronously. The same pinned patch makes data removal synchronous and
+  preserves the database row on cleanup failure so product reconciliation can
+  retry it.
 - The API constructs a PostHog client and enqueues lifecycle analytics. With no
   API key the reviewed implementation silences client logs, but it does not
   select an explicit no-op implementation. Treat outbound behavior as unproven
@@ -52,12 +88,18 @@ streaming contract is implemented and qualified.
   dependency, image, and trademark review.
 - Public README feature statements are not project conformance results. Every
   lifecycle and security claim still needs a test on the pinned release.
+- The Compose service images are version-tag pinned rather than digest pinned.
+  The artifact fetcher verifies kernel, Firecracker, BusyBox, orchestrator, and
+  `envd` checksums, but a fully reproducible distribution still needs image
+  digest resolution and verification.
 
 ### Immediate recommendation
 
-Use this exact revision only for an M0 evaluation. Do not vendor or fork it yet.
-Build a thin conformance harness against its public API, document the missing
-secret and job paths, and open upstream issues before deciding where code lives.
+Use this exact revision for the single-host evaluation profile. The product
+installer fetches it by immutable commit and fails if the checkout differs. Do
+not fork it yet. Run the product conformance suite on the exact Linux/KVM host,
+document the remaining secret, job, and production-operation gaps, and open
+upstream issues before deciding where new engine code lives.
 The commercialization and private-deployment requirements are recorded in
 [`PRIVACY-COMMERCIALIZATION.md`](PRIVACY-COMMERCIALIZATION.md).
 

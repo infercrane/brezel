@@ -1,0 +1,32 @@
+name: destructive-runtime-qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-runtime-kvm-qualification
+  cancel-in-progress: false
+
+jobs:
+  single-host-kvm:
+    runs-on: [self-hosted, linux, x64, kvm, sandbox-runtime]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect dedicated host
+        run: |
+          go build -trimpath -o bin/runtimectl ./cmd/runtimectl
+          bin/runtimectl doctor
+      - name: Install pinned runtime and run destructive qualification twice
+        run: make qualify-single-host
+      - name: Preserve content-free qualification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-runtime-qualification
+          path: .runtime/qualification/*.json
+          if-no-files-found: warn
+          retention-days: 30

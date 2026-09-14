@@ -1,0 +1,15 @@
+{
+  "environment_revision": "envr_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "lifecycle": {
+    "expires_after_seconds": 3600
+  },
+  "network": {
+    "allow_internet": false
+  },
+  "workspace_mounts": [
+    {
+      "workspace_id": "wrk_0123456789abcdef0123456789abcdef",
+      "path": "/workspace"
+    }
+  ]
+}

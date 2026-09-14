@@ -1,0 +1,395 @@
+package e2b
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	"connectrpc.com/connect"
+
+	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
+	"github.com/infercrane/sandbox-runtime-lab/internal/backend/e2b/wire"
+	"github.com/infercrane/sandbox-runtime-lab/internal/backend/e2b/wire/wireconnect"
+	"github.com/infercrane/sandbox-runtime-lab/internal/telemetry"
+)
+
+const envdPort = 49983
+
+var safeSandboxID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{0,127}$`)
+
+type guestConnection struct {
+	baseURL      *url.URL
+	accessToken  string
+	trafficToken string
+	sandboxID    string
+	port         uint16
+}
+
+// guestCredentialTTL deliberately matches the bounded guest liveness proof.
+// This is an in-process latency optimization, not durable authorization: an
+// API restart, lifecycle mutation, or expiry always forces a fresh engine read.
+const guestCredentialTTL = guestLiveTTL
+
+type guestCredential struct {
+	baseURL      url.URL
+	accessToken  string
+	trafficToken string
+	expiresAt    time.Time
+}
+
+func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRequest, emit func(backend.CommandEvent) error) (resultErr error) {
+	if emit == nil {
+		return errors.New("command event callback is required")
+	}
+	if len(in.Argv) == 0 || strings.TrimSpace(in.Argv[0]) == "" {
+		return errors.New("command argv is required")
+	}
+	connection, err := c.guestConnectionFor(ctx, sandboxID, telemetry.OperationCommand)
+	if err != nil {
+		return err
+	}
+	client := wireconnect.NewProcessClient(c.guestHTTPClient, connection.baseURL.String())
+	stdin := false
+	request := connect.NewRequest(&wire.StartRequest{
+		Process: &wire.ProcessConfig{Cmd: in.Argv[0], Args: in.Argv[1:], Envs: in.Env, Cwd: optionalString(in.Cwd)},
+		Stdin:   &stdin,
+	})
+	connection.setHeaders(request.Header())
+	started := time.Now()
+	stream, err := client.Start(ctx, request)
+	telemetry.Observe(c.observer, telemetry.OperationCommand, telemetry.PhaseGuestProcessStart, started, err)
+	if err != nil {
+		return fmt.Errorf("start guest process: %w", err)
+	}
+	defer stream.Close()
+	processStarted := time.Now()
+	defer func() {
+		telemetry.Observe(c.observer, telemetry.OperationCommand, telemetry.PhaseGuestProcessRun, processStarted, resultErr)
+	}()
+
+	ended := false
+	firstEventStarted := time.Now()
+	firstEventObserved := false
+	defer func() {
+		if !firstEventObserved && c.observer != nil {
+			c.observer.ObservePhase(telemetry.OperationCommand, telemetry.PhaseGuestFirstEvent, telemetry.OutcomeError, time.Since(firstEventStarted))
+		}
+	}()
+	for stream.Receive() {
+		message := stream.Msg()
+		if message == nil || message.GetEvent() == nil {
+			return errors.New("guest process returned an empty event")
+		}
+		if !firstEventObserved {
+			if c.observer != nil {
+				c.observer.ObservePhase(telemetry.OperationCommand, telemetry.PhaseGuestFirstEvent, telemetry.OutcomeSuccess, time.Since(firstEventStarted))
+			}
+			firstEventObserved = true
+		}
+		event := message.GetEvent()
+		var output backend.CommandEvent
+		switch {
+		case event.GetStart() != nil:
+			output = backend.CommandEvent{Type: backend.CommandStarted, PID: event.GetStart().GetPid()}
+		case event.GetData() != nil:
+			data := event.GetData()
+			switch {
+			case len(data.GetStdout()) > 0:
+				output = backend.CommandEvent{Type: backend.CommandStdout, Data: append([]byte(nil), data.GetStdout()...)}
+			case len(data.GetStderr()) > 0:
+				output = backend.CommandEvent{Type: backend.CommandStderr, Data: append([]byte(nil), data.GetStderr()...)}
+			case len(data.GetPty()) > 0:
+				return errors.New("guest returned PTY data for a non-PTY process")
+			default:
+				continue
+			}
+		case event.GetEnd() != nil:
+			end := event.GetEnd()
+			output = backend.CommandEvent{Type: backend.CommandExited, ExitCode: end.GetExitCode(), Exited: end.GetExited(), Status: end.GetStatus(), Error: end.GetError()}
+			ended = true
+		default:
+			continue
+		}
+		if err := emit(output); err != nil {
+			return err
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return fmt.Errorf("guest process stream: %w", err)
+	}
+	if !ended {
+		return errors.New("guest process stream closed without an exit event")
+	}
+	return nil
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func (c *Client) WriteFile(ctx context.Context, sandboxID, path string, source io.Reader) (result backend.FileInfo, resultErr error) {
+	if source == nil {
+		return backend.FileInfo{}, errors.New("file source is required")
+	}
+	connection, err := c.guestConnectionFor(ctx, sandboxID, telemetry.OperationFileWrite)
+	if err != nil {
+		return backend.FileInfo{}, err
+	}
+	u := *connection.baseURL
+	u.Path = "/files"
+	query := u.Query()
+	query.Set("path", path)
+	u.RawQuery = query.Encode()
+	counted := &countingReader{reader: source}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), counted)
+	if err != nil {
+		return backend.FileInfo{}, err
+	}
+	request.Header.Set("Content-Type", "application/octet-stream")
+	connection.setHeaders(request.Header)
+	started := time.Now()
+	defer func() {
+		telemetry.Observe(c.observer, telemetry.OperationFileWrite, telemetry.PhaseGuestTransfer, started, resultErr)
+	}()
+	response, err := c.guestHTTPClient.Do(request)
+	if err != nil {
+		return backend.FileInfo{}, fmt.Errorf("upload guest file: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(response.Body, 32<<10))
+		if response.StatusCode == http.StatusNotFound {
+			return backend.FileInfo{}, backend.ErrNotFound
+		}
+		return backend.FileInfo{}, fmt.Errorf("guest file upload returned %s", response.Status)
+	}
+	io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+	return backend.FileInfo{Path: path, ContentType: "application/octet-stream", Size: counted.size}, nil
+}
+
+func (c *Client) ReadFile(ctx context.Context, sandboxID, path string, destination io.Writer) (result backend.FileInfo, resultErr error) {
+	connection, err := c.guestConnectionFor(ctx, sandboxID, telemetry.OperationFileRead)
+	if err != nil {
+		return backend.FileInfo{}, err
+	}
+	u := *connection.baseURL
+	u.Path = "/files"
+	query := u.Query()
+	query.Set("path", path)
+	u.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return backend.FileInfo{}, err
+	}
+	request.Header.Set("Accept", "application/octet-stream")
+	connection.setHeaders(request.Header)
+	started := time.Now()
+	defer func() {
+		telemetry.Observe(c.observer, telemetry.OperationFileRead, telemetry.PhaseGuestTransfer, started, resultErr)
+	}()
+	response, err := c.guestHTTPClient.Do(request)
+	if err != nil {
+		return backend.FileInfo{}, fmt.Errorf("download guest file: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(response.Body, 32<<10))
+		if response.StatusCode == http.StatusNotFound {
+			return backend.FileInfo{}, backend.ErrNotFound
+		}
+		return backend.FileInfo{}, fmt.Errorf("guest file download returned %s", response.Status)
+	}
+	size, err := io.Copy(destination, response.Body)
+	if err != nil {
+		return backend.FileInfo{}, fmt.Errorf("stream guest file: %w", err)
+	}
+	return backend.FileInfo{Path: path, ContentType: response.Header.Get("Content-Type"), Size: size}, nil
+}
+
+func (c *Client) guestConnection(ctx context.Context, sandboxID string) (guestConnection, error) {
+	return c.guestConnectionFor(ctx, sandboxID, telemetry.OperationCommand)
+}
+
+func (c *Client) guestConnectionFor(ctx context.Context, sandboxID string, operation telemetry.Operation) (result guestConnection, resultErr error) {
+	started := time.Now()
+	if !safeSandboxID.MatchString(sandboxID) {
+		return guestConnection{}, errors.New("invalid backend sandbox id")
+	}
+	if connection, ok := c.cachedGuestConnection(sandboxID); ok {
+		if c.observer != nil {
+			c.observer.ObservePhase(operation, telemetry.PhaseGuestConnection, telemetry.OutcomeHit, time.Since(started))
+		}
+		return connection, nil
+	}
+	defer func() {
+		if c.observer == nil {
+			return
+		}
+		outcome := telemetry.OutcomeMiss
+		if resultErr != nil {
+			outcome = telemetry.OutcomeError
+		}
+		c.observer.ObservePhase(operation, telemetry.PhaseGuestConnection, outcome, time.Since(started))
+	}()
+	var detail sandboxResponse
+	if err := c.do(ctx, http.MethodGet, "/sandboxes/"+url.PathEscape(sandboxID), nil, &detail, http.StatusOK); err != nil {
+		return guestConnection{}, err
+	}
+	if detail.SandboxID != "" && detail.SandboxID != sandboxID {
+		c.forgetGuestState(sandboxID)
+		return guestConnection{}, errors.New("backend returned a mismatched sandbox id")
+	}
+	connection, err := c.guestConnectionFromResponse(sandboxID, detail)
+	if err != nil {
+		c.forgetGuestState(sandboxID)
+		return guestConnection{}, err
+	}
+	c.rememberGuestConnection(connection)
+	return connection, nil
+}
+
+func (c *Client) guestConnectionFromResponse(sandboxID string, detail sandboxResponse) (guestConnection, error) {
+	if !safeSandboxID.MatchString(sandboxID) {
+		return guestConnection{}, errors.New("invalid backend sandbox id")
+	}
+	if detail.SandboxID != "" && detail.SandboxID != sandboxID {
+		return guestConnection{}, errors.New("backend returned a mismatched sandbox id")
+	}
+	if err := requireSecureGuestAccess(detail.EnvdAccessToken); err != nil {
+		return guestConnection{}, err
+	}
+	baseURL, err := c.resolveGuestURL(sandboxID, detail.Domain, envdPort)
+	if err != nil {
+		return guestConnection{}, err
+	}
+	connection := guestConnection{
+		baseURL:     baseURL,
+		accessToken: strings.TrimSpace(*detail.EnvdAccessToken),
+		sandboxID:   sandboxID,
+		port:        envdPort,
+	}
+	if detail.TrafficAccessToken != nil {
+		connection.trafficToken = strings.TrimSpace(*detail.TrafficAccessToken)
+	}
+	return connection, nil
+}
+
+func (c *Client) rememberGuestCredential(detail sandboxResponse) {
+	connection, err := c.guestConnectionFromResponse(detail.SandboxID, detail)
+	if err != nil {
+		return
+	}
+	c.rememberGuestConnection(connection)
+}
+
+func (c *Client) rememberGuestConnection(connection guestConnection) {
+	if !safeSandboxID.MatchString(connection.sandboxID) || connection.baseURL == nil || strings.TrimSpace(connection.accessToken) == "" {
+		return
+	}
+	now := time.Now()
+	c.guestMu.Lock()
+	defer c.guestMu.Unlock()
+	for id, credential := range c.guestCredentials {
+		if !now.Before(credential.expiresAt) {
+			delete(c.guestCredentials, id)
+		}
+	}
+	c.guestCredentials[connection.sandboxID] = guestCredential{
+		baseURL:      *connection.baseURL,
+		accessToken:  connection.accessToken,
+		trafficToken: connection.trafficToken,
+		expiresAt:    now.Add(guestCredentialTTL),
+	}
+}
+
+func (c *Client) cachedGuestConnection(sandboxID string) (guestConnection, bool) {
+	now := time.Now()
+	c.guestMu.Lock()
+	defer c.guestMu.Unlock()
+	credential, ok := c.guestCredentials[sandboxID]
+	if !ok || !now.Before(credential.expiresAt) {
+		delete(c.guestCredentials, sandboxID)
+		return guestConnection{}, false
+	}
+	baseURL := credential.baseURL
+	return guestConnection{
+		baseURL:      &baseURL,
+		accessToken:  credential.accessToken,
+		trafficToken: credential.trafficToken,
+		sandboxID:    sandboxID,
+		port:         envdPort,
+	}, true
+}
+
+func (c *Client) forgetGuestCredential(sandboxID string) {
+	c.guestMu.Lock()
+	delete(c.guestCredentials, sandboxID)
+	c.guestMu.Unlock()
+}
+
+func (c *Client) forgetGuestState(sandboxID string) {
+	c.forgetLive(sandboxID)
+	c.forgetGuestCredential(sandboxID)
+	c.forgetPortCredential(sandboxID)
+}
+
+func (c *Client) resolveGuestURL(sandboxID string, responseDomain *string, port uint16) (*url.URL, error) {
+	if c.guestURLTemplate != "" {
+		value := strings.NewReplacer("{sandbox_id}", sandboxID, "{port}", fmt.Sprint(port)).Replace(c.guestURLTemplate)
+		u, err := url.Parse(value)
+		if err != nil {
+			return nil, errors.New("invalid configured guest URL")
+		}
+		return u, nil
+	}
+	domain := ""
+	if responseDomain != nil {
+		domain = strings.TrimSpace(*responseDomain)
+	}
+	if domain == "" {
+		domain = strings.TrimPrefix(c.baseURL.Hostname(), "api.")
+	}
+	if strings.ContainsAny(domain, "/:@?#[] \r\n\t") || domain == "" {
+		return nil, errors.New("backend returned an invalid sandbox domain")
+	}
+	u, err := url.Parse(fmt.Sprintf("https://%d-%s.%s", port, sandboxID, domain))
+	if err != nil || u.Host == "" {
+		return nil, errors.New("could not construct guest URL")
+	}
+	return u, nil
+}
+
+type countingReader struct {
+	reader io.Reader
+	size   int64
+}
+
+func (r *countingReader) Read(buffer []byte) (int, error) {
+	n, err := r.reader.Read(buffer)
+	r.size += int64(n)
+	return n, err
+}
+
+func (c guestConnection) setHeaders(header http.Header) {
+	header.Set("X-Access-Token", c.accessToken)
+	c.setRoutingHeaders(header)
+}
+
+func (c guestConnection) setRoutingHeaders(header http.Header) {
+	header.Set("E2b-Sandbox-Id", c.sandboxID)
+	header.Set("E2b-Sandbox-Port", fmt.Sprint(c.port))
+	if c.trafficToken != "" {
+		header.Set("E2B-Traffic-Access-Token", c.trafficToken)
+	}
+}
+
+var _ backend.GuestRuntime = (*Client)(nil)

@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: ${RUNTIME_ENGINE_POSTGRES_IMAGE:?set RUNTIME_ENGINE_POSTGRES_IMAGE from engine.images.lock}
+    pull_policy: never
+
+  redis:
+    image: ${RUNTIME_ENGINE_REDIS_IMAGE:?set RUNTIME_ENGINE_REDIS_IMAGE from engine.images.lock}
+    pull_policy: never
+
+  clickhouse:
+    image: ${RUNTIME_ENGINE_CLICKHOUSE_IMAGE:?set RUNTIME_ENGINE_CLICKHOUSE_IMAGE from engine.images.lock}
+    pull_policy: never
+
+  vector:
+    image: ${RUNTIME_ENGINE_VECTOR_IMAGE:?set RUNTIME_ENGINE_VECTOR_IMAGE from engine.images.lock}
+    pull_policy: never
+
+  db-migrator:
+    pull_policy: never
+
+  clickhouse-migrator:
+    pull_policy: never
+
+  seed:
+    pull_policy: never
+
+  preflight:
+    pull_policy: never
+
+  host-setup:
+    pull_policy: never
+
+  fetch-artifacts:
+    pull_policy: never
+    environment:
+      # This remains an external, checksum-verified source by default. An
+      # operator mirror may use HTTPS, or file:///host/<absolute-host-path>
+      # because the upstream fetcher mounts the host root at /host.
+      BUCKET: ${RUNTIME_ENGINE_ARTIFACT_BASE_URL:-https://storage.googleapis.com/e2b-artifact-binaries}
+
+  api-secrets:
+    pull_policy: never
+
+  orchestrator:
+    pull_policy: never
+    environment:
+      # The upstream launcher enters the host mount namespace before starting
+      # the orchestrator. Pass the protected absolute host path rather than a
+      # container mount target. The engine exposes workspace contents only
+      # through its NFS bridge; the path is never mounted directly into a guest
+      # or returned by the product API.
+      PERSISTENT_VOLUME_MOUNTS: runtime-local:${RUNTIME_WORKSPACE_DIR:?set RUNTIME_WORKSPACE_DIR to an absolute protected directory}
+      NODE_LABELS: persistent-volume-type=runtime-local
+
+  api:
+    image: ${RUNTIME_ENGINE_API_IMAGE:?set RUNTIME_ENGINE_API_IMAGE to the locally patched image}
+    pull_policy: never
+    environment:
+      # The pinned engine requires a content-token signer before it will
+      # create a volume, even though the product never returns that token.
+      VOLUME_TOKEN_ENABLED: "true"
+      VOLUME_TOKEN_ISSUER: open-agent-runtime.local
+      VOLUME_TOKEN_SIGNING_METHOD: HS256
+      VOLUME_TOKEN_SIGNING_KEY_FILE: /run/runtime-volume-token/engine-volume-token.key
+      VOLUME_TOKEN_SIGNING_KEY_NAME: local-runtime-v1
+      DEFAULT_PERSISTENT_VOLUME_TYPE: runtime-local
+    volumes:
+      - type: bind
+        source: ${RUNTIME_VOLUME_TOKEN_KEY_FILE:?set RUNTIME_VOLUME_TOKEN_KEY_FILE to a protected file}
+        target: /run/runtime-volume-token/engine-volume-token.key
+        read_only: true
+
+  client-proxy:
+    pull_policy: never
+
+  ready:
+    pull_policy: never
+
+  base-template:
+    pull_policy: never
+
+  smoke:
+    pull_policy: never
+
+  host-teardown:
+    pull_policy: never

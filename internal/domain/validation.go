@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -24,11 +25,11 @@ func ValidateEnvironment(e Environment) error {
 	if !safeName.MatchString(e.Name) {
 		return errors.New("environment name is invalid")
 	}
-	if e.Backend != "e2b" {
+	if e.Backend != "microvm" {
 		return fmt.Errorf("backend %q is unsupported", e.Backend)
 	}
 	if strings.TrimSpace(e.BackendTemplate) == "" {
-		return errors.New("backend_template is required")
+		return errors.New("template is required")
 	}
 	if e.ImageDigest != "" && !strings.HasPrefix(e.ImageDigest, "sha256:") {
 		return errors.New("image_digest must be immutable and start with sha256:")
@@ -43,8 +44,17 @@ func ValidateLifecycle(l Lifecycle) error {
 	if l.StandbyAfterSeconds < 0 {
 		return errors.New("standby_after_seconds cannot be negative")
 	}
+	if l.StandbyGraceSeconds < 0 || l.StandbyGraceSeconds > 300 {
+		return errors.New("standby_grace_seconds must be between 0 and 300")
+	}
+	if l.StandbyAfterSeconds == 0 && l.StandbyGraceSeconds > 0 {
+		return errors.New("standby_grace_seconds requires standby_after_seconds")
+	}
 	if l.StandbyAfterSeconds > 0 && l.StandbyAfterSeconds >= l.ExpiresAfterSeconds {
 		return errors.New("standby_after_seconds must be less than expires_after_seconds")
+	}
+	if l.StandbyAfterSeconds > 0 && l.StandbyAfterSeconds+l.StandbyGraceSeconds >= l.ExpiresAfterSeconds {
+		return errors.New("standby idle and grace periods must finish before expiration")
 	}
 	if l.StandbyAfterSeconds > 0 {
 		if l.StandbyCheckpoint != CheckpointFilesystem && l.StandbyCheckpoint != CheckpointFullState {
@@ -65,6 +75,35 @@ func ValidateNetwork(n NetworkPolicy) error {
 		if strings.TrimSpace(destination) == "" || strings.ContainsAny(destination, "\r\n") {
 			return errors.New("network destinations cannot be empty or contain newlines")
 		}
+	}
+	return nil
+}
+
+func ValidateWorkspaceName(name string) error {
+	if !safeName.MatchString(name) {
+		return errors.New("workspace name is invalid")
+	}
+	return nil
+}
+
+func ValidateWorkspaceMounts(mounts []WorkspaceMount) error {
+	seenWorkspaces := make(map[string]bool, len(mounts))
+	seenPaths := make(map[string]bool, len(mounts))
+	for _, mount := range mounts {
+		if !safeName.MatchString(mount.WorkspaceID) {
+			return errors.New("workspace mount has an invalid workspace id")
+		}
+		if len(mount.Path) > 4096 || !strings.HasPrefix(mount.Path, "/") || mount.Path == "/" || path.Clean(mount.Path) != mount.Path || strings.ContainsRune(mount.Path, '\x00') {
+			return errors.New("workspace mount path must be a clean absolute path below root")
+		}
+		if seenWorkspaces[mount.WorkspaceID] {
+			return errors.New("a workspace can be mounted only once")
+		}
+		if seenPaths[mount.Path] {
+			return errors.New("workspace mount paths must be unique")
+		}
+		seenWorkspaces[mount.WorkspaceID] = true
+		seenPaths[mount.Path] = true
 	}
 	return nil
 }
