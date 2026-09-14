@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
+	"github.com/infercrane/brezel/internal/backend"
+	"github.com/infercrane/brezel/internal/domain"
 )
 
 func TestReadyUsesAuthenticatedEngineHealth(t *testing.T) {
@@ -364,7 +364,7 @@ func TestRejectsBackendThatDoesNotConfirmSecuredGuestAccess(t *testing.T) {
 }
 
 func TestRejectsRemotePlaintextAndRedirects(t *testing.T) {
-	if _, err := New("http://runtime.example.com", "test-key", nil); err == nil {
+	if _, err := New("http://brezel.example.com", "test-key", nil); err == nil {
 		t.Fatal("expected remote plaintext URL to fail")
 	}
 	redirectTarget := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {

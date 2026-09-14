@@ -92,7 +92,7 @@ func (c *apiClient) createEnvironment(ctx context.Context, template, runtimeRevi
 	digest := sha256.Sum256([]byte(c.project + "\x00" + template + "\x00" + runtimeRevision))
 	idempotency := "perfbench-environment-" + hex.EncodeToString(digest[:12])
 	body := map[string]any{
-		"name":            "sandbox-benchmark",
+		"name":            "brezel-benchmark",
 		"template":        template,
 		"policy_revision": "perfbench-v1",
 	}

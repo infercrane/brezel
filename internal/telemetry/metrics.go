@@ -1,4 +1,4 @@
-// Package telemetry provides content-free, low-cardinality runtime metrics.
+// Package telemetry provides content-free, low-cardinality Brezel metrics.
 //
 // Labels are deliberately closed enums. Callers cannot attach project,
 // resource, path, command, or customer-content dimensions to observations.
@@ -136,17 +136,17 @@ func (r *Registry) WritePrometheus(destination io.Writer) error {
 		}
 		return left.outcome < right.outcome
 	})
-	if _, err := io.WriteString(destination, "# HELP runtime_operation_phase_duration_seconds Content-free duration of fixed runtime operation phases.\n# TYPE runtime_operation_phase_duration_seconds histogram\n"); err != nil {
+	if _, err := io.WriteString(destination, "# HELP brezel_operation_phase_duration_seconds Content-free duration of fixed Brezel operation phases.\n# TYPE brezel_operation_phase_duration_seconds histogram\n"); err != nil {
 		return err
 	}
 	for _, current := range samples {
 		labels := fmt.Sprintf("operation=%q,phase=%q,outcome=%q", current.key.operation, current.key.phase, current.key.outcome)
 		for index, upper := range bucketUpperBounds {
-			if _, err := fmt.Fprintf(destination, "runtime_operation_phase_duration_seconds_bucket{%s,le=%q} %d\n", labels, strconv.FormatFloat(upper, 'g', -1, 64), current.buckets[index]); err != nil {
+			if _, err := fmt.Fprintf(destination, "brezel_operation_phase_duration_seconds_bucket{%s,le=%q} %d\n", labels, strconv.FormatFloat(upper, 'g', -1, 64), current.buckets[index]); err != nil {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintf(destination, "runtime_operation_phase_duration_seconds_bucket{%s,le=\"+Inf\"} %d\nruntime_operation_phase_duration_seconds_sum{%s} %s\nruntime_operation_phase_duration_seconds_count{%s} %d\n", labels, current.count, labels, strconv.FormatFloat(current.sum, 'g', -1, 64), labels, current.count); err != nil {
+		if _, err := fmt.Fprintf(destination, "brezel_operation_phase_duration_seconds_bucket{%s,le=\"+Inf\"} %d\nbrezel_operation_phase_duration_seconds_sum{%s} %s\nbrezel_operation_phase_duration_seconds_count{%s} %d\n", labels, current.count, labels, strconv.FormatFloat(current.sum, 'g', -1, 64), labels, current.count); err != nil {
 			return err
 		}
 	}

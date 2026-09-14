@@ -27,8 +27,8 @@ func TestReadTokenFileRequiresPrivateRegularFile(t *testing.T) {
 }
 
 func TestLoadServiceTokenDoesNotReadTokenValueEnvironment(t *testing.T) {
-	t.Setenv("RUNTIME_SERVICE_TOKEN", "0123456789abcdef0123456789abcdef")
-	t.Setenv("RUNTIME_SERVICE_TOKEN_FILE", "")
+	t.Setenv("BREZEL_SERVICE_TOKEN", "0123456789abcdef0123456789abcdef")
+	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", "")
 	_, err := loadServiceToken()
 	if err == nil || !strings.Contains(err.Error(), "TOKEN_FILE") {
 		t.Fatalf("loadServiceToken() error = %v, want protected file requirement", err)

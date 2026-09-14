@@ -14,8 +14,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
-	"github.com/infercrane/sandbox-runtime-lab/internal/receipt"
+	"github.com/infercrane/brezel/internal/domain"
+	"github.com/infercrane/brezel/internal/receipt"
 )
 
 const conformanceToken = "conformance-test-token-that-is-long-enough"
@@ -244,12 +244,12 @@ func TestRunnerCleansUpAfterFailureAndNeverQualifies(t *testing.T) {
 }
 
 func TestNewRequiresExplicitExecutionAndProtectsTokensFromPlaintextRemote(t *testing.T) {
-	base := Config{BaseURL: "https://runtime.example.com", Token: conformanceToken, ProjectID: "project-a", BackendTemplate: "template", Target: "test"}
+	base := Config{BaseURL: "https://brezel.example.com", Token: conformanceToken, ProjectID: "project-a", BackendTemplate: "template", Target: "test"}
 	if _, err := New(base); err == nil {
 		t.Fatal("runner allowed execution without explicit acknowledgement")
 	}
 	base.Execute = true
-	base.BaseURL = "http://runtime.example.com"
+	base.BaseURL = "http://brezel.example.com"
 	if _, err := New(base); err == nil {
 		t.Fatal("runner allowed service token over remote plaintext")
 	}

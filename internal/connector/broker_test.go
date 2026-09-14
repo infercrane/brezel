@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
-	"github.com/infercrane/sandbox-runtime-lab/internal/store"
+	"github.com/infercrane/brezel/internal/domain"
+	"github.com/infercrane/brezel/internal/store"
 )
 
 func TestBrokerInjectsCredentialOutsideGuestAndScrubsResponse(t *testing.T) {

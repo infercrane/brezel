@@ -13,11 +13,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
-	"github.com/infercrane/sandbox-runtime-lab/internal/node"
-	"github.com/infercrane/sandbox-runtime-lab/internal/store"
-	"github.com/infercrane/sandbox-runtime-lab/internal/telemetry"
+	"github.com/infercrane/brezel/internal/backend"
+	"github.com/infercrane/brezel/internal/domain"
+	"github.com/infercrane/brezel/internal/node"
+	"github.com/infercrane/brezel/internal/store"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 const (

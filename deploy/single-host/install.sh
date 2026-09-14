@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-INSTALL_DIR=${RUNTIME_INSTALL_DIR:-"$REPO_DIR/.runtime"}
+INSTALL_DIR=${BREZEL_INSTALL_DIR:-"$REPO_DIR/.brezel"}
 ENGINE_DIR="$INSTALL_DIR/engine"
 STATE_DIR="$INSTALL_DIR/state"
 SECRETS_DIR="$INSTALL_DIR/secrets"
@@ -30,23 +30,23 @@ if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH
   echo "invalid engine.lock" >&2
   exit 1
 fi
-ENGINE_SOURCE_REPOSITORY=${RUNTIME_ENGINE_SOURCE_REPOSITORY:-$ENGINE_REPOSITORY}
+ENGINE_SOURCE_REPOSITORY=${BREZEL_ENGINE_SOURCE_REPOSITORY:-$ENGINE_REPOSITORY}
 case "$ENGINE_SOURCE_REPOSITORY" in
   ""|-*) echo "the engine source repository is invalid" >&2; exit 1 ;;
 esac
-RUNTIME_ENGINE_ARTIFACT_BASE_URL=${RUNTIME_ENGINE_ARTIFACT_BASE_URL:-https://storage.googleapis.com/e2b-artifact-binaries}
-case "$RUNTIME_ENGINE_ARTIFACT_BASE_URL" in
+BREZEL_ENGINE_ARTIFACT_BASE_URL=${BREZEL_ENGINE_ARTIFACT_BASE_URL:-https://storage.googleapis.com/e2b-artifact-binaries}
+case "$BREZEL_ENGINE_ARTIFACT_BASE_URL" in
   https://*|file:///host/*) ;;
   *)
-    echo "RUNTIME_ENGINE_ARTIFACT_BASE_URL must use HTTPS or file:///host/<absolute-host-path>" >&2
+    echo "BREZEL_ENGINE_ARTIFACT_BASE_URL must use HTTPS or file:///host/<absolute-host-path>" >&2
     exit 1
     ;;
 esac
-export RUNTIME_ENGINE_ARTIFACT_BASE_URL
+export BREZEL_ENGINE_ARTIFACT_BASE_URL
 
 if [ "$(uname -s)" != Linux ] || { [ "$(uname -m)" != x86_64 ] && [ "$(uname -m)" != amd64 ]; } || [ ! -c /dev/kvm ] || [ ! -c /dev/net/tun ]; then
   echo "This host cannot run the Firecracker profile." >&2
-  echo "Use x86_64 Linux with KVM and /dev/net/tun, then run runtimectl doctor." >&2
+  echo "Use x86_64 Linux with KVM and /dev/net/tun, then run brezel doctor." >&2
   exit 1
 fi
 command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
@@ -59,7 +59,7 @@ docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required"
 docker buildx version >/dev/null 2>&1 || { echo "Docker Buildx is required" >&2; exit 1; }
 
 check_ufw_guest_network() {
-  if [ "${RUNTIME_SKIP_UFW_PREFLIGHT:-}" = "true" ] || ! command -v ufw >/dev/null 2>&1; then
+  if [ "${BREZEL_SKIP_UFW_PREFLIGHT:-}" = "true" ] || ! command -v ufw >/dev/null 2>&1; then
     return
   fi
 
@@ -76,7 +76,7 @@ check_ufw_guest_network() {
   if ! ufw_status=$(run_ufw status verbose 2>/dev/null); then
     if grep -Eq '^ENABLED=yes$' /etc/ufw/ufw.conf 2>/dev/null; then
       echo "UFW is enabled, but the installer cannot inspect it without non-interactive sudo." >&2
-      echo "Run the two scoped UFW rules in docs/PRODUCTION-READINESS.md, then retry." >&2
+      echo "Grant non-interactive inspection or apply equivalent host-scoped guest rules, then retry." >&2
       exit 1
     fi
     return
@@ -94,7 +94,7 @@ check_ufw_guest_network() {
     echo "Apply these host-scoped rules, then rerun the installer:" >&2
     echo "  sudo ufw allow in from 10.11.0.0/24 to any port 5010:5018 proto tcp comment 'Firecracker guest services'" >&2
     echo "  sudo ufw route allow out on $egress_interface from 10.11.0.0/24 comment 'Firecracker guest egress'" >&2
-    echo "Set RUNTIME_SKIP_UFW_PREFLIGHT=true only after enforcing equivalent nftables rules." >&2
+    echo "Set BREZEL_SKIP_UFW_PREFLIGHT=true only after enforcing equivalent nftables rules." >&2
     exit 1
   fi
 }
@@ -116,17 +116,17 @@ read_image_lock() {
   sed -n "s/^${key}=//p" "$ENGINE_IMAGE_LOCK"
 }
 
-RUNTIME_ENGINE_POSTGRES_IMAGE=$(read_image_lock RUNTIME_ENGINE_POSTGRES_IMAGE)
-RUNTIME_ENGINE_REDIS_IMAGE=$(read_image_lock RUNTIME_ENGINE_REDIS_IMAGE)
-RUNTIME_ENGINE_CLICKHOUSE_IMAGE=$(read_image_lock RUNTIME_ENGINE_CLICKHOUSE_IMAGE)
-RUNTIME_ENGINE_VECTOR_IMAGE=$(read_image_lock RUNTIME_ENGINE_VECTOR_IMAGE)
+BREZEL_ENGINE_POSTGRES_IMAGE=$(read_image_lock BREZEL_ENGINE_POSTGRES_IMAGE)
+BREZEL_ENGINE_REDIS_IMAGE=$(read_image_lock BREZEL_ENGINE_REDIS_IMAGE)
+BREZEL_ENGINE_CLICKHOUSE_IMAGE=$(read_image_lock BREZEL_ENGINE_CLICKHOUSE_IMAGE)
+BREZEL_ENGINE_VECTOR_IMAGE=$(read_image_lock BREZEL_ENGINE_VECTOR_IMAGE)
 E2B_DB_MIGRATOR_IMAGE=$(read_image_lock E2B_DB_MIGRATOR_IMAGE)
 E2B_CLIENT_PROXY_IMAGE=$(read_image_lock E2B_CLIENT_PROXY_IMAGE)
 E2B_CLICKHOUSE_MIGRATOR_IMAGE=$(read_image_lock E2B_CLICKHOUSE_MIGRATOR_IMAGE)
 E2B_TOOLS_IMAGE=$(read_image_lock E2B_TOOLS_IMAGE)
 E2B_NODE_E2B_IMAGE=$(read_image_lock E2B_NODE_E2B_IMAGE)
 E2B_SEED_IMAGE=$(read_image_lock E2B_SEED_IMAGE)
-export RUNTIME_ENGINE_POSTGRES_IMAGE RUNTIME_ENGINE_REDIS_IMAGE RUNTIME_ENGINE_CLICKHOUSE_IMAGE RUNTIME_ENGINE_VECTOR_IMAGE
+export BREZEL_ENGINE_POSTGRES_IMAGE BREZEL_ENGINE_REDIS_IMAGE BREZEL_ENGINE_CLICKHOUSE_IMAGE BREZEL_ENGINE_VECTOR_IMAGE
 export E2B_DB_MIGRATOR_IMAGE E2B_CLIENT_PROXY_IMAGE E2B_CLICKHOUSE_MIGRATOR_IMAGE E2B_TOOLS_IMAGE E2B_NODE_E2B_IMAGE E2B_SEED_IMAGE
 
 umask 077
@@ -142,10 +142,10 @@ if ! grep -Eq '^HMAC:[A-Za-z0-9+/]+={0,2}$' "$SECRETS_DIR/engine-volume-token.ke
   echo "the local volume signing key is malformed; move it aside and rerun the installer" >&2
   exit 1
 fi
-RUNTIME_WORKSPACE_DIR="$WORKSPACE_DIR"
-export RUNTIME_WORKSPACE_DIR
-RUNTIME_VOLUME_TOKEN_KEY_FILE="$SECRETS_DIR/engine-volume-token.key"
-export RUNTIME_VOLUME_TOKEN_KEY_FILE
+BREZEL_WORKSPACE_DIR="$WORKSPACE_DIR"
+export BREZEL_WORKSPACE_DIR
+BREZEL_VOLUME_TOKEN_KEY_FILE="$SECRETS_DIR/engine-volume-token.key"
+export BREZEL_VOLUME_TOKEN_KEY_FILE
 
 if [ ! -d "$ENGINE_DIR/.git" ]; then
   git clone --filter=blob:none --no-checkout "$ENGINE_SOURCE_REPOSITORY" "$ENGINE_DIR"
@@ -166,7 +166,7 @@ fi
 # Pull exact manifests once, or require an operator-preloaded image set. The
 # compose override uses pull_policy: never, so startup cannot silently replace
 # these bytes after this gate.
-"$ARTIFACT_SUPPLY_CHAIN" images "$ENGINE_IMAGE_LOCK" "${RUNTIME_ENGINE_IMAGE_MODE:-pull}"
+"$ARTIFACT_SUPPLY_CHAIN" images "$ENGINE_IMAGE_LOCK" "${BREZEL_ENGINE_IMAGE_MODE:-pull}"
 
 ENGINE_BUILD_DIR=$(mktemp -d "$INSTALL_DIR/engine-build.XXXXXX")
 cleanup_build_dir() {
@@ -184,15 +184,15 @@ if [ -z "$EXPECTED_MIGRATION_TIMESTAMP" ]; then
   echo "could not resolve the pinned engine migration version" >&2
   exit 1
 fi
-RUNTIME_ENGINE_API_IMAGE="open-agent-runtime/engine-api:${ENGINE_COMMIT}-hardening-v1"
+BREZEL_ENGINE_API_IMAGE="brezel/engine-api:${ENGINE_COMMIT}-hardening-v1"
 docker build \
-  -t "$RUNTIME_ENGINE_API_IMAGE" \
+  -t "$BREZEL_ENGINE_API_IMAGE" \
   -f "$ENGINE_BUILD_DIR/packages/api/Dockerfile" \
   --build-arg "COMMIT_SHA=${ENGINE_COMMIT}-hardening-v1" \
   --build-arg "VERSION=${ENGINE_COMMIT}-hardening-v1" \
   --build-arg "EXPECTED_MIGRATION_TIMESTAMP=$EXPECTED_MIGRATION_TIMESTAMP" \
   "$ENGINE_BUILD_DIR/packages"
-export RUNTIME_ENGINE_API_IMAGE
+export BREZEL_ENGINE_API_IMAGE
 
 ENGINE_COMPOSE="$ENGINE_DIR/embed/compose/compose.yaml"
 ENGINE_ENV="$ENGINE_DIR/embed/compose/.env"
@@ -227,26 +227,26 @@ mv -f -- "$TOKEN_TMP" "$SECRETS_DIR/service.token"
 SERVICE_TOKEN_SHA256=$(sha256sum "$SECRETS_DIR/service.token" | awk '{print $1}')
 ACCESS_POLICY_TMP=$(mktemp "$SECRETS_DIR/.access-policy.XXXXXX")
 cat > "$ACCESS_POLICY_TMP" <<EOF
-{"version":1,"principals":[{"name":"single-host-operator","token_sha256":"$SERVICE_TOKEN_SHA256","projects":["runtime-default","runtime-conformance","runtime-conformance-isolation","runtime-benchmark"]}]}
+{"version":1,"principals":[{"name":"single-host-operator","token_sha256":"$SERVICE_TOKEN_SHA256","projects":["brezel-default","brezel-conformance","brezel-conformance-isolation","brezel-benchmark"]}]}
 EOF
 chmod 600 "$ACCESS_POLICY_TMP"
 mv -f -- "$ACCESS_POLICY_TMP" "$SECRETS_DIR/access-policy.json"
 if [ ! -s "$SECRETS_DIR/receipt.key" ]; then
-  RUNTIME_IMAGE=$(docker build -q -f "$REPO_DIR/Dockerfile" "$REPO_DIR")
+  BREZEL_IMAGE=$(docker build -q -f "$REPO_DIR/Dockerfile" "$REPO_DIR")
   docker run --rm \
     --user "$(id -u):$(id -g)" \
     -v "$SECRETS_DIR:/secrets" \
-    --entrypoint /usr/local/bin/runtime-api \
-    "$RUNTIME_IMAGE" \
+    --entrypoint /usr/local/bin/brezeld \
+    "$BREZEL_IMAGE" \
     keygen -out /secrets/receipt.key
 fi
 chmod 600 "$SECRETS_DIR/engine.token" "$SECRETS_DIR/service.token" "$SECRETS_DIR/access-policy.json" "$SECRETS_DIR/receipt.key"
 
-RUNTIME_STATE_DIR="$STATE_DIR" RUNTIME_SECRETS_DIR="$SECRETS_DIR" \
-RUNTIME_UID="$(id -u)" RUNTIME_GID="$(id -g)" \
+BREZEL_STATE_DIR="$STATE_DIR" BREZEL_SECRETS_DIR="$SECRETS_DIR" \
+BREZEL_UID="$(id -u)" BREZEL_GID="$(id -g)" \
   docker compose -f "$SCRIPT_DIR/compose.yaml" up -d --build --wait
 
 "$SCRIPT_DIR/qualify.sh"
 
-echo "Runtime API is listening on http://127.0.0.1:8080"
+echo "Brezel API is listening on http://127.0.0.1:8080"
 echo "Read the local CLI token from $SECRETS_DIR/service.token"

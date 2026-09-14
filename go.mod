@@ -1,4 +1,4 @@
-module github.com/infercrane/sandbox-runtime-lab
+module github.com/infercrane/brezel
 
 go 1.23
 

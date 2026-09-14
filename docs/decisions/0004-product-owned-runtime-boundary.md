@@ -6,7 +6,7 @@
 ## Context
 
 The initial executable required public configuration named `E2B_API_URL`,
-`E2B_API_KEY`, and `RUNTIME_BACKEND=e2b`. That made a replaceable open-source
+`E2B_API_KEY`, and `BREZEL_BACKEND=e2b`. That made a replaceable open-source
 engine look like the product boundary and allowed a managed third-party endpoint
 to become the default. It also asked application developers to select an
 implementation detail.

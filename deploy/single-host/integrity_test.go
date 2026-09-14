@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend/e2b"
+	"github.com/infercrane/brezel/internal/backend/e2b"
 )
 
 func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
@@ -76,8 +76,8 @@ func TestEngineImageLockUsesExactAMD64Manifests(t *testing.T) {
 		t.Fatalf("image lock architecture = %q", values["architecture"])
 	}
 	for _, key := range []string{
-		"RUNTIME_ENGINE_POSTGRES_IMAGE", "RUNTIME_ENGINE_REDIS_IMAGE",
-		"RUNTIME_ENGINE_CLICKHOUSE_IMAGE", "RUNTIME_ENGINE_VECTOR_IMAGE",
+		"BREZEL_ENGINE_POSTGRES_IMAGE", "BREZEL_ENGINE_REDIS_IMAGE",
+		"BREZEL_ENGINE_CLICKHOUSE_IMAGE", "BREZEL_ENGINE_VECTOR_IMAGE",
 		"E2B_DB_MIGRATOR_IMAGE", "E2B_CLIENT_PROXY_IMAGE",
 		"E2B_CLICKHOUSE_MIGRATOR_IMAGE", "E2B_TOOLS_IMAGE",
 		"E2B_NODE_E2B_IMAGE", "E2B_SEED_IMAGE",
@@ -262,10 +262,10 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 	}
 	installer := string(data)
 	for _, required := range []string{
-		"RUNTIME_ENGINE_SOURCE_REPOSITORY",
-		"RUNTIME_ENGINE_ARTIFACT_BASE_URL",
+		"BREZEL_ENGINE_SOURCE_REPOSITORY",
+		"BREZEL_ENGINE_ARTIFACT_BASE_URL",
 		`image-lock "$ENGINE_IMAGE_LOCK"`,
-		`images "$ENGINE_IMAGE_LOCK" "${RUNTIME_ENGINE_IMAGE_MODE:-pull}"`,
+		`images "$ENGINE_IMAGE_LOCK" "${BREZEL_ENGINE_IMAGE_MODE:-pull}"`,
 		`source "$ENGINE_DIR" "$LOCK_FILE"`,
 		`host "$ENGINE_ARTIFACT_LOCK" /`,
 		`manifest "$INSTALL_DIR/distribution.manifest"`,
@@ -281,9 +281,9 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 	}
 	override := string(overrideData)
 	for _, required := range []string{
-		"RUNTIME_ENGINE_POSTGRES_IMAGE", "RUNTIME_ENGINE_REDIS_IMAGE",
-		"RUNTIME_ENGINE_CLICKHOUSE_IMAGE", "RUNTIME_ENGINE_VECTOR_IMAGE",
-		"pull_policy: never", "RUNTIME_ENGINE_ARTIFACT_BASE_URL",
+		"BREZEL_ENGINE_POSTGRES_IMAGE", "BREZEL_ENGINE_REDIS_IMAGE",
+		"BREZEL_ENGINE_CLICKHOUSE_IMAGE", "BREZEL_ENGINE_VECTOR_IMAGE",
+		"pull_policy: never", "BREZEL_ENGINE_ARTIFACT_BASE_URL",
 	} {
 		if !strings.Contains(override, required) {
 			t.Fatalf("engine override is missing locked distribution setting %q", required)
@@ -435,7 +435,7 @@ func TestInstallerDetectsUFWGuestNetworkBoundary(t *testing.T) {
 		"10.11.0.0/24",
 		"5010:5018",
 		"ufw route allow out",
-		"RUNTIME_SKIP_UFW_PREFLIGHT=true",
+		"BREZEL_SKIP_UFW_PREFLIGHT=true",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing UFW boundary instruction %q", required)
@@ -450,11 +450,11 @@ func TestWorkspaceMountUsesHostNamespacePath(t *testing.T) {
 	}
 
 	override := string(data)
-	want := "PERSISTENT_VOLUME_MOUNTS: runtime-local:${RUNTIME_WORKSPACE_DIR:"
+	want := "PERSISTENT_VOLUME_MOUNTS: brezel-local:${BREZEL_WORKSPACE_DIR:"
 	if !strings.Contains(override, want) {
-		t.Fatalf("engine override must pass RUNTIME_WORKSPACE_DIR to the host-namespace orchestrator")
+		t.Fatalf("engine override must pass BREZEL_WORKSPACE_DIR to the host-namespace orchestrator")
 	}
-	if strings.Contains(override, "target: /var/lib/runtime-workspaces") {
+	if strings.Contains(override, "target: /var/lib/brezel-workspaces") {
 		t.Fatalf("engine override contains a container-only workspace mount target")
 	}
 }

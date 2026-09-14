@@ -15,13 +15,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
-	"github.com/infercrane/sandbox-runtime-lab/internal/connector"
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
-	"github.com/infercrane/sandbox-runtime-lab/internal/node"
-	"github.com/infercrane/sandbox-runtime-lab/internal/receipt"
-	"github.com/infercrane/sandbox-runtime-lab/internal/store"
-	"github.com/infercrane/sandbox-runtime-lab/internal/telemetry"
+	"github.com/infercrane/brezel/internal/backend"
+	"github.com/infercrane/brezel/internal/connector"
+	"github.com/infercrane/brezel/internal/domain"
+	"github.com/infercrane/brezel/internal/node"
+	"github.com/infercrane/brezel/internal/receipt"
+	"github.com/infercrane/brezel/internal/store"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 var (
@@ -460,9 +460,9 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 		if leaseErr != nil {
 			return domain.Sandbox{}, domain.Operation{}, fmt.Errorf("%w: issue connector lease", ErrDenied)
 		}
-		backendEnvironment["RUNTIME_CONNECTOR_GATEWAY_URL"] = s.broker.GatewayURL() + "/proxy"
-		backendEnvironment["RUNTIME_CONNECTOR_RENEW_URL"] = s.broker.GatewayURL() + "/leases/renew"
-		backendEnvironment["RUNTIME_CONNECTOR_LEASE"] = lease
+		backendEnvironment["BREZEL_CONNECTOR_GATEWAY_URL"] = s.broker.GatewayURL() + "/proxy"
+		backendEnvironment["BREZEL_CONNECTOR_RENEW_URL"] = s.broker.GatewayURL() + "/leases/renew"
+		backendEnvironment["BREZEL_CONNECTOR_LEASE"] = lease
 	}
 	persistIntentStarted := time.Now()
 	err = s.store.Update(func(state *store.State) error {

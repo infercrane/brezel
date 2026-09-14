@@ -7,27 +7,27 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-INSTALL_DIR=${RUNTIME_INSTALL_DIR:-"$REPO_DIR/.runtime"}
-TOKEN_FILE=${RUNTIME_SERVICE_TOKEN_FILE:-"$INSTALL_DIR/secrets/service.token"}
-BENCH_BINARY=${RUNTIME_BENCH_BINARY:-"$REPO_DIR/bin/sandbox-bench"}
-OUTPUT_ROOT=${RUNTIME_BENCH_OUTPUT_DIR:-"$INSTALL_DIR/benchmarks"}
-TARGET=${RUNTIME_BENCH_TARGET:-}
-RUNTIME_REVISION=${RUNTIME_BENCH_RUNTIME_REVISION:-}
-EVIDENCE_CLASS=${RUNTIME_BENCH_EVIDENCE_CLASS:-single-host-linux-kvm}
-CACHE_STATE=${RUNTIME_BENCH_CACHE_STATE:-cached-template}
-BACKEND_TEMPLATE=${RUNTIME_BENCH_BACKEND_TEMPLATE:-base}
-PROJECT=${RUNTIME_BENCH_PROJECT:-runtime-benchmark}
-SEQUENTIAL_RUNS=${RUNTIME_BENCH_SEQUENTIAL_RUNS:-100}
-STAGGERED_RUNS=${RUNTIME_BENCH_STAGGERED_RUNS:-24}
-BURST_RUNS=${RUNTIME_BENCH_BURST_RUNS:-24}
-STAGGER_INTERVAL=${RUNTIME_BENCH_STAGGER_INTERVAL:-200ms}
-ATTEMPT_TIMEOUT=${RUNTIME_BENCH_ATTEMPT_TIMEOUT:-2m}
-CLEANUP_TIMEOUT=${RUNTIME_BENCH_CLEANUP_TIMEOUT:-2m}
-CASE_TIMEOUT=${RUNTIME_BENCH_CASE_TIMEOUT:-45m}
-COOLDOWN_SECONDS=${RUNTIME_BENCH_COOLDOWN_SECONDS:-15}
-IO_BYTES=${RUNTIME_BENCH_IO_BYTES:-1048576}
-PREVIEW_PORT=${RUNTIME_BENCH_PREVIEW_PORT:-8080}
-BASE_URL=${RUNTIME_BENCH_BASE_URL:-http://127.0.0.1:8080}
+INSTALL_DIR=${BREZEL_INSTALL_DIR:-"$REPO_DIR/.brezel"}
+TOKEN_FILE=${BREZEL_SERVICE_TOKEN_FILE:-"$INSTALL_DIR/secrets/service.token"}
+BENCH_BINARY=${BREZEL_BENCH_BINARY:-"$REPO_DIR/bin/brezel-bench"}
+OUTPUT_ROOT=${BREZEL_BENCH_OUTPUT_DIR:-"$INSTALL_DIR/benchmarks"}
+TARGET=${BREZEL_BENCH_TARGET:-}
+BREZEL_REVISION=${BREZEL_BENCH_RUNTIME_REVISION:-}
+EVIDENCE_CLASS=${BREZEL_BENCH_EVIDENCE_CLASS:-single-host-linux-kvm}
+CACHE_STATE=${BREZEL_BENCH_CACHE_STATE:-cached-template}
+BACKEND_TEMPLATE=${BREZEL_BENCH_BACKEND_TEMPLATE:-base}
+PROJECT=${BREZEL_BENCH_PROJECT:-brezel-benchmark}
+SEQUENTIAL_RUNS=${BREZEL_BENCH_SEQUENTIAL_RUNS:-100}
+STAGGERED_RUNS=${BREZEL_BENCH_STAGGERED_RUNS:-24}
+BURST_RUNS=${BREZEL_BENCH_BURST_RUNS:-24}
+STAGGER_INTERVAL=${BREZEL_BENCH_STAGGER_INTERVAL:-200ms}
+ATTEMPT_TIMEOUT=${BREZEL_BENCH_ATTEMPT_TIMEOUT:-2m}
+CLEANUP_TIMEOUT=${BREZEL_BENCH_CLEANUP_TIMEOUT:-2m}
+CASE_TIMEOUT=${BREZEL_BENCH_CASE_TIMEOUT:-45m}
+COOLDOWN_SECONDS=${BREZEL_BENCH_COOLDOWN_SECONDS:-15}
+IO_BYTES=${BREZEL_BENCH_IO_BYTES:-1048576}
+PREVIEW_PORT=${BREZEL_BENCH_PREVIEW_PORT:-8080}
+BASE_URL=${BREZEL_BENCH_BASE_URL:-http://127.0.0.1:8080}
 BASE_URL=${BASE_URL%/}
 SCENARIOS="tti warm-exec resume filesystem-checkpoint filesystem-restore preview-first-byte preview-warm workspace-io"
 SCENARIO_COUNT=$(printf '%s\n' $SCENARIOS | wc -l | tr -d ' ')
@@ -71,8 +71,8 @@ validate_bounded_integer() {
   [ "$value" -le "$maximum" ] || fail "$name cannot exceed $maximum"
 }
 
-if [ "${RUNTIME_BENCH_EXECUTE:-}" != true ]; then
-  fail "set RUNTIME_BENCH_EXECUTE=true to acknowledge that this matrix creates and deletes real microVMs"
+if [ "${BREZEL_BENCH_EXECUTE:-}" != true ]; then
+  fail "set BREZEL_BENCH_EXECUTE=true to acknowledge that this matrix creates and deletes real microVMs"
 fi
 
 [ "$(uname -s)" = Linux ] || fail "single-host benchmark requires Linux"
@@ -86,38 +86,38 @@ esac
 for command_name in awk curl cut date find findmnt git head jq lscpu paste sed sha256sum sort stat tr uname wc xargs; do
   require_command "$command_name"
 done
-[ -x "$BENCH_BINARY" ] || fail "sandbox-bench binary is missing or not executable: $BENCH_BINARY"
+[ -x "$BENCH_BINARY" ] || fail "brezel-bench binary is missing or not executable: $BENCH_BINARY"
 [ -f "$TOKEN_FILE" ] || fail "runtime service token is missing: $TOKEN_FILE"
 [ "$(stat -c '%a' "$TOKEN_FILE")" = 600 ] || fail "runtime service token must have mode 0600"
 
-validate_identity "$TARGET" RUNTIME_BENCH_TARGET
-validate_identity "$PROJECT" RUNTIME_BENCH_PROJECT
-validate_identity "$BACKEND_TEMPLATE" RUNTIME_BENCH_BACKEND_TEMPLATE
-validate_positive_integer "$SEQUENTIAL_RUNS" RUNTIME_BENCH_SEQUENTIAL_RUNS
-validate_positive_integer "$STAGGERED_RUNS" RUNTIME_BENCH_STAGGERED_RUNS
-validate_positive_integer "$BURST_RUNS" RUNTIME_BENCH_BURST_RUNS
-validate_positive_integer "$COOLDOWN_SECONDS" RUNTIME_BENCH_COOLDOWN_SECONDS
-validate_bounded_integer "$IO_BYTES" RUNTIME_BENCH_IO_BYTES 33554432
-validate_bounded_integer "$PREVIEW_PORT" RUNTIME_BENCH_PREVIEW_PORT 65535
+validate_identity "$TARGET" BREZEL_BENCH_TARGET
+validate_identity "$PROJECT" BREZEL_BENCH_PROJECT
+validate_identity "$BACKEND_TEMPLATE" BREZEL_BENCH_BACKEND_TEMPLATE
+validate_positive_integer "$SEQUENTIAL_RUNS" BREZEL_BENCH_SEQUENTIAL_RUNS
+validate_positive_integer "$STAGGERED_RUNS" BREZEL_BENCH_STAGGERED_RUNS
+validate_positive_integer "$BURST_RUNS" BREZEL_BENCH_BURST_RUNS
+validate_positive_integer "$COOLDOWN_SECONDS" BREZEL_BENCH_COOLDOWN_SECONDS
+validate_bounded_integer "$IO_BYTES" BREZEL_BENCH_IO_BYTES 33554432
+validate_bounded_integer "$PREVIEW_PORT" BREZEL_BENCH_PREVIEW_PORT 65535
 
-[ "$EVIDENCE_CLASS" = single-host-linux-kvm ] || fail "single-host runner requires RUNTIME_BENCH_EVIDENCE_CLASS=single-host-linux-kvm"
+[ "$EVIDENCE_CLASS" = single-host-linux-kvm ] || fail "single-host runner requires BREZEL_BENCH_EVIDENCE_CLASS=single-host-linux-kvm"
 case "$CACHE_STATE" in
   cold|cached-template|warm-pool|unknown) ;;
-  *) fail "unsupported RUNTIME_BENCH_CACHE_STATE: $CACHE_STATE" ;;
+  *) fail "unsupported BREZEL_BENCH_CACHE_STATE: $CACHE_STATE" ;;
 esac
 case "$BASE_URL" in
   http://127.0.0.1:*|https://127.0.0.1:*|http://localhost:*|https://localhost:*|http://\[::1\]:*|https://\[::1\]:*) ;;
   *) fail "single-host benchmark API must use an explicit loopback URL with a port" ;;
 esac
 
-if [ -z "$RUNTIME_REVISION" ]; then
-  RUNTIME_REVISION=$(git -C "$REPO_DIR" rev-parse HEAD)
+if [ -z "$BREZEL_REVISION" ]; then
+  BREZEL_REVISION=$(git -C "$REPO_DIR" rev-parse HEAD)
 fi
-case "$RUNTIME_REVISION" in
-  ""|*[!A-Za-z0-9._+-]*) fail "RUNTIME_BENCH_RUNTIME_REVISION contains unsupported characters" ;;
+case "$BREZEL_REVISION" in
+  ""|*[!A-Za-z0-9._+-]*) fail "BREZEL_BENCH_RUNTIME_REVISION contains unsupported characters" ;;
 esac
-if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ] && [ "${RUNTIME_BENCH_ALLOW_DIRTY:-}" != true ]; then
-  fail "repository has tracked or untracked changes; commit them or set RUNTIME_BENCH_ALLOW_DIRTY=true for non-publishable development evidence"
+if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ] && [ "${BREZEL_BENCH_ALLOW_DIRTY:-}" != true ]; then
+  fail "repository has tracked or untracked changes; commit them or set BREZEL_BENCH_ALLOW_DIRTY=true for non-publishable development evidence"
 fi
 
 if ! curl --fail --silent --show-error --max-time 5 "$BASE_URL/readyz" >/dev/null; then
@@ -156,7 +156,7 @@ capture_host() {
     docker_server_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null || printf unavailable)
     docker_storage_driver=$(docker info --format '{{.Driver}}' 2>/dev/null || printf unavailable)
     docker_cgroup_version=$(docker info --format '{{.CgroupVersion}}' 2>/dev/null || printf unavailable)
-    runtime_container=$(docker compose -f "$SCRIPT_DIR/compose.yaml" ps -q runtime-api 2>/dev/null || true)
+    runtime_container=$(docker compose -f "$SCRIPT_DIR/compose.yaml" ps -q brezeld 2>/dev/null || true)
     if [ -n "$runtime_container" ]; then
       runtime_image_id=$(docker inspect --format '{{.Image}}' "$runtime_container" 2>/dev/null || printf unavailable)
     fi
@@ -239,12 +239,12 @@ for scenario in $SCENARIOS; do
     stderr_file="$run_dir/stderr/$key.log"
     echo "Running $key ($runs attempts, max in flight $max_in_flight)" >&2
     set +e
-    RUNTIME_SERVICE_TOKEN_FILE="$TOKEN_FILE" "$BENCH_BINARY" \
+    BREZEL_SERVICE_TOKEN_FILE="$TOKEN_FILE" "$BENCH_BINARY" \
       -base-url "$BASE_URL" \
       -project "$PROJECT" \
       -backend-template "$BACKEND_TEMPLATE" \
       -target "$TARGET" \
-      -runtime-revision "$RUNTIME_REVISION" \
+      -runtime-revision "$BREZEL_REVISION" \
       -evidence-class "$EVIDENCE_CLASS" \
       -cache-state "$CACHE_STATE" \
       -scenario "$scenario" \
@@ -266,7 +266,7 @@ for scenario in $SCENARIOS; do
       --arg scenario "$scenario" \
       --arg mode "$mode" \
       --arg target "$TARGET" \
-      --arg revision "$RUNTIME_REVISION" \
+      --arg revision "$BREZEL_REVISION" \
       --argjson runs "$runs" \
       --argjson max_in_flight "$max_in_flight" \
       --argjson io_bytes "$IO_BYTES" \
@@ -325,7 +325,7 @@ jq -s \
   --arg started_at "$started_at" \
   --arg finished_at "$finished_at" \
   --arg target "$TARGET" \
-  --arg runtime_revision "$RUNTIME_REVISION" \
+  --arg runtime_revision "$BREZEL_REVISION" \
   --arg evidence_class "$EVIDENCE_CLASS" \
   --arg cache_state "$CACHE_STATE" \
   --arg backend_template "$BACKEND_TEMPLATE" \

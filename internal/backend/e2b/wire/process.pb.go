@@ -590,7 +590,7 @@ const file_internal_backend_e2b_wire_process_proto_rawDesc = "" +
 	"\rStartResponse\x12+\n" +
 	"\x05event\x18\x01 \x01(\v2\x15.process.ProcessEventR\x05event2C\n" +
 	"\aProcess\x128\n" +
-	"\x05Start\x12\x15.process.StartRequest\x1a\x16.process.StartResponse0\x01BJZHgithub.com/infercrane/sandbox-runtime-lab/internal/backend/e2b/wire;wireb\x06proto3"
+	"\x05Start\x12\x15.process.StartRequest\x1a\x16.process.StartResponse0\x01B=Z;github.com/infercrane/brezel/internal/backend/e2b/wire;wireb\x06proto3"
 
 var (
 	file_internal_backend_e2b_wire_process_proto_rawDescOnce sync.Once

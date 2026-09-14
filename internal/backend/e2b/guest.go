@@ -13,10 +13,10 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend/e2b/wire"
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend/e2b/wire/wireconnect"
-	"github.com/infercrane/sandbox-runtime-lab/internal/telemetry"
+	"github.com/infercrane/brezel/internal/backend"
+	"github.com/infercrane/brezel/internal/backend/e2b/wire"
+	"github.com/infercrane/brezel/internal/backend/e2b/wire/wireconnect"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 const envdPort = 49983

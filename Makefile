@@ -2,11 +2,10 @@
 
 build:
 	mkdir -p bin
-	go build -trimpath -o bin/runtime-api ./cmd/runtime-api
-	go build -trimpath -o bin/runtime-conformance ./cmd/runtime-conformance
-	go build -trimpath -o bin/runtime-benchmark ./cmd/runtime-benchmark
-	go build -trimpath -o bin/sandbox-bench ./cmd/sandbox-bench
-	go build -trimpath -o bin/runtimectl ./cmd/runtimectl
+	go build -trimpath -o bin/brezeld ./cmd/brezeld
+	go build -trimpath -o bin/brezel-conformance ./cmd/brezel-conformance
+	go build -trimpath -o bin/brezel-bench ./cmd/brezel-bench
+	go build -trimpath -o bin/brezel ./cmd/brezel
 
 test:
 	go test ./...

@@ -33,7 +33,7 @@ finishes, the installer independently hashes every privileged host artifact
 against the product lock rather than trusting only checksums embedded inside
 the upstream tools image.
 
-On success, `.runtime/distribution.manifest` records the engine revision, lock
+On success, `.brezel/distribution.manifest` records the engine revision, lock
 digests, exact image references, and exact host-artifact identities. It
 contains no credentials and is mode `0600` because it belongs with operator
 qualification evidence.
@@ -43,7 +43,7 @@ qualification evidence.
 An operator can mirror source without changing its identity:
 
 ```bash
-RUNTIME_ENGINE_SOURCE_REPOSITORY=/srv/git/e2b-runtime.git \
+BREZEL_ENGINE_SOURCE_REPOSITORY=/srv/git/e2b-runtime.git \
   ./deploy/single-host/install.sh
 ```
 
@@ -54,7 +54,7 @@ digests.
 Host artifacts can come from an operator HTTPS mirror:
 
 ```bash
-RUNTIME_ENGINE_ARTIFACT_BASE_URL=https://artifacts.example.internal/e2b \
+BREZEL_ENGINE_ARTIFACT_BASE_URL=https://artifacts.example.internal/e2b \
   ./deploy/single-host/install.sh
 ```
 
@@ -62,7 +62,7 @@ For a directory already present on the host, use its path through the
 upstream fetcher's host-root mount:
 
 ```bash
-RUNTIME_ENGINE_ARTIFACT_BASE_URL=file:///host/srv/runtime-artifacts/e2b \
+BREZEL_ENGINE_ARTIFACT_BASE_URL=file:///host/srv/runtime-artifacts/e2b \
   ./deploy/single-host/install.sh
 ```
 
@@ -75,9 +75,9 @@ registry before installation. The preloaded mode forbids registry pulls and
 fails if any exact digest is absent:
 
 ```bash
-RUNTIME_ENGINE_IMAGE_MODE=preloaded \
-RUNTIME_ENGINE_SOURCE_REPOSITORY=/srv/git/e2b-runtime.git \
-RUNTIME_ENGINE_ARTIFACT_BASE_URL=file:///host/srv/runtime-artifacts/e2b \
+BREZEL_ENGINE_IMAGE_MODE=preloaded \
+BREZEL_ENGINE_SOURCE_REPOSITORY=/srv/git/e2b-runtime.git \
+BREZEL_ENGINE_ARTIFACT_BASE_URL=file:///host/srv/runtime-artifacts/e2b \
   ./deploy/single-host/install.sh
 ```
 

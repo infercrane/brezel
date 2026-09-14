@@ -53,17 +53,17 @@ func main() {
 		if errors.As(err, &exit) {
 			os.Exit(exit.code)
 		}
-		fmt.Fprintln(os.Stderr, "runtimectl:", err)
+		fmt.Fprintln(os.Stderr, "brezel:", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
-	global := flag.NewFlagSet("runtimectl", flag.ContinueOnError)
+	global := flag.NewFlagSet("brezel", flag.ContinueOnError)
 	global.SetOutput(io.Discard)
-	baseURL := global.String("url", env("RUNTIME_API_URL", "http://127.0.0.1:8080"), "runtime API URL")
-	tokenFile := global.String("token-file", os.Getenv("RUNTIME_SERVICE_TOKEN_FILE"), "protected runtime service token file")
-	project := global.String("project", env("RUNTIME_PROJECT", "runtime-default"), "project ID")
+	baseURL := global.String("url", env("BREZEL_API_URL", "http://127.0.0.1:8080"), "Brezel API URL")
+	tokenFile := global.String("token-file", os.Getenv("BREZEL_SERVICE_TOKEN_FILE"), "protected Brezel service token file")
+	project := global.String("project", env("BREZEL_PROJECT", "brezel-default"), "project ID")
 	if err := global.Parse(args); err != nil {
 		return usageError(err.Error())
 	}
@@ -75,7 +75,7 @@ func run(args []string) error {
 		return doctor(context.Background(), os.Stdout)
 	}
 	if *tokenFile == "" {
-		return errors.New("RUNTIME_SERVICE_TOKEN_FILE or --token-file is required; tokens are not accepted in argv or environment values")
+		return errors.New("BREZEL_SERVICE_TOKEN_FILE or --token-file is required; tokens are not accepted in argv or environment values")
 	}
 	tokenValue, err := readTokenFile(*tokenFile)
 	if err != nil {
@@ -92,6 +92,10 @@ func run(args []string) error {
 		return c.listSandboxes(remaining[1:])
 	case "run":
 		return c.exec(remaining[1:])
+	case "put":
+		return c.file(append([]string{"put"}, remaining[1:]...))
+	case "get":
+		return c.file(append([]string{"get"}, remaining[1:]...))
 	case "stop", "start", "delete", "inspect":
 		action := map[string]string{"stop": "pause", "start": "resume", "delete": "delete", "inspect": "inspect"}[remaining[0]]
 		return c.sandbox(append([]string{action}, remaining[1:]...))
@@ -191,7 +195,7 @@ func (c *client) ensureEnvironment(ctx context.Context, template string) (string
 		return "", err
 	}
 	if result.Resource.RevisionID == "" {
-		return "", errors.New("runtime returned an empty environment revision")
+		return "", errors.New("Brezel returned an empty environment revision")
 	}
 	return result.Resource.RevisionID, nil
 }
@@ -720,7 +724,7 @@ func (c *client) port(args []string) error {
 	}
 	reference, err := url.Parse(result.Path)
 	if err != nil {
-		return errors.New("runtime returned an invalid preview path")
+		return errors.New("Brezel returned an invalid preview path")
 	}
 	fmt.Printf("%s\texpires %s\n", c.base.ResolveReference(reference).String(), result.ExpiresAt.Format(time.RFC3339))
 	return nil
@@ -780,10 +784,10 @@ func (c *client) request(ctx context.Context, method, path string, body io.Reade
 func decodeAPIError(response *http.Response) error {
 	var payload apiError
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
-		return fmt.Errorf("runtime API returned %s", response.Status)
+		return fmt.Errorf("Brezel API returned %s", response.Status)
 	}
 	if payload.Error.Code == "" {
-		return fmt.Errorf("runtime API returned %s", response.Status)
+		return fmt.Errorf("Brezel API returned %s", response.Status)
 	}
 	return fmt.Errorf("%s: %s", payload.Error.Code, payload.Error.Message)
 }
@@ -820,12 +824,14 @@ func usageError(message string) error {
 }
 
 func printUsage(destination io.Writer) {
-	fmt.Fprintln(destination, `Usage: runtimectl [--url URL] [--token-file FILE] [--project ID] COMMAND
+	fmt.Fprintln(destination, `Usage: brezel [--url URL] [--token-file FILE] [--project ID] COMMAND
 
 Commands:
   doctor
   new [--template NAME|--from CHECKPOINT_ID] [--workspace ID:/PATH] [--ttl SECONDS] [--standby-after SECONDS]
   run [--cwd PATH] [--timeout SECONDS] [--env KEY=VALUE] SANDBOX_ID COMMAND [ARG...]
+  put SANDBOX_ID GUEST_PATH LOCAL_PATH
+  get SANDBOX_ID GUEST_PATH LOCAL_PATH_OR_DASH
   list [--all] [--json]
   inspect|stop|start|delete SANDBOX_ID
   open [--ttl SECONDS] SANDBOX_ID PORT

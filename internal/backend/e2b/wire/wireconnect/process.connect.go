@@ -11,7 +11,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	wire "github.com/infercrane/sandbox-runtime-lab/internal/backend/e2b/wire"
+	wire "github.com/infercrane/brezel/internal/backend/e2b/wire"
 	http "net/http"
 	strings "strings"
 )

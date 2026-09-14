@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
-	"github.com/infercrane/sandbox-runtime-lab/internal/store"
+	"github.com/infercrane/brezel/internal/domain"
+	"github.com/infercrane/brezel/internal/store"
 )
 
 const (
@@ -289,7 +289,7 @@ func (b *Broker) connector(projectID, revision string) (domain.Connector, error)
 }
 
 func leaseMessage(encodedPayload string) []byte {
-	return []byte("runtime-connector-lease-v1\x00" + encodedPayload)
+	return []byte("brezel-connector-lease-v1\x00" + encodedPayload)
 }
 
 func bearerToken(r *http.Request) (string, bool) {

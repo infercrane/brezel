@@ -134,7 +134,7 @@ check_live() {
 
   min_network_slots=${2:-16}
   case "$min_network_slots" in
-    ""|*[!0-9]*) fail "RUNTIME_MIN_READY_NETWORK_SLOTS must be a non-negative integer" ;;
+    ""|*[!0-9]*) fail "BREZEL_MIN_READY_NETWORK_SLOTS must be a non-negative integer" ;;
   esac
   network_slots=0
   network_wait=0

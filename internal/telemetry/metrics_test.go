@@ -20,10 +20,10 @@ func TestRegistryWritesBoundedPrometheusHistogram(t *testing.T) {
 	}
 	text := output.String()
 	for _, expected := range []string{
-		`runtime_operation_phase_duration_seconds_bucket{operation="sandbox_create",phase="backend_call",outcome="success",le="0.5"} 1`,
-		`runtime_operation_phase_duration_seconds_bucket{operation="sandbox_create",phase="backend_call",outcome="success",le="2.5"} 2`,
-		`runtime_operation_phase_duration_seconds_count{operation="sandbox_create",phase="backend_call",outcome="success"} 2`,
-		`runtime_operation_phase_duration_seconds_count{operation="command",phase="guest_first_event",outcome="error"} 1`,
+		`brezel_operation_phase_duration_seconds_bucket{operation="sandbox_create",phase="backend_call",outcome="success",le="0.5"} 1`,
+		`brezel_operation_phase_duration_seconds_bucket{operation="sandbox_create",phase="backend_call",outcome="success",le="2.5"} 2`,
+		`brezel_operation_phase_duration_seconds_count{operation="sandbox_create",phase="backend_call",outcome="success"} 2`,
+		`brezel_operation_phase_duration_seconds_count{operation="command",phase="guest_first_event",outcome="error"} 1`,
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("metrics omitted %q:\n%s", expected, text)

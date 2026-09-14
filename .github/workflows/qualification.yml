@@ -1,4 +1,4 @@
-name: destructive-runtime-qualification
+name: destructive-brezel-qualification
 
 on:
   workflow_dispatch:
@@ -7,26 +7,26 @@ permissions:
   contents: read
 
 concurrency:
-  group: sandbox-runtime-kvm-qualification
+  group: brezel-kvm-qualification
   cancel-in-progress: false
 
 jobs:
   single-host-kvm:
-    runs-on: [self-hosted, linux, x64, kvm, sandbox-runtime]
+    runs-on: [self-hosted, linux, x64, kvm, brezel]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Inspect dedicated host
         run: |
-          go build -trimpath -o bin/runtimectl ./cmd/runtimectl
-          bin/runtimectl doctor
+          go build -trimpath -o bin/brezel ./cmd/brezel
+          bin/brezel doctor
       - name: Install pinned runtime and run destructive qualification twice
         run: make qualify-single-host
       - name: Preserve content-free qualification reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sandbox-runtime-qualification
-          path: .runtime/qualification/*.json
+          name: brezel-qualification
+          path: .brezel/qualification/*.json
           if-no-files-found: warn
           retention-days: 30

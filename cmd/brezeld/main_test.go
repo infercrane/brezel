@@ -29,31 +29,31 @@ func TestLoadSecretFileRequiresPrivateRegularFile(t *testing.T) {
 }
 
 func TestParseBoolEnvRejectsInvalidCapabilityConfiguration(t *testing.T) {
-	t.Setenv("RUNTIME_DURABLE_WORKSPACES", "sometimes")
-	if _, err := parseBoolEnv("RUNTIME_DURABLE_WORKSPACES", false); err == nil {
+	t.Setenv("BREZEL_DURABLE_WORKSPACES", "sometimes")
+	if _, err := parseBoolEnv("BREZEL_DURABLE_WORKSPACES", false); err == nil {
 		t.Fatal("invalid capability configuration was accepted")
 	}
-	t.Setenv("RUNTIME_DURABLE_WORKSPACES", "true")
-	value, err := parseBoolEnv("RUNTIME_DURABLE_WORKSPACES", false)
+	t.Setenv("BREZEL_DURABLE_WORKSPACES", "true")
+	value, err := parseBoolEnv("BREZEL_DURABLE_WORKSPACES", false)
 	if err != nil || !value {
 		t.Fatalf("parseBoolEnv() = %v, %v", value, err)
 	}
 }
 
 func TestLoadLimitsRejectsUnboundedOrMalformedValues(t *testing.T) {
-	t.Setenv("RUNTIME_MAX_ACTIVE_SANDBOXES_PER_PROJECT", "0")
+	t.Setenv("BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT", "0")
 	if _, err := loadLimits(); err == nil {
 		t.Fatal("zero sandbox limit was accepted")
 	}
-	t.Setenv("RUNTIME_MAX_ACTIVE_SANDBOXES_PER_PROJECT", "5")
-	t.Setenv("RUNTIME_MAX_WORKSPACES_PER_PROJECT", "nope")
+	t.Setenv("BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT", "5")
+	t.Setenv("BREZEL_MAX_WORKSPACES_PER_PROJECT", "nope")
 	if _, err := loadLimits(); err == nil {
 		t.Fatal("malformed workspace limit was accepted")
 	}
-	t.Setenv("RUNTIME_MAX_WORKSPACES_PER_PROJECT", "6")
-	t.Setenv("RUNTIME_MAX_CONCURRENT_GUEST_OPS_PER_PROJECT", "7")
-	t.Setenv("RUNTIME_MAX_ENVIRONMENTS_PER_PROJECT", "8")
-	t.Setenv("RUNTIME_MAX_CONNECTORS_PER_PROJECT", "9")
+	t.Setenv("BREZEL_MAX_WORKSPACES_PER_PROJECT", "6")
+	t.Setenv("BREZEL_MAX_CONCURRENT_GUEST_OPS_PER_PROJECT", "7")
+	t.Setenv("BREZEL_MAX_ENVIRONMENTS_PER_PROJECT", "8")
+	t.Setenv("BREZEL_MAX_CONNECTORS_PER_PROJECT", "9")
 	limits, err := loadLimits()
 	if err != nil {
 		t.Fatal(err)

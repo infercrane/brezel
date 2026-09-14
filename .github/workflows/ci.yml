@@ -25,9 +25,10 @@ jobs:
         run: go vet ./...
       - name: Build release entrypoint
         run: |
-          go build -trimpath -o bin/runtime-api ./cmd/runtime-api
-          go build -trimpath -o bin/runtime-conformance ./cmd/runtime-conformance
-          go build -trimpath -o bin/runtimectl ./cmd/runtimectl
+          go build -trimpath -o bin/brezeld ./cmd/brezeld
+          go build -trimpath -o bin/brezel-conformance ./cmd/brezel-conformance
+          go build -trimpath -o bin/brezel-bench ./cmd/brezel-bench
+          go build -trimpath -o bin/brezel ./cmd/brezel
       - name: Validate release shell entrypoints
         run: |
           sh -n deploy/single-host/install.sh

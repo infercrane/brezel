@@ -728,7 +728,7 @@ func TestValidationRequiresExplicitAndTruthfulMetadata(t *testing.T) {
 
 func TestPlaintextRemoteControlAPIIsRejected(t *testing.T) {
 	config := Config{
-		BaseURL: "http://runtime.example.com", Token: "0123456789abcdef0123456789abcdef",
+		BaseURL: "http://brezel.example.com", Token: "0123456789abcdef0123456789abcdef",
 		ProjectID: "benchmark-project", BackendTemplate: "base", Target: "remote",
 		RuntimeRevision: "revision", EvidenceClass: EvidenceHostedEndToEnd,
 		CacheState: CacheUnknown, Scenario: ScenarioTTI, Mode: ModeSequential,

@@ -18,10 +18,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
-	"github.com/infercrane/sandbox-runtime-lab/internal/service"
-	"github.com/infercrane/sandbox-runtime-lab/internal/telemetry"
+	"github.com/infercrane/brezel/internal/backend"
+	"github.com/infercrane/brezel/internal/domain"
+	"github.com/infercrane/brezel/internal/service"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 const (
@@ -479,7 +479,7 @@ func (s *Server) runCommand(w http.ResponseWriter, r *http.Request) {
 	emit := func(event backend.CommandEvent) error {
 		if !wrote {
 			w.Header().Set("Content-Type", "application/x-ndjson")
-			w.Header().Set("Trailer", "X-Runtime-Stream-Error")
+			w.Header().Set("Trailer", "X-Brezel-Stream-Error")
 			w.WriteHeader(http.StatusOK)
 			wrote = true
 		}
@@ -499,7 +499,7 @@ func (s *Server) runCommand(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	w.Header().Set("X-Runtime-Stream-Error", "command_failed")
+	w.Header().Set("X-Brezel-Stream-Error", "command_failed")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"execution_id": executionID,
 		"type":         "error",

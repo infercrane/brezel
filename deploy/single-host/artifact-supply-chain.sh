@@ -53,7 +53,7 @@ verify_source() {
   done
 }
 
-image_keys='RUNTIME_ENGINE_POSTGRES_IMAGE RUNTIME_ENGINE_REDIS_IMAGE RUNTIME_ENGINE_CLICKHOUSE_IMAGE RUNTIME_ENGINE_VECTOR_IMAGE E2B_DB_MIGRATOR_IMAGE E2B_CLIENT_PROXY_IMAGE E2B_CLICKHOUSE_MIGRATOR_IMAGE E2B_TOOLS_IMAGE E2B_NODE_E2B_IMAGE E2B_SEED_IMAGE'
+image_keys='BREZEL_ENGINE_POSTGRES_IMAGE BREZEL_ENGINE_REDIS_IMAGE BREZEL_ENGINE_CLICKHOUSE_IMAGE BREZEL_ENGINE_VECTOR_IMAGE E2B_DB_MIGRATOR_IMAGE E2B_CLIENT_PROXY_IMAGE E2B_CLICKHOUSE_MIGRATOR_IMAGE E2B_TOOLS_IMAGE E2B_NODE_E2B_IMAGE E2B_SEED_IMAGE'
 
 validate_image_lock() {
   image_lock=$1
@@ -119,7 +119,7 @@ write_manifest() {
   temporary=$(mktemp "$output_dir/.distribution-manifest.XXXXXX")
   trap 'rm -f -- "$temporary"' EXIT HUP INT TERM
   {
-    printf 'format=open-agent-runtime-distribution-v1\n'
+    printf 'format=brezel-distribution-v1\n'
     printf 'engine_commit=%s\n' "$(read_value "$engine_lock" commit)"
     printf 'engine_lock_sha256=%s\n' "$(sha256sum "$engine_lock" | awk '{print $1}')"
     printf 'image_lock_sha256=%s\n' "$(sha256sum "$image_lock" | awk '{print $1}')"

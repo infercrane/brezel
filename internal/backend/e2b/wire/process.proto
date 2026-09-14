@@ -4,7 +4,7 @@ syntax = "proto3";
 
 package process;
 
-option go_package = "github.com/infercrane/sandbox-runtime-lab/internal/backend/e2b/wire;wire";
+option go_package = "github.com/infercrane/brezel/internal/backend/e2b/wire;wire";
 
 service Process {
   rpc Start(StartRequest) returns (stream StartResponse);

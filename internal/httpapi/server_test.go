@@ -20,14 +20,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
-	"github.com/infercrane/sandbox-runtime-lab/internal/conformance"
-	"github.com/infercrane/sandbox-runtime-lab/internal/connector"
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
-	"github.com/infercrane/sandbox-runtime-lab/internal/receipt"
-	"github.com/infercrane/sandbox-runtime-lab/internal/service"
-	"github.com/infercrane/sandbox-runtime-lab/internal/store"
-	"github.com/infercrane/sandbox-runtime-lab/internal/telemetry"
+	"github.com/infercrane/brezel/internal/backend"
+	"github.com/infercrane/brezel/internal/conformance"
+	"github.com/infercrane/brezel/internal/connector"
+	"github.com/infercrane/brezel/internal/domain"
+	"github.com/infercrane/brezel/internal/receipt"
+	"github.com/infercrane/brezel/internal/service"
+	"github.com/infercrane/brezel/internal/store"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 const testToken = "a-test-service-token-that-is-long-enough"
@@ -383,7 +383,7 @@ func (b *testBackend) RoundTripPort(_ context.Context, id string, port uint16, r
 	b.lastPort = port
 	b.lastPortPath = request.URL.RequestURI()
 	body := "preview-ok"
-	if data := b.readFileLocked(id, "/workspace/runtime-conformance.txt"); data != nil {
+	if data := b.readFileLocked(id, "/workspace/brezel-conformance.txt"); data != nil {
 		body = string(data)
 	}
 	return &http.Response{
@@ -1246,7 +1246,7 @@ func TestConfiguredBrokerIssuesOnlyShortLeaseAndAttachesGatewayPolicy(t *testing
 	connectorRevision := out["resource"].(map[string]any)["revision_id"].(string)
 	sandboxID, _ := createSandbox(t, h, "project-a", envRevision, "sandbox-with-broker-0001", []string{connectorRevision})
 	h.backend.mu.Lock()
-	lease := h.backend.lastCreate.Environment["RUNTIME_CONNECTOR_LEASE"]
+	lease := h.backend.lastCreate.Environment["BREZEL_CONNECTOR_LEASE"]
 	allowOut := append([]string(nil), h.backend.lastCreate.Network.AllowOut...)
 	h.backend.mu.Unlock()
 	if lease == "" {

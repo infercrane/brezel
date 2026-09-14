@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/receipt"
+	"github.com/infercrane/brezel/internal/receipt"
 )
 
 const maxResponseBytes = 2 << 20
@@ -294,7 +294,7 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 	}
 
 	marker := randomKey("guest-state")
-	guestPath := "/workspace/runtime-conformance.txt"
+	guestPath := "/workspace/brezel-conformance.txt"
 	if err := r.step(ctx, "guest_file_write_read", func() error {
 		if err := r.writeFile(ctx, r.project, guestPath, []byte(marker), http.StatusOK); err != nil {
 			return err
@@ -311,7 +311,7 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 		return r.report, err
 	}
 	if err := r.step(ctx, "guest_command_stream", func() error {
-		return r.runCommand(ctx, r.project, []string{"/bin/sh", "-lc", "cat /workspace/runtime-conformance.txt"}, marker, http.StatusOK)
+		return r.runCommand(ctx, r.project, []string{"/bin/sh", "-lc", "cat /workspace/brezel-conformance.txt"}, marker, http.StatusOK)
 	}); err != nil {
 		return r.report, err
 	}
@@ -324,7 +324,7 @@ func (r *Runner) Run(ctx context.Context) (report Report, runErr error) {
 		return r.report, err
 	}
 	if err := r.step(ctx, "start_preview_server", func() error {
-		serve := []string{"/bin/sh", "-lc", "mkdir -p /tmp/runtime-conformance-web && printf '%s' '" + marker + "' > /tmp/runtime-conformance-web/index.html && busybox httpd -p 8080 -h /tmp/runtime-conformance-web"}
+		serve := []string{"/bin/sh", "-lc", "mkdir -p /tmp/brezel-conformance-web && printf '%s' '" + marker + "' > /tmp/brezel-conformance-web/index.html && busybox httpd -p 8080 -h /tmp/brezel-conformance-web"}
 		return r.runCommand(ctx, r.project, serve, "", http.StatusOK)
 	}); err != nil {
 		return r.report, err

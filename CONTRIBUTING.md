@@ -31,5 +31,5 @@ instead of simulating success.
   performance claims.
 
 See [`AGENTS.md`](AGENTS.md), [`SECURITY.md`](SECURITY.md), and
-[`docs/IMPLEMENTATION-STATUS.md`](docs/IMPLEMENTATION-STATUS.md) before making a
+[`docs/STATUS.md`](docs/STATUS.md) before making a
 runtime change.

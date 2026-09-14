@@ -6,7 +6,7 @@ shape into a universal performance claim.
 
 ## Measured boundaries
 
-The native `sandbox-bench` client verifies a random nonce rather than treating
+The native `brezel-bench` client verifies a random nonce rather than treating
 an accepted create request as usable:
 
 | Scenario | Timed boundary | Setup outside the timed boundary |
@@ -81,46 +81,46 @@ the external reset procedure; changing the label alone does not make a run cold.
 ## Run the matrix
 
 First complete `make qualify-single-host` on an otherwise dedicated Ubuntu
-24.04 x86-64 KVM host. Build or copy the exact `sandbox-bench` binary under
-test to `bin/sandbox-bench`. Do not benchmark from a developer build whose
+24.04 x86-64 KVM host. Build or copy the exact `brezel-bench` binary under
+test to `bin/brezel-bench`. Do not benchmark from a developer build whose
 revision cannot be reproduced.
 
 The runner requires a second explicit destructive-operation acknowledgement:
 
 ```bash
-RUNTIME_BENCH_EXECUTE=true \
-RUNTIME_BENCH_TARGET=scaleway-em-a116x-ssd-par1-01 \
-RUNTIME_BENCH_RUNTIME_REVISION=$(git rev-parse HEAD) \
-RUNTIME_BENCH_CACHE_STATE=cached-template \
+BREZEL_BENCH_EXECUTE=true \
+BREZEL_BENCH_TARGET=scaleway-em-a116x-ssd-par1-01 \
+BREZEL_BENCH_RUNTIME_REVISION=$(git rev-parse HEAD) \
+BREZEL_BENCH_CACHE_STATE=cached-template \
 ./deploy/single-host/benchmark.sh
 ```
 
 Useful controlled overrides are:
 
 ```text
-RUNTIME_BENCH_BINARY
-RUNTIME_BENCH_OUTPUT_DIR
-RUNTIME_BENCH_BASE_URL
-RUNTIME_BENCH_SEQUENTIAL_RUNS
-RUNTIME_BENCH_STAGGERED_RUNS
-RUNTIME_BENCH_BURST_RUNS
-RUNTIME_BENCH_STAGGER_INTERVAL
-RUNTIME_BENCH_ATTEMPT_TIMEOUT
-RUNTIME_BENCH_CLEANUP_TIMEOUT
-RUNTIME_BENCH_CASE_TIMEOUT
-RUNTIME_BENCH_COOLDOWN_SECONDS
-RUNTIME_BENCH_IO_BYTES
-RUNTIME_BENCH_PREVIEW_PORT
+BREZEL_BENCH_BINARY
+BREZEL_BENCH_OUTPUT_DIR
+BREZEL_BENCH_BASE_URL
+BREZEL_BENCH_SEQUENTIAL_RUNS
+BREZEL_BENCH_STAGGERED_RUNS
+BREZEL_BENCH_BURST_RUNS
+BREZEL_BENCH_STAGGER_INTERVAL
+BREZEL_BENCH_ATTEMPT_TIMEOUT
+BREZEL_BENCH_CLEANUP_TIMEOUT
+BREZEL_BENCH_CASE_TIMEOUT
+BREZEL_BENCH_COOLDOWN_SECONDS
+BREZEL_BENCH_IO_BYTES
+BREZEL_BENCH_PREVIEW_PORT
 ```
 
-When invoking `sandbox-bench` directly, `-io-bytes` selects the generated
+When invoking `brezel-bench` directly, `-io-bytes` selects the generated
 workspace payload size (1 MiB by default) and `-preview-port` selects the guest
 HTTP port (8080 by default). The benchmark image must provide `/bin/sh` and
 BusyBox `httpd` for preview scenarios. Missing tooling is a setup failure, not a
 latency sample.
 
 The runner rejects tracked or untracked changes by default. For pre-commit
-tuning only, `RUNTIME_BENCH_ALLOW_DIRTY=true` permits a run and records the
+tuning only, `BREZEL_BENCH_ALLOW_DIRTY=true` permits a run and records the
 dirty state in both host snapshots. Such evidence is useful for comparison
 during development but is not publishable.
 
@@ -130,7 +130,7 @@ reconcile and confirm cleanup before starting another matrix.
 ## Evidence layout
 
 Each invocation creates a new timestamped directory under
-`.runtime/benchmarks/` by default:
+`.brezel/benchmarks/` by default:
 
 ```text
 TARGET-TIMESTAMP/

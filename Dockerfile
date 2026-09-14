@@ -4,17 +4,17 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/runtime-api ./cmd/runtime-api \
-    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/runtime-conformance ./cmd/runtime-conformance \
-    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/runtime-benchmark ./cmd/runtime-benchmark \
-    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/runtimectl ./cmd/runtimectl
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezeld ./cmd/brezeld \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezel-conformance ./cmd/brezel-conformance \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezel-bench ./cmd/brezel-bench \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezel ./cmd/brezel
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
-RUN addgroup -S runtime \
-    && adduser -S -G runtime runtime
-COPY --from=build /out/runtime-api /usr/local/bin/runtime-api
-COPY --from=build /out/runtime-conformance /usr/local/bin/runtime-conformance
-COPY --from=build /out/runtime-benchmark /usr/local/bin/runtime-benchmark
-COPY --from=build /out/runtimectl /usr/local/bin/runtimectl
-USER runtime:runtime
-ENTRYPOINT ["/usr/local/bin/runtime-api"]
+RUN addgroup -S brezel \
+    && adduser -S -G brezel brezel
+COPY --from=build /out/brezeld /usr/local/bin/brezeld
+COPY --from=build /out/brezel-conformance /usr/local/bin/brezel-conformance
+COPY --from=build /out/brezel-bench /usr/local/bin/brezel-bench
+COPY --from=build /out/brezel /usr/local/bin/brezel
+USER brezel:brezel
+ENTRYPOINT ["/usr/local/bin/brezeld"]

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sandbox.runtime.dev/spec/v1alpha1/run.schema.json",
-  "title": "Open Agent Runtime Job Run",
+  "title": "Brezel Job Run",
   "description": "A bounded, immutable job attempt. Interactive sessions use the Sandbox contract.",
   "type": "object",
   "additionalProperties": false,

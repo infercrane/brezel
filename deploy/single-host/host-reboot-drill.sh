@@ -3,30 +3,30 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-INSTALL_DIR=${RUNTIME_INSTALL_DIR:-"$REPO_DIR/.runtime"}
+INSTALL_DIR=${BREZEL_INSTALL_DIR:-"$REPO_DIR/.brezel"}
 PENDING_FILE="$INSTALL_DIR/qualification/.host-reboot-drill.json"
 
-export RUNTIME_STATE_DIR="$INSTALL_DIR/state"
-export RUNTIME_SECRETS_DIR="$INSTALL_DIR/secrets"
-export RUNTIME_UID="$(id -u)"
-export RUNTIME_GID="$(id -g)"
+export BREZEL_STATE_DIR="$INSTALL_DIR/state"
+export BREZEL_SECRETS_DIR="$INSTALL_DIR/secrets"
+export BREZEL_UID="$(id -u)"
+export BREZEL_GID="$(id -g)"
 
 compose() {
   docker compose -f "$SCRIPT_DIR/compose.yaml" "$@"
 }
 
 cli() {
-  compose exec -T runtime-api \
-    /usr/local/bin/runtimectl \
+  compose exec -T brezeld \
+    /usr/local/bin/brezel \
       -url http://127.0.0.1:8080 \
-      -token-file /run/runtime-secrets/service.token \
-      -project runtime-conformance "$@"
+      -token-file /run/brezel-secrets/service.token \
+      -project brezel-conformance "$@"
 }
 
 wait_ready() {
   attempts=0
   while [ "$attempts" -lt 90 ]; do
-    if compose exec -T runtime-api wget -qO- http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
+    if compose exec -T brezeld wget -qO- http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
       return 0
     fi
     attempts=$((attempts + 1))
@@ -111,10 +111,10 @@ verify() {
   cli workspace delete "$workspace_id" >/dev/null
   finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   duration_seconds=$(( $(date +%s) - started_epoch ))
-  target=${RUNTIME_HOST_REBOOT_TARGET:-"developer-single-host-$(hostname)-host-reboot-$(date -u +%Y%m%dT%H%M%SZ)"}
+  target=${BREZEL_HOST_REBOOT_TARGET:-"developer-single-host-$(hostname)-host-reboot-$(date -u +%Y%m%dT%H%M%SZ)"}
   case "$target" in
     ""|*[!A-Za-z0-9._-]*)
-      echo "RUNTIME_HOST_REBOOT_TARGET may contain only letters, numbers, dots, underscores, and hyphens" >&2
+      echo "BREZEL_HOST_REBOOT_TARGET may contain only letters, numbers, dots, underscores, and hyphens" >&2
       return 1
       ;;
   esac

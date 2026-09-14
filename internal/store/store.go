@@ -13,7 +13,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
+	"github.com/infercrane/brezel/internal/domain"
 )
 
 var (
@@ -313,7 +313,7 @@ func (s *FileStore) persist(next State) error {
 		return errors.New("encoded state exceeds 128 MiB")
 	}
 	dir := filepath.Dir(s.path)
-	tmp, err := os.CreateTemp(dir, ".runtime-state-*")
+	tmp, err := os.CreateTemp(dir, ".brezel-state-*")
 	if err != nil {
 		return fmt.Errorf("create temporary state: %w", err)
 	}

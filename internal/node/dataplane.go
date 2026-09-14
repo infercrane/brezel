@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
+	"github.com/infercrane/brezel/internal/backend"
 )
 
 // Capabilities are the guest operations that an attached node data plane can

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
+	"github.com/infercrane/brezel/internal/backend"
 )
 
 const portCredentialTTL = 30 * time.Second

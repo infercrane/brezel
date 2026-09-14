@@ -416,8 +416,8 @@ later profile.
 
 ```text
 cmd/
-  runtime-api/
-  runtimectl/
+  brezeld/
+  brezel/
   egressd/
 internal/
   api/

@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-INSTALL_DIR=${RUNTIME_INSTALL_DIR:-"$REPO_DIR/.runtime"}
+INSTALL_DIR=${BREZEL_INSTALL_DIR:-"$REPO_DIR/.brezel"}
 TOKEN_FILE="$INSTALL_DIR/secrets/service.token"
 QUALIFICATION_DIR="$INSTALL_DIR/qualification"
 ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
@@ -15,10 +15,10 @@ if [ ! -s "$TOKEN_FILE" ]; then
   exit 1
 fi
 
-TARGET=${RUNTIME_CONFORMANCE_TARGET:-"developer-single-host-$(hostname)-$(date -u +%Y%m%dT%H%M%SZ)"}
+TARGET=${BREZEL_CONFORMANCE_TARGET:-"developer-single-host-$(hostname)-$(date -u +%Y%m%dT%H%M%SZ)"}
 case "$TARGET" in
   ""|*[!A-Za-z0-9._-]*)
-    echo "RUNTIME_CONFORMANCE_TARGET may contain only letters, numbers, dots, underscores, and hyphens" >&2
+    echo "BREZEL_CONFORMANCE_TARGET may contain only letters, numbers, dots, underscores, and hyphens" >&2
     exit 1
     ;;
 esac
@@ -27,10 +27,10 @@ umask 077
 mkdir -p "$QUALIFICATION_DIR"
 chmod 700 "$QUALIFICATION_DIR"
 
-export RUNTIME_STATE_DIR="$INSTALL_DIR/state"
-export RUNTIME_SECRETS_DIR="$INSTALL_DIR/secrets"
-export RUNTIME_UID="$(id -u)"
-export RUNTIME_GID="$(id -g)"
+export BREZEL_STATE_DIR="$INSTALL_DIR/state"
+export BREZEL_SECRETS_DIR="$INSTALL_DIR/secrets"
+export BREZEL_UID="$(id -u)"
+export BREZEL_GID="$(id -g)"
 
 compose() {
   docker compose -f "$SCRIPT_DIR/compose.yaml" "$@"
@@ -41,11 +41,11 @@ engine_compose() {
 }
 
 cli() {
-  compose exec -T runtime-api \
-    /usr/local/bin/runtimectl \
+  compose exec -T brezeld \
+    /usr/local/bin/brezel \
       -url http://127.0.0.1:8080 \
-      -token-file /run/runtime-secrets/service.token \
-      -project runtime-conformance "$@"
+      -token-file /run/brezel-secrets/service.token \
+      -project brezel-conformance "$@"
 }
 
 ACTIVE_SANDBOX_ID=
@@ -64,12 +64,12 @@ trap cleanup_active_recovery EXIT HUP INT TERM
 run_conformance() {
   run_target=$1
   report_tmp=$(mktemp "$QUALIFICATION_DIR/.report.XXXXXX")
-  if ! compose exec -T runtime-api \
-    /usr/local/bin/runtime-conformance \
+  if ! compose exec -T brezeld \
+    /usr/local/bin/brezel-conformance \
       -base-url http://127.0.0.1:8080 \
       -backend-template base \
-      -project runtime-conformance \
-      -other-project runtime-conformance-isolation \
+      -project brezel-conformance \
+      -other-project brezel-conformance-isolation \
       -target "$run_target" \
       -timeout 10m \
       -execute > "$report_tmp"; then
@@ -88,7 +88,7 @@ run_conformance() {
 wait_ready() {
   attempts=0
   while [ "$attempts" -lt 60 ]; do
-    if compose exec -T runtime-api wget -qO- http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
+    if compose exec -T brezeld wget -qO- http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
       return 0
     fi
     attempts=$((attempts + 1))
@@ -117,7 +117,7 @@ run_active_recovery() {
   fi
   cli exec "$ACTIVE_SANDBOX_ID" /bin/sh -lc 'printf %s "$1" > /workspace/controller-restart.txt' runtime-recovery "$marker"
 
-  compose restart runtime-api >/dev/null
+  compose restart brezeld >/dev/null
   wait_ready
   if ! cli sandbox inspect "$ACTIVE_SANDBOX_ID" | grep -q '"state": "running"'; then
     echo "active sandbox was not reconciled as running after controller restart" >&2
@@ -150,7 +150,7 @@ run_active_recovery() {
 
 resolve_engine_sandbox_id() {
   product_sandbox_id=$1
-  state_file="$RUNTIME_STATE_DIR/state.json"
+  state_file="$BREZEL_STATE_DIR/state.json"
   [ -s "$state_file" ] || {
     echo "runtime state is unavailable while resolving the engine sandbox ID" >&2
     return 1
@@ -186,7 +186,7 @@ run_engine_fast_path_qualification() {
   fi
   cli exec "$ACTIVE_SANDBOX_ID" /bin/true >/dev/null
   engine_sandbox_id=$(resolve_engine_sandbox_id "$ACTIVE_SANDBOX_ID")
-  min_network_slots=${RUNTIME_MIN_READY_NETWORK_SLOTS:-16}
+  min_network_slots=${BREZEL_MIN_READY_NETWORK_SLOTS:-16}
 
   if ! capability_json=$(engine_compose exec -T orchestrator \
     nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" \
@@ -211,11 +211,11 @@ run_engine_fast_path_qualification() {
 run_conformance "$TARGET"
 
 # A valid credential must not be able to manufacture a new tenant identity by
-# changing X-Project-ID. runtimectl reads the token from the protected mount.
-if compose exec -T runtime-api \
-  /usr/local/bin/runtimectl \
+# changing X-Project-ID. brezel reads the token from the protected mount.
+if compose exec -T brezeld \
+  /usr/local/bin/brezel \
     -url http://127.0.0.1:8080 \
-    -token-file /run/runtime-secrets/service.token \
+    -token-file /run/brezel-secrets/service.token \
     -project runtime-unbound-project \
     list >/dev/null 2>&1; then
   echo "project binding qualification failed: unbound project was accepted" >&2

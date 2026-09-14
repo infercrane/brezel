@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/perfbench"
+	"github.com/infercrane/brezel/internal/perfbench"
 )
 
 func main() {
@@ -25,10 +25,10 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("sandbox-bench", flag.ContinueOnError)
+	flags := flag.NewFlagSet("brezel-bench", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	baseURL := flags.String("base-url", "http://127.0.0.1:8080", "runtime control API URL")
-	project := flags.String("project", "sandbox-benchmark", "isolated project used for benchmark resources")
+	project := flags.String("project", "brezel-benchmark", "isolated project used for benchmark resources")
 	template := flags.String("backend-template", "", "existing backend template ID")
 	target := flags.String("target", "", "human-readable identity of the exact deployment")
 	runtimeRevision := flags.String("runtime-revision", "", "runtime release or source revision under test")
@@ -49,7 +49,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("sandbox-bench does not accept positional arguments")
+		return errors.New("brezel-bench does not accept positional arguments")
 	}
 	if !*execute {
 		return errors.New("benchmark requires explicit -execute because it creates and deletes real runtime resources")
@@ -107,9 +107,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 }
 
 func loadServiceToken() (string, error) {
-	path := os.Getenv("RUNTIME_SERVICE_TOKEN_FILE")
+	path := os.Getenv("BREZEL_SERVICE_TOKEN_FILE")
 	if path == "" {
-		return "", errors.New("RUNTIME_SERVICE_TOKEN_FILE is required; the token is intentionally not accepted in argv or environment values")
+		return "", errors.New("BREZEL_SERVICE_TOKEN_FILE is required; the token is intentionally not accepted in argv or environment values")
 	}
 	info, err := os.Lstat(path)
 	if err != nil {

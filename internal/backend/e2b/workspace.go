@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
+	"github.com/infercrane/brezel/internal/backend"
 )
 
 type volumeResponse struct {

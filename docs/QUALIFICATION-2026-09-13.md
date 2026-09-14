@@ -34,7 +34,7 @@ After the second sequence and after the load matrix:
 - nonterminal product sandboxes remained at 0.
 
 The content-free JSON reports are retained locally under the ignored
-`.runtime/qualification/clean-host/` directory with SHA-256 checksums.
+`.brezel/qualification/clean-host/` directory with SHA-256 checksums.
 
 ## Real microVM benchmark
 

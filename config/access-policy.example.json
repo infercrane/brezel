@@ -5,7 +5,7 @@
       "name": "local-operator",
       "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "projects": [
-        "runtime-default"
+        "brezel-default"
       ]
     }
   ]

@@ -13,7 +13,7 @@ func TestLoadServiceTokenRequiresPrivateRegularFile(t *testing.T) {
 	if err := os.WriteFile(private, []byte("0123456789abcdef0123456789abcdef\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("RUNTIME_SERVICE_TOKEN_FILE", private)
+	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", private)
 	token, err := loadServiceToken()
 	if err != nil || token != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("loadServiceToken() = %q, %v", token, err)
@@ -22,14 +22,14 @@ func TestLoadServiceTokenRequiresPrivateRegularFile(t *testing.T) {
 	if err := os.WriteFile(public, []byte("0123456789abcdef0123456789abcdef"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("RUNTIME_SERVICE_TOKEN_FILE", public)
+	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", public)
 	if _, err := loadServiceToken(); err == nil {
 		t.Fatal("world-readable token was accepted")
 	}
 }
 
 func TestRunRequiresExplicitExecutionBeforeCredentials(t *testing.T) {
-	t.Setenv("RUNTIME_SERVICE_TOKEN_FILE", "")
+	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", "")
 	err := run(nil, &strings.Builder{}, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "explicit") {
 		t.Fatalf("run() error = %v", err)
@@ -37,7 +37,7 @@ func TestRunRequiresExplicitExecutionBeforeCredentials(t *testing.T) {
 }
 
 func TestRunRejectsOutOfRangeScenarioParametersBeforeCredentials(t *testing.T) {
-	t.Setenv("RUNTIME_SERVICE_TOKEN_FILE", "")
+	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", "")
 	for _, args := range [][]string{
 		{"-execute", "-io-bytes", "0"},
 		{"-execute", "-io-bytes", "33554433"},

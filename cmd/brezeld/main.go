@@ -18,14 +18,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/access"
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend/e2b"
-	"github.com/infercrane/sandbox-runtime-lab/internal/connector"
-	"github.com/infercrane/sandbox-runtime-lab/internal/httpapi"
-	"github.com/infercrane/sandbox-runtime-lab/internal/receipt"
-	"github.com/infercrane/sandbox-runtime-lab/internal/service"
-	"github.com/infercrane/sandbox-runtime-lab/internal/store"
-	"github.com/infercrane/sandbox-runtime-lab/internal/telemetry"
+	"github.com/infercrane/brezel/internal/access"
+	"github.com/infercrane/brezel/internal/backend/e2b"
+	"github.com/infercrane/brezel/internal/connector"
+	"github.com/infercrane/brezel/internal/httpapi"
+	"github.com/infercrane/brezel/internal/receipt"
+	"github.com/infercrane/brezel/internal/service"
+	"github.com/infercrane/brezel/internal/store"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 func main() {
@@ -65,18 +65,18 @@ func keygen(args []string) error {
 }
 
 func run() error {
-	engineToken, err := loadSecretFile(env("RUNTIME_ENGINE_TOKEN_FILE", "./runtime-state/engine.token"))
+	engineToken, err := loadSecretFile(env("BREZEL_ENGINE_TOKEN_FILE", "./brezel-state/engine.token"))
 	if err != nil {
 		return fmt.Errorf("load microVM engine token: %w", err)
 	}
-	guestURL := env("RUNTIME_GUEST_URL_TEMPLATE", "http://127.0.0.1:3002")
-	durableWorkspaces, err := parseBoolEnv("RUNTIME_DURABLE_WORKSPACES", false)
+	guestURL := env("BREZEL_GUEST_URL_TEMPLATE", "http://127.0.0.1:3002")
+	durableWorkspaces, err := parseBoolEnv("BREZEL_DURABLE_WORKSPACES", false)
 	if err != nil {
 		return err
 	}
 	phaseMetrics := telemetry.NewRegistry()
 	client, err := e2b.New(
-		env("RUNTIME_ENGINE_API_URL", "http://127.0.0.1:3000"),
+		env("BREZEL_ENGINE_API_URL", "http://127.0.0.1:3000"),
 		engineToken,
 		nil,
 		e2b.WithGuestURLTemplate(guestURL),
@@ -86,12 +86,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	state, err := store.OpenFile(env("RUNTIME_DATA_FILE", "./runtime-state/state.json"))
+	state, err := store.OpenFile(env("BREZEL_DATA_FILE", "./brezel-state/state.json"))
 	if err != nil {
 		return err
 	}
 	defer state.Close()
-	private, err := loadPrivateKey(os.Getenv("RUNTIME_RECEIPT_PRIVATE_KEY_FILE"))
+	private, err := loadPrivateKey(os.Getenv("BREZEL_RECEIPT_PRIVATE_KEY_FILE"))
 	if err != nil {
 		return err
 	}
@@ -106,10 +106,10 @@ func run() error {
 		return err
 	}
 	serviceOptions = append(serviceOptions, service.WithLimits(limits), service.WithPhaseObserver(phaseMetrics))
-	gatewayURL := os.Getenv("RUNTIME_CONNECTOR_GATEWAY_URL")
-	secretDirectory := os.Getenv("RUNTIME_SECRET_FILE_DIR")
+	gatewayURL := os.Getenv("BREZEL_CONNECTOR_GATEWAY_URL")
+	secretDirectory := os.Getenv("BREZEL_SECRET_FILE_DIR")
 	if (gatewayURL == "") != (secretDirectory == "") {
-		return errors.New("RUNTIME_CONNECTOR_GATEWAY_URL and RUNTIME_SECRET_FILE_DIR must be configured together")
+		return errors.New("BREZEL_CONNECTOR_GATEWAY_URL and BREZEL_SECRET_FILE_DIR must be configured together")
 	}
 	if gatewayURL != "" {
 		resolver, resolverErr := connector.NewFileResolver(secretDirectory)
@@ -127,31 +127,31 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	accessPolicyFile := strings.TrimSpace(os.Getenv("RUNTIME_ACCESS_POLICY_FILE"))
-	trustedOperatorMode, err := parseBoolEnv("RUNTIME_TRUSTED_OPERATOR_MODE", false)
+	accessPolicyFile := strings.TrimSpace(os.Getenv("BREZEL_ACCESS_POLICY_FILE"))
+	trustedOperatorMode, err := parseBoolEnv("BREZEL_TRUSTED_OPERATOR_MODE", false)
 	if err != nil {
 		return err
 	}
 	if accessPolicyFile != "" && trustedOperatorMode {
-		return errors.New("RUNTIME_ACCESS_POLICY_FILE and RUNTIME_TRUSTED_OPERATOR_MODE are mutually exclusive")
+		return errors.New("BREZEL_ACCESS_POLICY_FILE and BREZEL_TRUSTED_OPERATOR_MODE are mutually exclusive")
 	}
 	var token string
 	if accessPolicyFile != "" {
 		policy, policyErr := access.LoadFile(accessPolicyFile)
 		if policyErr != nil {
-			return fmt.Errorf("load runtime access policy: %w", policyErr)
+			return fmt.Errorf("load Brezel access policy: %w", policyErr)
 		}
 		apiOptions = append(apiOptions, httpapi.WithAuthorizer(policy))
 	} else {
 		if !trustedOperatorMode {
-			return errors.New("RUNTIME_ACCESS_POLICY_FILE is required; set RUNTIME_TRUSTED_OPERATOR_MODE=true only for an isolated development host")
+			return errors.New("BREZEL_ACCESS_POLICY_FILE is required; set BREZEL_TRUSTED_OPERATOR_MODE=true only for an isolated development host")
 		}
-		token, err = loadSecretFile(env("RUNTIME_SERVICE_TOKEN_FILE", "./runtime-state/service.token"))
+		token, err = loadSecretFile(env("BREZEL_SERVICE_TOKEN_FILE", "./brezel-state/service.token"))
 		if err != nil {
-			return fmt.Errorf("load runtime service token: %w", err)
+			return fmt.Errorf("load Brezel service token: %w", err)
 		}
 	}
-	maxInFlight, err := parsePositiveIntEnv("RUNTIME_MAX_IN_FLIGHT_REQUESTS", 512)
+	maxInFlight, err := parsePositiveIntEnv("BREZEL_MAX_IN_FLIGHT_REQUESTS", 512)
 	if err != nil {
 		return err
 	}
@@ -169,7 +169,7 @@ func run() error {
 	go reconcileLoop(ctx, svc)
 
 	httpServer := &http.Server{
-		Addr:              env("RUNTIME_LISTEN_ADDR", "127.0.0.1:8080"),
+		Addr:              env("BREZEL_LISTEN_ADDR", "127.0.0.1:8080"),
 		Handler:           api.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -181,7 +181,7 @@ func run() error {
 	}
 	serveErr := make(chan error, 1)
 	go func() {
-		log.Printf("runtime API listening on %s with bundled microVM engine", httpServer.Addr)
+		log.Printf("Brezel API listening on %s with bundled microVM engine", httpServer.Addr)
 		serveErr <- httpServer.ListenAndServe()
 	}()
 	select {
@@ -224,23 +224,23 @@ func parsePositiveIntEnv(name string, fallback int) (int, error) {
 func loadLimits() (service.Limits, error) {
 	limits := service.DefaultLimits
 	var err error
-	limits.MaxActiveSandboxesPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_ACTIVE_SANDBOXES_PER_PROJECT", limits.MaxActiveSandboxesPerProject)
+	limits.MaxActiveSandboxesPerProject, err = parsePositiveIntEnv("BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT", limits.MaxActiveSandboxesPerProject)
 	if err != nil {
 		return limits, err
 	}
-	limits.MaxWorkspacesPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_WORKSPACES_PER_PROJECT", limits.MaxWorkspacesPerProject)
+	limits.MaxWorkspacesPerProject, err = parsePositiveIntEnv("BREZEL_MAX_WORKSPACES_PER_PROJECT", limits.MaxWorkspacesPerProject)
 	if err != nil {
 		return limits, err
 	}
-	limits.MaxConcurrentGuestOpsPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_CONCURRENT_GUEST_OPS_PER_PROJECT", limits.MaxConcurrentGuestOpsPerProject)
+	limits.MaxConcurrentGuestOpsPerProject, err = parsePositiveIntEnv("BREZEL_MAX_CONCURRENT_GUEST_OPS_PER_PROJECT", limits.MaxConcurrentGuestOpsPerProject)
 	if err != nil {
 		return limits, err
 	}
-	limits.MaxEnvironmentsPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_ENVIRONMENTS_PER_PROJECT", limits.MaxEnvironmentsPerProject)
+	limits.MaxEnvironmentsPerProject, err = parsePositiveIntEnv("BREZEL_MAX_ENVIRONMENTS_PER_PROJECT", limits.MaxEnvironmentsPerProject)
 	if err != nil {
 		return limits, err
 	}
-	limits.MaxConnectorsPerProject, err = parsePositiveIntEnv("RUNTIME_MAX_CONNECTORS_PER_PROJECT", limits.MaxConnectorsPerProject)
+	limits.MaxConnectorsPerProject, err = parsePositiveIntEnv("BREZEL_MAX_CONNECTORS_PER_PROJECT", limits.MaxConnectorsPerProject)
 	return limits, err
 }
 
@@ -299,7 +299,7 @@ func reconcileLoop(ctx context.Context, svc *service.Service) {
 
 func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	if path == "" {
-		return nil, errors.New("RUNTIME_RECEIPT_PRIVATE_KEY_FILE is required")
+		return nil, errors.New("BREZEL_RECEIPT_PRIVATE_KEY_FILE is required")
 	}
 	value, err := loadSecretFile(path)
 	if err != nil {

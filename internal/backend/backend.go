@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
+	"github.com/infercrane/brezel/internal/domain"
 )
 
 // DefaultName is the product-facing identity of the bundled hostile-code

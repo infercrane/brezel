@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/backend"
-	"github.com/infercrane/sandbox-runtime-lab/internal/domain"
+	"github.com/infercrane/brezel/internal/backend"
+	"github.com/infercrane/brezel/internal/domain"
 )
 
 type testEngine struct {

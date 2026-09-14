@@ -108,7 +108,7 @@ func TestWorkspaceClientUsesProductAPI(t *testing.T) {
 }
 
 func TestClientRejectsPlaintextRemoteAndWeakTokenFiles(t *testing.T) {
-	if _, err := newClient("http://runtime.example.com", "a-service-token-that-is-long-enough", "project-a"); err == nil {
+	if _, err := newClient("http://brezel.example.com", "a-service-token-that-is-long-enough", "project-a"); err == nil {
 		t.Fatal("expected plaintext remote URL to be rejected")
 	}
 	path := filepath.Join(t.TempDir(), "token")
@@ -127,8 +127,8 @@ func TestClientRejectsPlaintextRemoteAndWeakTokenFiles(t *testing.T) {
 }
 
 func TestRunRequiresTokenFileAndDoesNotReadTokenValueEnvironment(t *testing.T) {
-	t.Setenv("RUNTIME_SERVICE_TOKEN", "a-service-token-that-is-long-enough")
-	t.Setenv("RUNTIME_SERVICE_TOKEN_FILE", "")
+	t.Setenv("BREZEL_SERVICE_TOKEN", "a-service-token-that-is-long-enough")
+	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", "")
 	err := run([]string{"list"})
 	if err == nil || !strings.Contains(err.Error(), "token-file") {
 		t.Fatalf("run() error = %v, want protected token-file requirement", err)

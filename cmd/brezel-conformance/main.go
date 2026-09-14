@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/infercrane/sandbox-runtime-lab/internal/conformance"
+	"github.com/infercrane/brezel/internal/conformance"
 )
 
 func main() {
@@ -56,9 +56,9 @@ func run() error {
 }
 
 func loadServiceToken() (string, error) {
-	tokenFile := os.Getenv("RUNTIME_SERVICE_TOKEN_FILE")
+	tokenFile := os.Getenv("BREZEL_SERVICE_TOKEN_FILE")
 	if tokenFile == "" {
-		return "", errors.New("RUNTIME_SERVICE_TOKEN_FILE is required; the token is intentionally not accepted in argv or environment values")
+		return "", errors.New("BREZEL_SERVICE_TOKEN_FILE is required; the token is intentionally not accepted in argv or environment values")
 	}
 	token, err := readTokenFile(tokenFile)
 	if err != nil {
