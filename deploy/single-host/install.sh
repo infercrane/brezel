@@ -286,6 +286,15 @@ fi
 if [ "$NODE_TLS_RENEW" = false ] && ! openssl x509 -checkend 604800 -noout -in "$SECRETS_DIR/api.crt" >/dev/null 2>&1; then
   NODE_TLS_RENEW=true
 fi
+if [ "$NODE_TLS_RENEW" = false ] && ! openssl x509 -noout -text -in "$SECRETS_DIR/node-ca.crt" 2>/dev/null | grep -Eq 'CA:[[:space:]]*TRUE'; then
+  NODE_TLS_RENEW=true
+fi
+if [ "$NODE_TLS_RENEW" = false ] && ! openssl verify -purpose sslserver -CAfile "$SECRETS_DIR/node-ca.crt" "$SECRETS_DIR/node.crt" >/dev/null 2>&1; then
+  NODE_TLS_RENEW=true
+fi
+if [ "$NODE_TLS_RENEW" = false ] && ! openssl verify -purpose sslclient -CAfile "$SECRETS_DIR/node-ca.crt" "$SECRETS_DIR/api.crt" >/dev/null 2>&1; then
+  NODE_TLS_RENEW=true
+fi
 if [ "$NODE_TLS_RENEW" = true ]; then
   NODE_TLS_DIR=$(mktemp -d "$SECRETS_DIR/.node-tls.XXXXXX")
   cleanup_node_tls() {
@@ -296,7 +305,10 @@ if [ "$NODE_TLS_RENEW" = true ]; then
   trap 'cleanup_node_tls; cleanup_build_dir' EXIT HUP INT TERM
   openssl ecparam -name prime256v1 -genkey -noout -out "$NODE_TLS_DIR/node-ca.key"
   openssl req -x509 -new -sha256 -key "$NODE_TLS_DIR/node-ca.key" -days 365 \
-    -subj '/CN=Brezel node CA' -out "$NODE_TLS_DIR/node-ca.crt"
+    -subj '/CN=Brezel node CA' \
+    -addext 'basicConstraints=critical,CA:TRUE' \
+    -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+    -out "$NODE_TLS_DIR/node-ca.crt"
   openssl ecparam -name prime256v1 -genkey -noout -out "$NODE_TLS_DIR/node.key"
   openssl req -new -sha256 -key "$NODE_TLS_DIR/node.key" -subj '/CN=node-a.internal' -out "$NODE_TLS_DIR/node.csr"
   printf '%s\n' \
