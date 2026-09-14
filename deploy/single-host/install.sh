@@ -289,6 +289,9 @@ fi
 if [ "$NODE_TLS_RENEW" = false ] && ! openssl x509 -noout -text -in "$SECRETS_DIR/node-ca.crt" 2>/dev/null | grep -Eq 'CA:[[:space:]]*TRUE'; then
   NODE_TLS_RENEW=true
 fi
+if [ "$NODE_TLS_RENEW" = false ] && ! openssl x509 -noout -text -in "$SECRETS_DIR/node-ca.crt" 2>/dev/null | grep -Eq 'Certificate Sign'; then
+  NODE_TLS_RENEW=true
+fi
 if [ "$NODE_TLS_RENEW" = false ] && ! openssl verify -purpose sslserver -CAfile "$SECRETS_DIR/node-ca.crt" "$SECRETS_DIR/node.crt" >/dev/null 2>&1; then
   NODE_TLS_RENEW=true
 fi
