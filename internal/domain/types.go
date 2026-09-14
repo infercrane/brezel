@@ -89,25 +89,30 @@ type NetworkPolicy struct {
 }
 
 type Sandbox struct {
-	ID                  string           `json:"id"`
-	ProjectID           string           `json:"project_id"`
-	EnvironmentRevision string           `json:"environment_revision"`
-	SourceCheckpointID  string           `json:"source_checkpoint_id,omitempty"`
-	Backend             string           `json:"backend"`
-	BackendID           string           `json:"backend_id,omitempty"`
-	State               SandboxState     `json:"state"`
-	CleanupTarget       SandboxState     `json:"cleanup_target,omitempty"`
-	Lifecycle           Lifecycle        `json:"lifecycle"`
-	Network             NetworkPolicy    `json:"network"`
-	ConnectorRevisions  []string         `json:"connector_revisions,omitempty"`
-	WorkspaceMounts     []WorkspaceMount `json:"workspace_mounts,omitempty"`
-	CreatedAt           time.Time        `json:"created_at"`
-	UpdatedAt           time.Time        `json:"updated_at"`
-	LastActiveAt        time.Time        `json:"last_active_at,omitempty"`
-	StandbyEligibleAt   time.Time        `json:"standby_eligible_at,omitempty"`
-	ExpiresAt           time.Time        `json:"expires_at"`
-	Revision            int64            `json:"revision"`
-	Failure             *Failure         `json:"failure,omitempty"`
+	ID                  string `json:"id"`
+	ProjectID           string `json:"project_id"`
+	EnvironmentRevision string `json:"environment_revision"`
+	SourceCheckpointID  string `json:"source_checkpoint_id,omitempty"`
+	Backend             string `json:"backend"`
+	BackendID           string `json:"backend_id,omitempty"`
+	// Node assignment fields are durable controller state. Public APIs project
+	// Sandbox through an explicit view and never expose substrate topology.
+	NodeID             string           `json:"node_id,omitempty"`
+	NodeRouteID        string           `json:"node_route_id,omitempty"`
+	NodeGeneration     uint64           `json:"node_generation,omitempty"`
+	State              SandboxState     `json:"state"`
+	CleanupTarget      SandboxState     `json:"cleanup_target,omitempty"`
+	Lifecycle          Lifecycle        `json:"lifecycle"`
+	Network            NetworkPolicy    `json:"network"`
+	ConnectorRevisions []string         `json:"connector_revisions,omitempty"`
+	WorkspaceMounts    []WorkspaceMount `json:"workspace_mounts,omitempty"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+	LastActiveAt       time.Time        `json:"last_active_at,omitempty"`
+	StandbyEligibleAt  time.Time        `json:"standby_eligible_at,omitempty"`
+	ExpiresAt          time.Time        `json:"expires_at"`
+	Revision           int64            `json:"revision"`
+	Failure            *Failure         `json:"failure,omitempty"`
 }
 
 type Failure struct {

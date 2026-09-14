@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/infercrane/brezel/internal/domain"
 )
@@ -80,6 +81,13 @@ type SandboxReader interface {
 // fsync boundary without cloning and validating unrelated control records.
 type SandboxEventAppender interface {
 	AppendSandboxEvent(event domain.Event) error
+}
+
+// SandboxActivityRecorder is an optional write-optimized extension for the
+// guest-operation hot path. Implementations must advance activity
+// monotonically and durably before returning the updated sandbox.
+type SandboxActivityRecorder interface {
+	RecordSandboxActivity(projectID, sandboxID string, at time.Time) (domain.Sandbox, error)
 }
 
 type FileStore struct {
@@ -281,6 +289,34 @@ func (s *FileStore) AppendSandboxEvent(event domain.Event) error {
 	return nil
 }
 
+// RecordSandboxActivity avoids cloning the complete in-memory state while
+// preserving FileStore's atomic replacement boundary. SQLiteStore implements
+// the same contract as a single-row transaction.
+func (s *FileStore) RecordSandboxActivity(projectID, sandboxID string, at time.Time) (domain.Sandbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return domain.Sandbox{}, errors.New("state store is closed")
+	}
+	key := ScopedKey(projectID, sandboxID)
+	current, ok := s.state.Sandboxes[key]
+	if !ok {
+		return domain.Sandbox{}, ErrNotFound
+	}
+	nextSandbox := advanceSandboxActivity(current, at)
+	if nextSandbox.Revision == current.Revision {
+		return cloneSandbox(current), nil
+	}
+	next := s.state
+	next.Sandboxes = maps.Clone(s.state.Sandboxes)
+	next.Sandboxes[key] = nextSandbox
+	if err := s.persist(next); err != nil {
+		return domain.Sandbox{}, err
+	}
+	s.state = next
+	return cloneSandbox(nextSandbox), nil
+}
+
 func (s *FileStore) Update(fn func(*State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -464,6 +500,25 @@ func nextSandboxEventSequence(events []domain.Event, projectID, resourceID strin
 	return sequence
 }
 
+func advanceSandboxActivity(current domain.Sandbox, at time.Time) domain.Sandbox {
+	if current.State != domain.SandboxRunning && current.State != domain.SandboxStandby {
+		return current
+	}
+	if at.Before(current.LastActiveAt) {
+		at = current.LastActiveAt
+	}
+	current.UpdatedAt = at
+	current.LastActiveAt = at
+	current.Revision++
+	if current.Lifecycle.StandbyAfterSeconds > 0 {
+		seconds := current.Lifecycle.StandbyAfterSeconds + current.Lifecycle.StandbyGraceSeconds
+		current.StandbyEligibleAt = at.Add(time.Duration(seconds) * time.Second)
+	} else {
+		current.StandbyEligibleAt = time.Time{}
+	}
+	return current
+}
+
 func validateSandboxEvent(event domain.Event) error {
 	if err := domain.ValidateProjectID(event.ProjectID); err != nil {
 		return errors.New("event has invalid project identity")
@@ -501,6 +556,13 @@ func validateState(state State) error {
 	for key, value := range state.Sandboxes {
 		if err := requireScopedIdentity(key, value.ProjectID, value.ID, "sandbox"); err != nil {
 			return err
+		}
+		hasNodeIdentity := value.NodeID != "" || value.NodeRouteID != "" || value.NodeGeneration != 0
+		if hasNodeIdentity && (value.NodeID == "" || value.NodeRouteID == "" || value.NodeGeneration == 0) {
+			return errors.New("sandbox contains an incomplete node assignment")
+		}
+		if strings.ContainsAny(value.NodeID+value.NodeRouteID, "\x00\r\n") {
+			return errors.New("sandbox contains an invalid node assignment")
 		}
 	}
 	for key, value := range state.Operations {

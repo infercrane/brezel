@@ -150,17 +150,31 @@ run_active_recovery() {
 
 resolve_engine_sandbox_id() {
   product_sandbox_id=$1
-  state_file="$BREZEL_STATE_DIR/state.json"
-  [ -s "$state_file" ] || {
-    echo "runtime state is unavailable while resolving the engine sandbox ID" >&2
+  state_database="$BREZEL_STATE_DIR/brezel.db"
+  [ -s "$state_database" ] || {
+    echo "runtime database is unavailable while resolving the engine sandbox ID" >&2
     return 1
   }
-  # The state store is compact JSON. Sandbox fields before backend_id contain
-  # no nested object, so this extracts only the record with the exact public ID
-  # without exposing the backend identifier through the public API.
-  engine_sandbox_id=$(sed -n \
-    's/.*"id":"'"$product_sandbox_id"'"[^{}]*"backend_id":"\([^"]*\)".*/\1/p' \
-    "$state_file")
+  # Qualification is trusted host-side code. It reads the private lifecycle
+  # ledger directly so the engine identifier never becomes a public API field.
+  engine_sandbox_id=$(python3 - "$state_database" "$product_sandbox_id" <<'PY'
+import json
+import sqlite3
+import sys
+
+database, sandbox_id = sys.argv[1:]
+connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)
+try:
+    row = connection.execute(
+        "SELECT payload FROM resources WHERE kind = ? AND resource_key = ?",
+        ("sandbox", "brezel-conformance\x00" + sandbox_id),
+    ).fetchone()
+    if row is not None:
+        print(json.loads(row[0])["backend_id"])
+finally:
+    connection.close()
+PY
+  )
   case "$engine_sandbox_id" in
     ""|*[!A-Za-z0-9._-]*)
       echo "could not resolve a valid engine sandbox ID for the live capability probe" >&2
@@ -168,6 +182,56 @@ resolve_engine_sandbox_id() {
       ;;
   esac
   printf '%s\n' "$engine_sandbox_id"
+}
+
+run_node_restart_recovery() {
+  recovery_target=$1
+  report_tmp=$(mktemp "$QUALIFICATION_DIR/.report.XXXXXX")
+  recovery_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  recovery_started_ms=$(date +%s%3N)
+  marker="node-restart-$recovery_started_ms"
+
+  ACTIVE_WORKSPACE_ID=$(cli workspace create node-restart-recovery | awk 'NR == 1 {print $1}')
+  [ -n "$ACTIVE_WORKSPACE_ID" ] || {
+    echo "node restart qualification did not return a workspace ID" >&2
+    return 1
+  }
+  ACTIVE_SANDBOX_ID=$(cli new --template base --workspace "$ACTIVE_WORKSPACE_ID:/workspace" --ttl 600 | awk 'NR == 1 {print $1}')
+  [ -n "$ACTIVE_SANDBOX_ID" ] || {
+    echo "node restart qualification did not return a sandbox ID" >&2
+    return 1
+  }
+  cli exec "$ACTIVE_SANDBOX_ID" /bin/sh -lc 'printf %s "$1" > /workspace/node-restart.txt' runtime-recovery "$marker"
+
+  compose restart brezel-node >/dev/null
+  wait_ready
+  if ! cli sandbox inspect "$ACTIVE_SANDBOX_ID" | grep -q '"state": "running"'; then
+    echo "active sandbox was not running after node restart" >&2
+    return 1
+  fi
+  observed=$(cli exec "$ACTIVE_SANDBOX_ID" /bin/cat /workspace/node-restart.txt)
+  if [ "$observed" != "$marker" ]; then
+    echo "the relay did not preserve the active sandbox route across node restart" >&2
+    return 1
+  fi
+
+  cli sandbox delete "$ACTIVE_SANDBOX_ID" >/dev/null
+  ACTIVE_SANDBOX_ID=
+  cli workspace delete "$ACTIVE_WORKSPACE_ID" >/dev/null
+  ACTIVE_WORKSPACE_ID=
+
+  recovery_finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  recovery_duration=$(( $(date +%s%3N) - recovery_started_ms ))
+  printf '%s\n' \
+    "{\"target\":\"$recovery_target\",\"scope\":\"active sandbox route and durable workspace data across an execution node restart\",\"qualification\":\"node_restart_recovery_conformant\",\"started_at\":\"$recovery_started\",\"finished_at\":\"$recovery_finished\",\"steps\":[{\"name\":\"node_restart_with_active_sandbox\",\"status\":\"passed\",\"duration_ms\":$recovery_duration}]}" \
+    > "$report_tmp"
+  chmod 600 "$report_tmp"
+  if [ -e "$QUALIFICATION_DIR/$recovery_target.json" ]; then
+    echo "qualification report already exists for $recovery_target" >&2
+    rm -f -- "$report_tmp"
+    return 1
+  fi
+  mv -- "$report_tmp" "$QUALIFICATION_DIR/$recovery_target.json"
 }
 
 run_engine_fast_path_qualification() {
@@ -231,9 +295,14 @@ run_engine_fast_path_qualification "$TARGET-engine-fast-path"
 # This detects reconciliation paths that a clean restart cannot exercise.
 run_active_recovery "$TARGET-active-restart"
 
+# Replace the separately authenticated byte-path process while an assigned VM
+# remains live. The fresh relay boot identity invalidates old capabilities;
+# the next operation must resolve the current boot and use the durable route.
+run_node_restart_recovery "$TARGET-node-restart"
+
 # Repeat the destructive suite after recovery to catch lock-release, decode,
 # dependency readiness, idempotency-index, and engine reconnection failures.
 run_conformance "$TARGET-post-restart"
 
 trap - EXIT HUP INT TERM
-echo "Qualification reports: $QUALIFICATION_DIR/$TARGET.json, $QUALIFICATION_DIR/$TARGET-engine-fast-path.json, $QUALIFICATION_DIR/$TARGET-active-restart.json, and $QUALIFICATION_DIR/$TARGET-post-restart.json"
+echo "Qualification reports: $QUALIFICATION_DIR/$TARGET.json, $QUALIFICATION_DIR/$TARGET-engine-fast-path.json, $QUALIFICATION_DIR/$TARGET-active-restart.json, $QUALIFICATION_DIR/$TARGET-node-restart.json, and $QUALIFICATION_DIR/$TARGET-post-restart.json"

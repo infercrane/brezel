@@ -61,12 +61,20 @@ func (h *routeAdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeRouteAdminError(w, http.StatusNotFound, "route_not_found")
 		return
 	}
+	if action == routeAdminBind && r.Method == http.MethodGet {
+		h.resolve(w, routeID)
+		return
+	}
 	wantMethod := http.MethodPost
 	if action == routeAdminBind {
 		wantMethod = http.MethodPut
 	}
 	if r.Method != wantMethod {
-		w.Header().Set("Allow", wantMethod)
+		if action == routeAdminBind {
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
+		} else {
+			w.Header().Set("Allow", wantMethod)
+		}
 		writeRouteAdminError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
@@ -87,6 +95,15 @@ func (h *routeAdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeRouteAdminError(w, http.StatusNotFound, "route_not_found")
 	}
+}
+
+func (h *routeAdminHandler) resolve(w http.ResponseWriter, routeID string) {
+	binding, err := h.ledger.Resolve(routeID)
+	if err != nil {
+		writeRouteAdminLedgerError(w, err)
+		return
+	}
+	writeRouteAdminJSON(w, http.StatusOK, RouteAdminResult{NodeID: h.nodeID, Route: binding.Public()})
 }
 
 func (h *routeAdminHandler) bind(w http.ResponseWriter, r *http.Request, routeID string) {

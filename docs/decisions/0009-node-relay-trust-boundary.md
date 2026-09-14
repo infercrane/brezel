@@ -1,6 +1,6 @@
 # ADR 0009: Establish an authenticated node-relay trust boundary
 
-- Status: accepted; integration incomplete
+- Status: accepted; single-host integration implemented, host qualification pending
 - Date: 2026-09-14
 
 ## Context
@@ -76,23 +76,19 @@ logger.
 
 ## Current integration boundary
 
-This ADR accepts the trust model and internal protocol; it does not declare the
-relay the default production data path.
+The packaged single-host profile now starts the relay as a separate process and
+uses it by default for command, file, and preview traffic. `brezeld` owns the
+desired lifecycle, binds and transitions opaque node routes over a separate
+mTLS control listener, stores the route generation with the sandbox, and
+reconciles that assignment after restart. The relay resolves its boot identity
+on each admitted operation before a capability is minted, so a node restart
+invalidates prior capabilities without invalidating the durable route.
 
-The repository contains the mTLS identity helpers, capability signer and
-verifier, replay cache, node generation ledger, relay server, and an API-side
-relay data-plane adapter. The default `brezeld` process still selects the
-in-process backend adapter. Public command, file, and preview requests therefore
-still traverse the durable API, and no separately authenticated data-edge path
-currently carries the operation to the node.
-
-Lifecycle calls and placement intentionally continue through the durable
-service and engine adapter. Moving them is not required to remove the durable
-API from the future byte path. Before enabling that path by default, the
-project still needs node registration and boot identity publication, certificate
-and signing-key rotation, route-ledger reconciliation, a data-edge routing
-path, operational packaging, failover behavior, and qualification on
-Linux/KVM.
+Lifecycle engine calls intentionally continue through the durable service.
+This removes customer byte traffic from that process without distributing
+lifecycle authority. Dynamic node enrollment, online certificate and signing
+key rotation, durable node-operation receipts, fleet placement, failover, and
+Linux/KVM qualification remain outside the completed integration.
 
 ## Limits and non-decisions
 

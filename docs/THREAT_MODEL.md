@@ -170,15 +170,16 @@ route bind and generation-fenced state transitions. It applies an
 already-authorized controller decision; it does not independently authorize
 product lifecycle or placement. Control responses never contain the private
 engine identity. Rebind and removal retries remain intentionally ambiguous and
-fail closed until durable node-operation receipts exist.
+fail closed until durable node-operation receipts exist. On service restart,
+the controller reconciles its durable node assignment against the node ledger
+before serving the resource again.
 
-The system does not yet expose a public capability-minting endpoint, rotate
-certificates or signing keys, reconcile the node ledger with a fleet authority,
-support terminal or WebSocket tunnels, or provide a separately authenticated
-data-edge path. The default server still uses the in-process engine data-plane
-adapter, so current public command, file, and preview traffic continues through
-the durable API. Relay deployment remains a non-default release milestone
-until those integration and Linux/KVM failure tests pass.
+The system does not expose a public capability-minting endpoint, perform online
+certificate or signing-key rotation, enroll nodes dynamically, support terminal
+or WebSocket tunnels, or provide fleet failover. The packaged single-host
+profile does use the separately authenticated relay for command, file, and
+preview bytes. This wiring remains a release candidate until the integrated
+Linux/KVM restart and failure suite passes.
 
 ## Checkpoint, restore, and fork boundary
 

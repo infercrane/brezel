@@ -251,6 +251,7 @@ machine before and after a change:
 ```sh
 go test -run '^$' -bench 'BenchmarkFileStore(View|GetSandbox)$' -benchmem -count=5 ./internal/store
 go test -run '^$' -bench '^BenchmarkFileStoreSandboxEventAppend' -benchmem -benchtime=10x -count=5 ./internal/store
+go test -run '^$' -bench '^BenchmarkSQLiteStoreHotPath$' -benchmem -benchtime=200ms -count=5 ./internal/store
 ```
 
 The keyed-read benchmark measures authorization lookup without copying
@@ -259,6 +260,16 @@ with the specialized content-free append. Both paths retain deep-copy isolation
 where data leaves the store; the event path retains atomic replacement, file
 and directory `fsync`, and publish-after-persist ordering. Record the Go
 version, OS, architecture, CPU, run count, and complete output with any result.
+
+On 2026-09-15, an Apple M4 development machine running Darwin arm64 measured
+the SQLite keyed read at 15.7 to 18.4 microseconds, activity transaction at
+67.2 to 94.8 microseconds, and event transaction at 95.3 to 107.3 microseconds
+with 10,000 unrelated resources across five runs. The prior JSON whole-state
+update was 18.9 to 21.9 milliseconds and its specialized event replacement was
+15.3 to 17.8 milliseconds in the same run. This demonstrates constant-scale
+controller hot paths and a roughly two-order-of-magnitude local write-path
+improvement. It is not a Firecracker startup result, does not predict hosted
+latency, and authorizes no competitive claim.
 
 ### Relay authorization microbenchmark
 
@@ -274,8 +285,10 @@ go test ./internal/node -run '^$' \
 ```
 
 On 2026-09-14, an Apple M4 development machine running Darwin arm64 observed
-123.6 to 129.5 microseconds per operation with a three-second benchmark window,
-about 21.7 kB allocated, and 151 allocations per operation across five runs.
+93.5 to 101.9 microseconds per operation, about 21.7 kB allocated, and 151
+allocations per operation across five runs. This later sample supersedes an
+earlier same-day 123.6 to 129.5 microsecond observation and is another reason
+to retain complete repeated evidence rather than quote one local result.
 This is local engineering evidence, not a portable performance claim. Linux/KVM
 release evidence still requires the complete matrix above.
 

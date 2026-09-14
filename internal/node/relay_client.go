@@ -49,6 +49,11 @@ type RelayDataPlane struct {
 	nodeID   string
 }
 
+// RequiresNodeAssignment lets the lifecycle service reject a relay
+// configuration that has no durable route administrator. It is intentionally
+// not part of DataPlane so test and embedded implementations stay small.
+func (*RelayDataPlane) RequiresNodeAssignment() bool { return true }
+
 func (*RelayDataPlane) ownedNodeDataPlane() {}
 
 // NewRelayDataPlane requires an HTTPS endpoint and constructs the relay client
@@ -93,6 +98,35 @@ func (d *RelayDataPlane) Capabilities() Capabilities {
 		return Capabilities{}
 	}
 	return Capabilities{CommandStreaming: true, FileReadWrite: true, AuthenticatedPorts: true}
+}
+
+// Ready verifies the authenticated node data listener and its engine-backed
+// readiness without requiring a sandbox route.
+func (d *RelayDataPlane) Ready(ctx context.Context) error {
+	if d == nil || d.baseURL == nil || d.client == nil {
+		return backend.ErrCapabilityUnavailable
+	}
+	readyContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	request, err := d.request(readyContext, http.MethodGet, "/readyz", nil, "", "")
+	if err != nil {
+		return err
+	}
+	response, err := d.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("call node readiness: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return relayResponseError(response)
+	}
+	var result struct {
+		Status string `json:"status"`
+	}
+	if err := decodeRelayJSON(response.Body, relayClientMaxRouteResponse, &result); err != nil || result.Status != "ready" {
+		return errors.New("node readiness response is invalid")
+	}
+	return nil
 }
 
 func (d *RelayDataPlane) Run(ctx context.Context, binding SandboxBinding, request backend.CommandRequest, emit func(backend.CommandEvent) error) error {

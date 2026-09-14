@@ -28,11 +28,11 @@ changes. It must not be described as hostile shared-multitenant production.
 | Network and connectors | Deny-by-default policy and a narrow private model/tool connector preview |
 | Authentication | Protected token digests bound to explicit projects |
 | Capacity | Per-project resource limits plus a process-wide admission ceiling |
-| State | Private, bounded, schema-versioned, exclusively locked, atomic and fsynced |
+| State | Private SQLite WAL ledger, exclusive controller lock, semantic validation, legacy JSON import, and row-scoped guest hot paths |
 | Recovery | Durable idempotency, lifecycle events, cleanup intent, expiration reconciliation |
 | Evidence | Ed25519-signed DSSE lifecycle receipt; no customer content by default |
 | Distribution | Pinned source, patches, images, VM artifacts, installer, conformance, benchmark harness |
-| Node relay foundation | Packaged node binary with separate mTLS control and data listeners, route lifecycle CAS, single-operation capabilities, replay defense, generation fencing, and in-flight operation leases; not default wiring |
+| Node relay | The single-host package defaults command, file, and preview traffic to separate mTLS control and data listeners with route lifecycle CAS, one-operation capabilities, replay defense, generation fencing, reconciliation, and in-flight leases; Linux/KVM qualification pending |
 
 Release code has no fake backend and no container isolation fallback. The test
 backend exists only in `_test.go` files. A remote engine requires TLS; service
@@ -44,7 +44,7 @@ and engine credentials are read from protected files.
 - interactive PTY, SSH, desktop, or WebSocket transport
 - full-state checkpoint and fork
 - Python and TypeScript SDKs
-- node enrollment, rotation, durable operation receipts, reconciliation, service-unit packaging, and default direct data paths
+- node enrollment, online certificate and signing-key rotation, durable node-operation receipts, and service-unit upgrade or rollback packaging
 - warm-capacity management and node-local snapshot prefetch
 - OIDC, organizations, RBAC, approvals, or dynamic quota administration
 - multiple nodes, replicated state, workspace backup/restore, or disaster recovery
@@ -81,9 +81,9 @@ and post-reboot matrix before new numbers are published. See
 
 ## Next release gate
 
-The relay trust foundation and separate node process are implemented and pass
-local protocol, negative, concurrency, restart, and race tests. The next gate
-is node enrollment and identity rotation, durable operation receipts, desired
-route reconciliation, service-unit packaging, and the default command, file,
-and preview handoff. That integrated path must pass the complete Linux/KVM
-qualification, failure, and benchmark matrix before this status changes.
+The separate node process, default single-host byte path, and SQLite lifecycle
+ledger pass local protocol, migration, negative, concurrency, restart, and race
+tests. The next gate is the complete Linux/KVM qualification, including active
+controller and node replacement, followed by the benchmark matrix. A two-host
+controller/execution topology may validate network and failure boundaries, but
+does not establish multi-node scheduling or replicated-state claims.

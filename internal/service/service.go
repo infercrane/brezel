@@ -58,6 +58,7 @@ type Service struct {
 	store                   store.Store
 	backend                 backend.Backend
 	dataPlane               node.DataPlane
+	routeAdmin              NodeRouteAdministrator
 	broker                  *connector.Broker
 	signer                  *receipt.Signer
 	now                     func() time.Time
@@ -67,6 +68,19 @@ type Service struct {
 	recentActivity          map[string]time.Time
 	limits                  Limits
 	observer                telemetry.Observer
+}
+
+// NodeRouteAdministrator is the private lifecycle authority for a configured
+// execution node. The public API never receives these requests or results.
+type NodeRouteAdministrator interface {
+	Resolve(context.Context, string) (node.RouteAdminResult, error)
+	Bind(context.Context, node.RouteBindRequest) (node.RouteAdminResult, error)
+	AttachReady(context.Context, node.RouteTransitionRequest) (node.RouteAdminResult, error)
+	Drain(context.Context, node.RouteTransitionRequest) (node.RouteAdminResult, error)
+	Standby(context.Context, node.RouteTransitionRequest) (node.RouteAdminResult, error)
+	Rebind(context.Context, node.RouteRebindRequest) (node.RouteAdminResult, error)
+	Release(context.Context, node.RouteTransitionRequest) (node.RouteAdminResult, error)
+	Remove(context.Context, node.RouteTransitionRequest) (node.RouteRemoveResult, error)
 }
 
 type Option func(*Service)
@@ -89,6 +103,12 @@ func WithPhaseObserver(observer telemetry.Observer) Option {
 // lifecycle fencing, expiry, and quota admission before creating a binding.
 func WithNodeDataPlane(dataPlane node.DataPlane) Option {
 	return func(s *Service) { s.dataPlane = dataPlane }
+}
+
+// WithNodeRouteAdministrator enables the durable node route lifecycle needed
+// by RelayDataPlane. Supplying only one half fails service construction.
+func WithNodeRouteAdministrator(administrator NodeRouteAdministrator) Option {
+	return func(s *Service) { s.routeAdmin = administrator }
 }
 
 // WithClock supplies the lifecycle clock for embedded runtimes and
@@ -126,6 +146,9 @@ func New(st store.Store, be backend.Backend, signer *receipt.Signer, options ...
 	if s.dataPlane == nil {
 		return nil, errors.New("node data plane is required")
 	}
+	if routed, ok := s.dataPlane.(interface{ RequiresNodeAssignment() bool }); ok && routed.RequiresNodeAssignment() && s.routeAdmin == nil {
+		return nil, errors.New("remote node data plane requires a node route administrator")
+	}
 	if s.limits.MaxActiveSandboxesPerProject < 1 || s.limits.MaxWorkspacesPerProject < 1 || s.limits.MaxConcurrentGuestOpsPerProject < 1 || s.limits.MaxEnvironmentsPerProject < 1 || s.limits.MaxConnectorsPerProject < 1 {
 		return nil, errors.New("all runtime limits must be positive")
 	}
@@ -149,6 +172,11 @@ func (s *Service) Ready(ctx context.Context) error {
 	}
 	if err := runtime.Ready(ctx); err != nil {
 		return fmt.Errorf("backend: %w", err)
+	}
+	if dataPlane, ok := s.dataPlane.(interface{ Ready(context.Context) error }); ok {
+		if err := dataPlane.Ready(ctx); err != nil {
+			return fmt.Errorf("node data plane: %w", err)
+		}
 	}
 	return nil
 }
@@ -509,8 +537,8 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 	telemetry.Observe(s.observer, telemetry.OperationSandboxCreate, telemetry.PhaseBackendCall, backendStarted, backendErr)
 	s.mu.Lock()
 	locked = true
-	delete(s.activeBackendMutations, mutationKey)
 	if backendErr != nil {
+		delete(s.activeBackendMutations, mutationKey)
 		failure := &domain.Failure{Code: "backend_create_unconfirmed", Message: "sandbox backend did not confirm whether the resource was created", Retryable: true}
 		now = s.now()
 		sandbox.State, sandbox.Failure, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxUnknown, failure, now, sandbox.Revision+1
@@ -529,6 +557,34 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 	sandbox.BackendID, sandbox.State, sandbox.UpdatedAt, sandbox.Revision = remote.ID, remote.State, now, sandbox.Revision+1
 	sandbox.Failure = nil
 	markSandboxActive(&sandbox, now)
+	// Route attachment is part of provisioning and remains fenced as a backend
+	// mutation, but it must not hold the service-wide admission lock during mTLS
+	// network I/O.
+	s.mu.Unlock()
+	locked = false
+	routeStarted := time.Now()
+	sandbox, routeErr := s.attachNodeRoute(ctx, sandbox)
+	s.mu.Lock()
+	locked = true
+	delete(s.activeBackendMutations, mutationKey)
+	if routeErr != nil {
+		failure := &domain.Failure{Code: "node_route_attach_unconfirmed", Message: "execution node did not confirm the sandbox route", Retryable: true}
+		now = s.now()
+		sandbox.State, sandbox.Failure, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxUnknown, failure, now, sandbox.Revision+1
+		op.State, op.Failure, op.UpdatedAt = domain.OperationFailed, failure, now
+		persistResultStarted := time.Now()
+		persistErr := s.store.Update(func(state *store.State) error {
+			state.Sandboxes[store.ScopedKey(projectID, sandbox.ID)] = sandbox
+			state.Operations[store.ScopedKey(projectID, op.ID)] = op
+			appendEvent(state, eventFor(sandbox, op.ID, "sandbox.unknown", now, map[string]any{"code": failure.Code}))
+			return nil
+		})
+		telemetry.Observe(s.observer, telemetry.OperationSandboxCreate, telemetry.PhaseBackendCall, routeStarted, routeErr)
+		telemetry.Observe(s.observer, telemetry.OperationSandboxCreate, telemetry.PhasePersistResult, persistResultStarted, persistErr)
+		return sandbox, op, fmt.Errorf("%w: attach sandbox node route: %v", ErrBackend, routeErr)
+	}
+	now = s.now()
+	sandbox.UpdatedAt = now
 	op.State, op.UpdatedAt = domain.OperationSucceeded, now
 	persistResultStarted := time.Now()
 	err = s.store.Update(func(state *store.State) error {
@@ -679,19 +735,30 @@ func (s *Service) Events(projectID, sandboxID string) ([]domain.Event, error) {
 }
 
 func (s *Service) Pause(ctx context.Context, projectID, sandboxID, idempotencyKey string) (domain.Sandbox, domain.Operation, error) {
-	return s.lifecycleAction(ctx, projectID, sandboxID, idempotencyKey, "pause_sandbox", domain.SandboxRunning, domain.SandboxPausing, domain.SandboxStandby, func(sandbox domain.Sandbox) error {
-		return s.backend.Pause(ctx, sandbox.BackendID, sandbox.Lifecycle.StandbyCheckpoint)
+	return s.lifecycleAction(ctx, projectID, sandboxID, idempotencyKey, "pause_sandbox", domain.SandboxRunning, domain.SandboxPausing, domain.SandboxStandby, func(sandbox domain.Sandbox) (domain.Sandbox, error) {
+		updated, err := s.prepareNodeRoutePause(ctx, sandbox)
+		if err != nil {
+			return updated, err
+		}
+		if err := s.backend.Pause(ctx, updated.BackendID, updated.Lifecycle.StandbyCheckpoint); err != nil {
+			return updated, err
+		}
+		return s.completeNodeRouteStandby(ctx, updated)
 	})
 }
 
 func (s *Service) Resume(ctx context.Context, projectID, sandboxID, idempotencyKey string) (domain.Sandbox, domain.Operation, error) {
-	return s.lifecycleAction(ctx, projectID, sandboxID, idempotencyKey, "resume_sandbox", domain.SandboxStandby, domain.SandboxResuming, domain.SandboxRunning, func(sandbox domain.Sandbox) error {
+	return s.lifecycleAction(ctx, projectID, sandboxID, idempotencyKey, "resume_sandbox", domain.SandboxStandby, domain.SandboxResuming, domain.SandboxRunning, func(sandbox domain.Sandbox) (domain.Sandbox, error) {
 		remaining := int64(sandbox.ExpiresAt.Sub(s.now()).Seconds())
 		if remaining < 1 {
-			return fmt.Errorf("%w: sandbox expired", ErrConflict)
+			return sandbox, fmt.Errorf("%w: sandbox expired", ErrConflict)
 		}
-		_, err := s.backend.Resume(ctx, sandbox.BackendID, sandbox.Lifecycle.StandbyCheckpoint, remaining)
-		return err
+		remote, err := s.backend.Resume(ctx, sandbox.BackendID, sandbox.Lifecycle.StandbyCheckpoint, remaining)
+		if err != nil {
+			return sandbox, err
+		}
+		sandbox.BackendID = remote.ID
+		return s.resumeNodeRoute(ctx, sandbox)
 	})
 }
 
@@ -736,7 +803,14 @@ func (s *Service) Delete(ctx context.Context, projectID, sandboxID, idempotencyK
 	s.mu.Unlock()
 	locked = false
 	backendStarted := time.Now()
-	backendErr := s.backend.Delete(ctx, sandbox.BackendID)
+	routedSandbox, backendErr := s.prepareNodeRoutePause(ctx, sandbox)
+	if backendErr == nil {
+		backendErr = s.backend.Delete(ctx, routedSandbox.BackendID)
+	}
+	if backendErr == nil || errors.Is(backendErr, backend.ErrNotFound) {
+		routedSandbox, backendErr = s.removeNodeRoute(ctx, routedSandbox)
+	}
+	sandbox = routedSandbox
 	telemetry.Observe(s.observer, telemetry.OperationSandboxDelete, telemetry.PhaseBackendCall, backendStarted, backendErr)
 	s.mu.Lock()
 	locked = true
@@ -1040,7 +1114,14 @@ func (s *Service) reconcileBackendState(ctx context.Context) error {
 			continue
 		}
 		now := s.now()
-		sandbox.BackendID, sandbox.State, sandbox.UpdatedAt, sandbox.Revision, sandbox.Failure = remote.ID, remote.State, now, sandbox.Revision+1, nil
+		sandbox.BackendID = remote.ID
+		routed, routeErr := s.reconcileNodeRoute(ctx, sandbox, remote.State)
+		sandbox = routed
+		if routeErr != nil {
+			_, _ = s.markUnknownLocked(sandbox, "node_route_reconcile_failed")
+			continue
+		}
+		sandbox.State, sandbox.UpdatedAt, sandbox.Revision, sandbox.Failure = remote.State, now, sandbox.Revision+1, nil
 		_ = s.store.Update(func(state *store.State) error {
 			state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
 			switch sandbox.State {
@@ -1130,7 +1211,13 @@ func (s *Service) pauseIfIdle(ctx context.Context, projectID, sandboxID string) 
 	s.activeBackendMutations[key] = struct{}{}
 	s.mu.Unlock()
 	locked = false
-	backendErr := s.backend.Pause(ctx, sandbox.BackendID, sandbox.Lifecycle.StandbyCheckpoint)
+	sandbox, backendErr := s.prepareNodeRoutePause(ctx, sandbox)
+	if backendErr == nil {
+		backendErr = s.backend.Pause(ctx, sandbox.BackendID, sandbox.Lifecycle.StandbyCheckpoint)
+	}
+	if backendErr == nil {
+		sandbox, backendErr = s.completeNodeRouteStandby(ctx, sandbox)
+	}
 	s.mu.Lock()
 	locked = true
 	delete(s.activeBackendMutations, key)
@@ -1142,7 +1229,7 @@ func (s *Service) pauseIfIdle(ctx context.Context, projectID, sandboxID string) 
 	return err
 }
 
-func (s *Service) lifecycleAction(ctx context.Context, projectID, sandboxID, idempotencyKey, kind string, from, transitional, target domain.SandboxState, call func(domain.Sandbox) error) (domain.Sandbox, domain.Operation, error) {
+func (s *Service) lifecycleAction(ctx context.Context, projectID, sandboxID, idempotencyKey, kind string, from, transitional, target domain.SandboxState, call func(domain.Sandbox) (domain.Sandbox, error)) (domain.Sandbox, domain.Operation, error) {
 	operation := lifecycleTelemetryOperation(kind)
 	s.mu.Lock()
 	locked := true
@@ -1183,7 +1270,7 @@ func (s *Service) lifecycleAction(ctx context.Context, projectID, sandboxID, ide
 	s.mu.Unlock()
 	locked = false
 	backendStarted := time.Now()
-	backendErr := call(sandbox)
+	sandbox, backendErr := call(sandbox)
 	telemetry.Observe(s.observer, operation, telemetry.PhaseBackendCall, backendStarted, backendErr)
 	s.mu.Lock()
 	locked = true
@@ -1272,6 +1359,13 @@ func markSandboxActive(sandbox *domain.Sandbox, at time.Time) {
 // concurrent lifecycle transition.
 func (s *Service) recordActivityLocked(projectID, sandboxID string, at time.Time) (domain.Sandbox, error) {
 	key := store.ScopedKey(projectID, sandboxID)
+	if recorder, ok := s.store.(store.SandboxActivityRecorder); ok {
+		sandbox, err := recorder.RecordSandboxActivity(projectID, sandboxID, at)
+		if err == nil {
+			s.recentActivity[key] = sandbox.LastActiveAt
+		}
+		return sandbox, translateStore(err)
+	}
 	var sandbox domain.Sandbox
 	err := s.store.Update(func(state *store.State) error {
 		current, ok := state.Sandboxes[key]
@@ -1351,6 +1445,11 @@ func (s *Service) reconcileCleanupLocked(ctx context.Context, sandbox domain.San
 			return s.markUnknownLocked(sandbox, "backend_cleanup_failed")
 		}
 	}
+	routed, routeErr := s.removeNodeRoute(ctx, sandbox)
+	if routeErr != nil {
+		return s.markUnknownLocked(routed, "node_route_cleanup_failed")
+	}
+	sandbox = routed
 	now := s.now()
 	sandbox.State, sandbox.UpdatedAt, sandbox.Revision, sandbox.Failure = target, now, sandbox.Revision+1, nil
 	err := s.store.Update(func(state *store.State) error {

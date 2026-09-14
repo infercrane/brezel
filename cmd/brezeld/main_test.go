@@ -1,10 +1,40 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestKeygenCanEmitMatchingCapabilityPublicKey(t *testing.T) {
+	directory := t.TempDir()
+	privatePath := filepath.Join(directory, "private.key")
+	publicPath := filepath.Join(directory, "public.key")
+	if err := keygen([]string{"-out", privatePath, "-public-out", publicPath}); err != nil {
+		t.Fatal(err)
+	}
+	privateEncoded, err := os.ReadFile(privatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicEncoded, err := os.ReadFile(publicPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, err := base64.StdEncoding.DecodeString(string(bytes.TrimSpace(privateEncoded)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := base64.StdEncoding.DecodeString(string(bytes.TrimSpace(publicEncoded)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(private) != 64 || len(public) != 32 || string(private[32:]) != string(public) {
+		t.Fatal("emitted public key does not match private key")
+	}
+}
 
 func TestLoadSecretFileRequiresPrivateRegularFile(t *testing.T) {
 	directory := t.TempDir()
@@ -60,5 +90,19 @@ func TestLoadLimitsRejectsUnboundedOrMalformedValues(t *testing.T) {
 	}
 	if limits.MaxActiveSandboxesPerProject != 5 || limits.MaxWorkspacesPerProject != 6 || limits.MaxConcurrentGuestOpsPerProject != 7 || limits.MaxEnvironmentsPerProject != 8 || limits.MaxConnectorsPerProject != 9 {
 		t.Fatalf("limits = %#v", limits)
+	}
+}
+
+func TestLoadNodeOptionsRequiresCompleteRelayConfiguration(t *testing.T) {
+	if options, err := loadNodeOptions(); err != nil || len(options) != 0 {
+		t.Fatalf("disabled node relay options=%d err=%v", len(options), err)
+	}
+	t.Setenv("BREZEL_NODE_DATA_URL", "https://node.invalid:8443")
+	if _, err := loadNodeOptions(); err == nil {
+		t.Fatal("partial node relay configuration was accepted")
+	}
+	t.Setenv("BREZEL_NODE_CONTROL_URL", "https://node.invalid:8444")
+	if _, err := loadNodeOptions(); err == nil {
+		t.Fatal("node relay without identities was accepted")
 	}
 }

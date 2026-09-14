@@ -123,7 +123,7 @@ sandbox.stop()
 | **Lifecycle** | Expiration, automatic standby, same-host resume, cleanup, and restart recovery |
 | **I/O** | Bounded file transfer and short-lived authenticated HTTP previews |
 | **Network** | Deny-by-default policy and a narrow private model or tool connector preview |
-| **Control** | Project-bound credentials, quotas, overload admission, and idempotent operations |
+| **Control** | Project-bound credentials, quotas, overload admission, idempotent operations, and a SQLite WAL lifecycle ledger |
 | **Evidence** | Content-minimal Ed25519 lifecycle receipts and reproducible qualification |
 
 ## Architecture
@@ -145,11 +145,12 @@ qualification, and evidence. The first engine distribution uses pinned,
 locally patched Apache-2.0 E2B Runtime components. It does not use E2B Cloud or
 require an E2B API key.
 
-The internal node relay implements mTLS identities, one-operation Ed25519
-capabilities, replay defense, generation fencing, and bounded command, file,
-and preview protocols. It is not the default byte path until enrollment,
-rotation, reconciliation, deployment wiring, and Linux/KVM failure
-qualification are complete.
+The single-host distribution sends command, file, and preview traffic through
+a separate node relay. It uses mTLS identities, one-operation Ed25519
+capabilities, replay defense, durable route generations, and bounded protocols.
+The API remains the lifecycle authority. This integrated path passes repository
+tests but still requires fresh Linux/KVM failure qualification before it can
+carry a stronger release label.
 
 ## Readiness boundary
 
@@ -204,7 +205,7 @@ package or a performance claim.
 - Ubuntu 24.04 on x86-64
 - KVM, `/dev/net/tun`, and cgroup v2
 - Docker Engine, Compose v2, and Buildx
-- Go 1.23, Git, OpenSSL, `patch`, `sha256sum`, and `tar`
+- Go 1.23, Python 3, Git, OpenSSL, `patch`, `sha256sum`, and `tar`
 
 Inputs are commit- or digest-pinned, or explicitly operator-preloaded. The
 installer records the resulting distribution identities. Read the [artifact
@@ -217,6 +218,7 @@ supply-chain contract](docs/ARTIFACT-SUPPLY-CHAIN.md) before mirroring inputs.
   <a href="docs/API.md">API</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="docs/THREAT_MODEL.md">Threat model</a> ·
+  <a href="docs/ENGINEERING-STRATEGY.md">Engineering strategy</a> ·
   <a href="docs/BENCHMARKING.md">Benchmarks</a> ·
   <a href="docs/ROADMAP.md">Roadmap</a>
 </p>

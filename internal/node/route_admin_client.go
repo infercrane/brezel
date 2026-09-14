@@ -42,6 +42,22 @@ type RouteAdminClient struct {
 	expectedNodeID string
 }
 
+// Resolve returns the current public route assignment from the exact node.
+// It is used only for reconciliation; private engine identity remains local.
+func (c *RouteAdminClient) Resolve(ctx context.Context, routeID string) (RouteAdminResult, error) {
+	if !routeAdminIDPattern.MatchString(routeID) {
+		return RouteAdminResult{}, errors.New("invalid route identity")
+	}
+	var result RouteAdminResult
+	if err := c.call(ctx, http.MethodGet, routeAdminPath(routeID, routeAdminBind), nil, &result); err != nil {
+		return RouteAdminResult{}, err
+	}
+	if result.NodeID != c.expectedNodeID || !validRouteAdminPublicRoute(result.Route) || result.Route.RouteID != routeID {
+		return RouteAdminResult{}, errors.New("node route admin response did not match the expected node and route")
+	}
+	return result, nil
+}
+
 // NewRouteAdminClient constructs a bounded, redirect-free mTLS client.
 func NewRouteAdminClient(baseURL string, tlsConfig *tls.Config, expectedNodeID string) (*RouteAdminClient, error) {
 	client, err := nodeidentity.NewControlHTTPClient(tlsConfig)
@@ -169,12 +185,16 @@ func (c *RouteAdminClient) call(ctx context.Context, method, endpoint string, pa
 	if c == nil || c.baseURL == nil || c.client == nil {
 		return errors.New("node route admin client is not initialized")
 	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return errors.New("encode node route admin request")
-	}
-	if len(encoded) == 0 || len(encoded) > routeAdminMaxRequestBytes {
-		return errors.New("node route admin request exceeds its limit")
+	var encoded []byte
+	if payload != nil {
+		var err error
+		encoded, err = json.Marshal(payload)
+		if err != nil {
+			return errors.New("encode node route admin request")
+		}
+		if len(encoded) == 0 || len(encoded) > routeAdminMaxRequestBytes {
+			return errors.New("node route admin request exceeds its limit")
+		}
 	}
 	target := *c.baseURL
 	target.Path = strings.TrimSuffix(target.Path, "/") + endpoint
@@ -184,7 +204,9 @@ func (c *RouteAdminClient) call(ctx context.Context, method, endpoint string, pa
 		return errors.New("create node route admin request")
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Content-Type", "application/json")
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	response, err := c.client.Do(request)
 	if err != nil {
 		return fmt.Errorf("call node route admin endpoint: %w", err)

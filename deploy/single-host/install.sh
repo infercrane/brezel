@@ -53,6 +53,7 @@ command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
 command -v docker >/dev/null 2>&1 || { echo "Docker Engine is required" >&2; exit 1; }
 command -v openssl >/dev/null 2>&1 || { echo "openssl is required" >&2; exit 1; }
 command -v patch >/dev/null 2>&1 || { echo "patch is required" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required" >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "tar is required" >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required" >&2; exit 1; }
@@ -231,8 +232,8 @@ cat > "$ACCESS_POLICY_TMP" <<EOF
 EOF
 chmod 600 "$ACCESS_POLICY_TMP"
 mv -f -- "$ACCESS_POLICY_TMP" "$SECRETS_DIR/access-policy.json"
+BREZEL_IMAGE=$(docker build -q -f "$REPO_DIR/Dockerfile" "$REPO_DIR")
 if [ ! -s "$SECRETS_DIR/receipt.key" ]; then
-  BREZEL_IMAGE=$(docker build -q -f "$REPO_DIR/Dockerfile" "$REPO_DIR")
   docker run --rm \
     --user "$(id -u):$(id -g)" \
     -v "$SECRETS_DIR:/secrets" \
@@ -240,7 +241,83 @@ if [ ! -s "$SECRETS_DIR/receipt.key" ]; then
     "$BREZEL_IMAGE" \
     keygen -out /secrets/receipt.key
 fi
-chmod 600 "$SECRETS_DIR/engine.token" "$SECRETS_DIR/service.token" "$SECRETS_DIR/access-policy.json" "$SECRETS_DIR/receipt.key"
+
+if { [ -s "$SECRETS_DIR/node-capability.key" ] && [ ! -s "$SECRETS_DIR/node-capability.pub" ]; } || \
+   { [ ! -s "$SECRETS_DIR/node-capability.key" ] && [ -s "$SECRETS_DIR/node-capability.pub" ]; }; then
+  echo "node capability key pair is incomplete; restore its matching file before continuing" >&2
+  exit 1
+fi
+if [ ! -s "$SECRETS_DIR/node-capability.key" ]; then
+  docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    -v "$SECRETS_DIR:/secrets" \
+    --entrypoint /usr/local/bin/brezeld \
+    "$BREZEL_IMAGE" \
+    keygen -out /secrets/node-capability.key -public-out /secrets/node-capability.pub
+fi
+CAPABILITY_PUBLIC_KEY=$(tr -d '\r\n' < "$SECRETS_DIR/node-capability.pub")
+CAPABILITY_POLICY_TMP=$(mktemp "$SECRETS_DIR/.node-capability-keys.XXXXXX")
+printf '{"version":1,"issuer":"brezel-api","keys":[{"id":"node-key-1","public_key_base64":"%s"}]}\n' "$CAPABILITY_PUBLIC_KEY" > "$CAPABILITY_POLICY_TMP"
+chmod 600 "$CAPABILITY_POLICY_TMP"
+mv -f -- "$CAPABILITY_POLICY_TMP" "$SECRETS_DIR/node-capability-keys.json"
+
+NODE_TLS_RENEW=false
+for tls_file in node-ca.crt node-ca.key node.crt node.key api.crt api.key; do
+  if [ ! -s "$SECRETS_DIR/$tls_file" ]; then
+    NODE_TLS_RENEW=true
+  fi
+done
+if [ "$NODE_TLS_RENEW" = false ] && ! openssl x509 -checkend 604800 -noout -in "$SECRETS_DIR/node.crt" >/dev/null 2>&1; then
+  NODE_TLS_RENEW=true
+fi
+if [ "$NODE_TLS_RENEW" = false ] && ! openssl x509 -checkend 604800 -noout -in "$SECRETS_DIR/api.crt" >/dev/null 2>&1; then
+  NODE_TLS_RENEW=true
+fi
+if [ "$NODE_TLS_RENEW" = true ]; then
+  NODE_TLS_DIR=$(mktemp -d "$SECRETS_DIR/.node-tls.XXXXXX")
+  cleanup_node_tls() {
+    case "$NODE_TLS_DIR" in
+      "$SECRETS_DIR"/.node-tls.*) rm -rf -- "$NODE_TLS_DIR" ;;
+    esac
+  }
+  trap 'cleanup_node_tls; cleanup_build_dir' EXIT HUP INT TERM
+  openssl ecparam -name prime256v1 -genkey -noout -out "$NODE_TLS_DIR/node-ca.key"
+  openssl req -x509 -new -sha256 -key "$NODE_TLS_DIR/node-ca.key" -days 365 \
+    -subj '/CN=Brezel node CA' -out "$NODE_TLS_DIR/node-ca.crt"
+  openssl ecparam -name prime256v1 -genkey -noout -out "$NODE_TLS_DIR/node.key"
+  openssl req -new -sha256 -key "$NODE_TLS_DIR/node.key" -subj '/CN=node-a.internal' -out "$NODE_TLS_DIR/node.csr"
+  printf '%s\n' \
+    'basicConstraints=critical,CA:FALSE' \
+    'keyUsage=critical,digitalSignature,keyAgreement' \
+    'extendedKeyUsage=serverAuth' \
+    'subjectAltName=DNS:node-a.internal,IP:127.0.0.1,URI:spiffe://brezel/node/node-a' \
+    > "$NODE_TLS_DIR/node.ext"
+  openssl x509 -req -sha256 -in "$NODE_TLS_DIR/node.csr" -CA "$NODE_TLS_DIR/node-ca.crt" \
+    -CAkey "$NODE_TLS_DIR/node-ca.key" -CAcreateserial -days 30 -extfile "$NODE_TLS_DIR/node.ext" \
+    -out "$NODE_TLS_DIR/node.crt"
+  openssl ecparam -name prime256v1 -genkey -noout -out "$NODE_TLS_DIR/api.key"
+  openssl req -new -sha256 -key "$NODE_TLS_DIR/api.key" -subj '/CN=api-a' -out "$NODE_TLS_DIR/api.csr"
+  printf '%s\n' \
+    'basicConstraints=critical,CA:FALSE' \
+    'keyUsage=critical,digitalSignature,keyAgreement' \
+    'extendedKeyUsage=clientAuth' \
+    'subjectAltName=URI:spiffe://brezel/api/api-a' \
+    > "$NODE_TLS_DIR/api.ext"
+  openssl x509 -req -sha256 -in "$NODE_TLS_DIR/api.csr" -CA "$NODE_TLS_DIR/node-ca.crt" \
+    -CAkey "$NODE_TLS_DIR/node-ca.key" -CAcreateserial -days 30 -extfile "$NODE_TLS_DIR/api.ext" \
+    -out "$NODE_TLS_DIR/api.crt"
+  chmod 600 "$NODE_TLS_DIR/node-ca.crt" "$NODE_TLS_DIR/node-ca.key" "$NODE_TLS_DIR/node.crt" "$NODE_TLS_DIR/node.key" "$NODE_TLS_DIR/api.crt" "$NODE_TLS_DIR/api.key"
+  for tls_file in node-ca.crt node-ca.key node.crt node.key api.crt api.key; do
+    mv -f -- "$NODE_TLS_DIR/$tls_file" "$SECRETS_DIR/$tls_file"
+  done
+  cleanup_node_tls
+  trap cleanup_build_dir EXIT HUP INT TERM
+fi
+
+chmod 600 "$SECRETS_DIR/engine.token" "$SECRETS_DIR/service.token" "$SECRETS_DIR/access-policy.json" \
+  "$SECRETS_DIR/receipt.key" "$SECRETS_DIR/node-capability.key" "$SECRETS_DIR/node-capability.pub" \
+  "$SECRETS_DIR/node-capability-keys.json" "$SECRETS_DIR/node-ca.crt" "$SECRETS_DIR/node-ca.key" \
+  "$SECRETS_DIR/node.crt" "$SECRETS_DIR/node.key" "$SECRETS_DIR/api.crt" "$SECRETS_DIR/api.key"
 
 BREZEL_STATE_DIR="$STATE_DIR" BREZEL_SECRETS_DIR="$SECRETS_DIR" \
 BREZEL_UID="$(id -u)" BREZEL_GID="$(id -g)" \

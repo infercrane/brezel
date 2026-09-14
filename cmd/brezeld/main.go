@@ -21,6 +21,8 @@ import (
 	"github.com/infercrane/brezel/internal/backend/e2b"
 	"github.com/infercrane/brezel/internal/connector"
 	"github.com/infercrane/brezel/internal/httpapi"
+	"github.com/infercrane/brezel/internal/node"
+	"github.com/infercrane/brezel/internal/nodeidentity"
 	"github.com/infercrane/brezel/internal/receipt"
 	"github.com/infercrane/brezel/internal/securefile"
 	"github.com/infercrane/brezel/internal/service"
@@ -43,13 +45,14 @@ func main() {
 func keygen(args []string) error {
 	flags := flag.NewFlagSet("keygen", flag.ContinueOnError)
 	out := flags.String("out", "", "private key output path")
+	publicOut := flags.String("public-out", "", "optional raw public key output path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *out == "" {
 		return errors.New("keygen requires -out")
 	}
-	_, private, err := ed25519.GenerateKey(rand.Reader)
+	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return err
 	}
@@ -57,11 +60,33 @@ func keygen(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create key file: %w", err)
 	}
-	defer file.Close()
 	if _, err := file.WriteString(base64.StdEncoding.EncodeToString(private) + "\n"); err != nil {
+		file.Close()
 		return fmt.Errorf("write key: %w", err)
 	}
-	return file.Sync()
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if *publicOut == "" {
+		return nil
+	}
+	publicFile, err := os.OpenFile(*publicOut, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create public key file: %w", err)
+	}
+	if _, err := publicFile.WriteString(base64.StdEncoding.EncodeToString(public) + "\n"); err != nil {
+		publicFile.Close()
+		return fmt.Errorf("write public key: %w", err)
+	}
+	if err := publicFile.Sync(); err != nil {
+		publicFile.Close()
+		return err
+	}
+	return publicFile.Close()
 }
 
 func run() error {
@@ -86,7 +111,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	state, err := store.OpenFile(env("BREZEL_DATA_FILE", "./.brezel/state/state.json"))
+	state, err := store.OpenSQLite(
+		env("BREZEL_DATA_DB", "./.brezel/state/brezel.db"),
+		env("BREZEL_LEGACY_DATA_FILE", env("BREZEL_DATA_FILE", "./.brezel/state/state.json")),
+	)
 	if err != nil {
 		return err
 	}
@@ -106,6 +134,11 @@ func run() error {
 		return err
 	}
 	serviceOptions = append(serviceOptions, service.WithLimits(limits), service.WithPhaseObserver(phaseMetrics))
+	nodeOptions, err := loadNodeOptions()
+	if err != nil {
+		return err
+	}
+	serviceOptions = append(serviceOptions, nodeOptions...)
 	gatewayURL := os.Getenv("BREZEL_CONNECTOR_GATEWAY_URL")
 	secretDirectory := os.Getenv("BREZEL_SECRET_FILE_DIR")
 	if (gatewayURL == "") != (secretDirectory == "") {
@@ -195,6 +228,93 @@ func run() error {
 		}
 		return err
 	}
+}
+
+func loadNodeOptions() ([]service.Option, error) {
+	dataURL := strings.TrimSpace(os.Getenv("BREZEL_NODE_DATA_URL"))
+	controlURL := strings.TrimSpace(os.Getenv("BREZEL_NODE_CONTROL_URL"))
+	if dataURL == "" && controlURL == "" {
+		return nil, nil
+	}
+	if dataURL == "" || controlURL == "" {
+		return nil, errors.New("BREZEL_NODE_DATA_URL and BREZEL_NODE_CONTROL_URL must be configured together")
+	}
+	required := func(name string) (string, error) {
+		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" {
+			return "", fmt.Errorf("%s is required when the node relay is enabled", name)
+		}
+		return value, nil
+	}
+	apiID, err := required("BREZEL_API_ID")
+	if err != nil {
+		return nil, err
+	}
+	nodeID, err := required("BREZEL_NODE_ID")
+	if err != nil {
+		return nil, err
+	}
+	serverName, err := required("BREZEL_NODE_SERVER_NAME")
+	if err != nil {
+		return nil, err
+	}
+	certificateFile, err := required("BREZEL_API_TLS_CERT_FILE")
+	if err != nil {
+		return nil, err
+	}
+	privateKeyFile, err := required("BREZEL_API_TLS_KEY_FILE")
+	if err != nil {
+		return nil, err
+	}
+	caFile, err := required("BREZEL_NODE_TLS_CA_FILE")
+	if err != nil {
+		return nil, err
+	}
+	capabilityIssuer, err := required("BREZEL_NODE_CAPABILITY_ISSUER")
+	if err != nil {
+		return nil, err
+	}
+	capabilityKeyID, err := required("BREZEL_NODE_CAPABILITY_KEY_ID")
+	if err != nil {
+		return nil, err
+	}
+	capabilityKeyFile, err := required("BREZEL_NODE_CAPABILITY_PRIVATE_KEY_FILE")
+	if err != nil {
+		return nil, err
+	}
+	apiIdentity, err := nodeidentity.NewIdentity(nodeidentity.RoleAPI, apiID)
+	if err != nil {
+		return nil, fmt.Errorf("configure API node identity: %w", err)
+	}
+	nodeIdentity, err := nodeidentity.NewIdentity(nodeidentity.RoleNode, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("configure execution node identity: %w", err)
+	}
+	tlsConfig, err := nodeidentity.LoadClientTLSConfig(nodeidentity.ClientOptions{
+		Files:         nodeidentity.Files{CertificateFile: certificateFile, PrivateKeyFile: privateKeyFile, CAFile: caFile},
+		LocalIdentity: apiIdentity, ServerIdentity: nodeIdentity, ServerName: serverName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load API to node mTLS identity: %w", err)
+	}
+	capabilityPrivate, err := loadPrivateKey(capabilityKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load node capability signing key: %w", err)
+	}
+	signer, err := node.NewCapabilitySigner(capabilityIssuer, capabilityKeyID, capabilityPrivate)
+	if err != nil {
+		return nil, fmt.Errorf("configure node capability signer: %w", err)
+	}
+	audience := env("BREZEL_NODE_CAPABILITY_AUDIENCE", "brezel-node")
+	dataPlane, err := node.NewRelayDataPlane(dataURL, tlsConfig, signer, audience, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("configure node data relay: %w", err)
+	}
+	administrator, err := node.NewRouteAdminClient(controlURL, tlsConfig, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("configure node route administrator: %w", err)
+	}
+	return []service.Option{service.WithNodeDataPlane(dataPlane), service.WithNodeRouteAdministrator(administrator)}, nil
 }
 
 func parseBoolEnv(name string, fallback bool) (bool, error) {

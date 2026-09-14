@@ -92,9 +92,10 @@ unknown condition.
 
 The implemented single-host profile binds hashed bearer credentials to an
 explicit project allowlist, applies positive per-project primitive and live
-operation limits, and runs exactly one controller over an exclusively locked,
-bounded, schema-versioned JSON state file whose project/resource identities are
-validated before open and commit. A process-wide admission limit keeps
+operation limits, and runs exactly one controller over an exclusively locked
+SQLite WAL lifecycle ledger. Stored resource identities are validated on open
+and generic commits; sandbox lookup, activity, and event hot paths use keyed
+transactions. A process-wide admission limit keeps
 ordinary traffic bounded while health, readiness, and content-free Prometheus
 counters and fixed-dimension phase histograms remain available. Phase labels
 are closed operation, phase, and outcome enums; tenant, resource, path,
@@ -427,14 +428,20 @@ latency, or density limits.
 | logs and terminal output | tenant-scoped object/log store | opt-in retention; never control-plane truth |
 | secret values | Vault/KMS/cloud secret manager | only opaque handles in project databases |
 
-The single-host distribution combines the pinned engine, local stores, a
-host-backed workspace directory, and the product runtime API. Clustered profiles
-must preserve the same identity, exclusivity, and confirmed-cleanup semantics.
-The file-backed control store uses keyed sandbox reads and a specialized
-content-free sandbox-event append path to avoid copying unrelated records on
-guest operations. Event append still atomically replaces the complete state
-file and fsyncs both the file and containing directory before publishing the
-event in memory; this optimization does not weaken its durability boundary.
+The single-host distribution combines the pinned engine, a separate execution
+node relay, an embedded SQLite lifecycle ledger, a host-backed workspace
+directory, and the product runtime API. The API and node authenticate with TLS
+1.3 mutual identities. The node alone maps opaque route generations to private
+engine IDs; one-operation capabilities authorize command, file, and preview
+traffic. Clustered profiles must preserve the same identity, exclusivity, and
+confirmed-cleanup semantics.
+
+SQLite runs in WAL mode with full synchronous durability and one controller
+process lock. A one-time transaction imports a valid protected legacy JSON
+state file without modifying it. Keyed sandbox reads, activity updates, and
+content-free event appends avoid copying unrelated records. Some low-frequency
+lifecycle transactions still use the generic state interface and are a known
+single-host scaling limit, not a fleet database design.
 
 ## Scheduling
 

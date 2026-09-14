@@ -234,6 +234,74 @@ func BenchmarkFileStoreSandboxEventAppend(b *testing.B) {
 	}
 }
 
+func BenchmarkSQLiteStoreHotPath(b *testing.B) {
+	for _, resources := range []int{100, 1000, 10000} {
+		b.Run(fmt.Sprintf("resources=%d/get-sandbox", resources), func(b *testing.B) {
+			store := benchmarkSQLiteStore(b, resources)
+			defer store.Close()
+			id := fmt.Sprintf("sbx-%06d", resources/2)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				sandbox, err := store.GetSandbox("project-bench", id)
+				if err != nil {
+					b.Fatal(err)
+				}
+				benchmarkSandboxSink = sandbox
+			}
+		})
+		b.Run(fmt.Sprintf("resources=%d/record-activity", resources), func(b *testing.B) {
+			store := benchmarkSQLiteStore(b, resources)
+			defer store.Close()
+			id := fmt.Sprintf("sbx-%06d", resources/2)
+			at := time.Unix(1_700_000_100, 0).UTC()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				sandbox, err := store.RecordSandboxActivity("project-bench", id, at)
+				if err != nil {
+					b.Fatal(err)
+				}
+				benchmarkSandboxSink = sandbox
+				at = at.Add(time.Millisecond)
+			}
+		})
+		b.Run(fmt.Sprintf("resources=%d/append-event", resources), func(b *testing.B) {
+			store := benchmarkSQLiteStore(b, resources)
+			defer store.Close()
+			event := domain.Event{
+				ID: "evt-command", ProjectID: "project-bench", ResourceID: "sbx-000000",
+				Type: "command.finished", At: time.Unix(1_700_000_100, 0).UTC(),
+				Details: map[string]any{"duration_ms": 12, "output_bytes": 0, "result": "exited"},
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if err := store.AppendSandboxEvent(event); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func benchmarkSQLiteStore(b *testing.B, resources int) *SQLiteStore {
+	b.Helper()
+	store, err := OpenSQLite(b.TempDir()+"/state.db", "")
+	if err != nil {
+		b.Fatal(err)
+	}
+	state := makeBenchmarkState(resources)
+	if err := store.Update(func(next *State) error {
+		*next = state
+		return nil
+	}); err != nil {
+		store.Close()
+		b.Fatal(err)
+	}
+	return store
+}
+
 func cloneStateWithJSON(in State) (State, error) {
 	data, err := json.Marshal(in)
 	if err != nil {

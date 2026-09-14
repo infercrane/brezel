@@ -1,6 +1,38 @@
 name: brezel
 
 services:
+  brezel-node:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    entrypoint: ["/usr/local/bin/brezel-node"]
+    restart: unless-stopped
+    network_mode: host
+    user: ${BREZEL_UID:?set BREZEL_UID}:${BREZEL_GID:?set BREZEL_GID}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      BREZEL_NODE_LISTEN_ADDR: 127.0.0.1:8443
+      BREZEL_NODE_CONTROL_LISTEN_ADDR: 127.0.0.1:8444
+      BREZEL_NODE_ID: node-a
+      BREZEL_NODE_API_ID: api-a
+      BREZEL_NODE_CAPABILITY_KEYS_FILE: /run/brezel-secrets/node-capability-keys.json
+      BREZEL_NODE_CAPABILITY_AUDIENCE: brezel-node
+      BREZEL_NODE_TLS_CERT_FILE: /run/brezel-secrets/node.crt
+      BREZEL_NODE_TLS_KEY_FILE: /run/brezel-secrets/node.key
+      BREZEL_NODE_TLS_CA_FILE: /run/brezel-secrets/node-ca.crt
+      BREZEL_NODE_LEDGER_FILE: /var/lib/brezel/node/routes.json
+      BREZEL_ENGINE_API_URL: http://127.0.0.1:3000
+      BREZEL_ENGINE_TOKEN_FILE: /run/brezel-secrets/engine.token
+      BREZEL_GUEST_URL_TEMPLATE: http://127.0.0.1:3002
+      BREZEL_DURABLE_WORKSPACES: "true"
+      BREZEL_NODE_MAX_IN_FLIGHT: ${BREZEL_NODE_MAX_IN_FLIGHT:-128}
+    volumes:
+      - ${BREZEL_STATE_DIR:?set BREZEL_STATE_DIR to an absolute protected directory}:/var/lib/brezel
+      - ${BREZEL_SECRETS_DIR:?set BREZEL_SECRETS_DIR to an absolute protected directory}:/run/brezel-secrets:ro
+
   brezeld:
     build:
       context: ../..
@@ -18,12 +50,25 @@ services:
       BREZEL_GUEST_URL_TEMPLATE: http://127.0.0.1:3002
       BREZEL_DURABLE_WORKSPACES: "true"
       BREZEL_LISTEN_ADDR: 127.0.0.1:8080
-      BREZEL_DATA_FILE: /var/lib/brezel/state.json
+      BREZEL_DATA_DB: /var/lib/brezel/brezel.db
+      BREZEL_LEGACY_DATA_FILE: /var/lib/brezel/state.json
       BREZEL_ACCESS_POLICY_FILE: /run/brezel-secrets/access-policy.json
       # The API ignores this raw token when a policy is configured; the
       # conformance binary in the same image reads it for authenticated probes.
       BREZEL_SERVICE_TOKEN_FILE: /run/brezel-secrets/service.token
       BREZEL_RECEIPT_PRIVATE_KEY_FILE: /run/brezel-secrets/receipt.key
+      BREZEL_NODE_DATA_URL: https://127.0.0.1:8443
+      BREZEL_NODE_CONTROL_URL: https://127.0.0.1:8444
+      BREZEL_NODE_ID: node-a
+      BREZEL_API_ID: api-a
+      BREZEL_NODE_SERVER_NAME: node-a.internal
+      BREZEL_API_TLS_CERT_FILE: /run/brezel-secrets/api.crt
+      BREZEL_API_TLS_KEY_FILE: /run/brezel-secrets/api.key
+      BREZEL_NODE_TLS_CA_FILE: /run/brezel-secrets/node-ca.crt
+      BREZEL_NODE_CAPABILITY_ISSUER: brezel-api
+      BREZEL_NODE_CAPABILITY_KEY_ID: node-key-1
+      BREZEL_NODE_CAPABILITY_PRIVATE_KEY_FILE: /run/brezel-secrets/node-capability.key
+      BREZEL_NODE_CAPABILITY_AUDIENCE: brezel-node
       BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT: ${BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT:-64}
       BREZEL_MAX_WORKSPACES_PER_PROJECT: ${BREZEL_MAX_WORKSPACES_PER_PROJECT:-64}
       BREZEL_MAX_CONCURRENT_GUEST_OPS_PER_PROJECT: ${BREZEL_MAX_CONCURRENT_GUEST_OPS_PER_PROJECT:-128}
@@ -33,6 +78,8 @@ services:
     volumes:
       - ${BREZEL_STATE_DIR:?set BREZEL_STATE_DIR to an absolute protected directory}:/var/lib/brezel
       - ${BREZEL_SECRETS_DIR:?set BREZEL_SECRETS_DIR to an absolute protected directory}:/run/brezel-secrets:ro
+    depends_on:
+      - brezel-node
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
       interval: 10s

@@ -190,6 +190,34 @@ func TestRouteAdminLifecycleAndRetrySemantics(t *testing.T) {
 	}
 }
 
+func TestRouteAdminResolveReturnsOnlyPublicAssignment(t *testing.T) {
+	harness := newRouteAdminHarness(t)
+	bound, err := harness.client.Bind(context.Background(), RouteBindRequest{
+		RouteID: routeAdminTestRoute, ProjectID: routeAdminTestProject,
+		SandboxID: routeAdminTestSandbox, EngineID: routeAdminTestEngine,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := harness.client.Resolve(context.Background(), routeAdminTestRoute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.NodeID != routeAdminTestNode || resolved.Route != bound.Route {
+		t.Fatalf("resolved=%#v bound=%#v", resolved, bound)
+	}
+	encoded, err := json.Marshal(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), routeAdminTestEngine) {
+		t.Fatal("resolve response exposed private engine identity")
+	}
+	if _, err := harness.client.Resolve(context.Background(), "missing"); err == nil {
+		t.Fatal("missing route resolved")
+	}
+}
+
 func TestRouteAdminRejectsUnauthenticatedMalformedAndUnboundedRequests(t *testing.T) {
 	harness := newRouteAdminHarness(t)
 	valid, err := json.Marshal(RouteBindRequest{

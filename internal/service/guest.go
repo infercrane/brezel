@@ -200,11 +200,20 @@ func (s *Service) ReadFile(ctx context.Context, projectID, sandboxID, path strin
 // engine credential; those remain inside the backend adapter.
 func (s *Service) authorizedNodeDataPlane(sandbox domain.Sandbox, operationID string) (node.DataPlane, node.SandboxBinding, error) {
 	dataPlane := s.dataPlane
+	bindingTarget := sandbox.BackendID
+	bindingOptions := []node.BindingOption{node.WithBindingClock(s.now)}
+	if routed, ok := dataPlane.(interface{ RequiresNodeAssignment() bool }); ok && routed.RequiresNodeAssignment() {
+		if sandbox.NodeID == "" || sandbox.NodeRouteID == "" || sandbox.NodeGeneration == 0 {
+			return nil, node.SandboxBinding{}, fmt.Errorf("%w: sandbox has no active node assignment", ErrBackend)
+		}
+		bindingTarget = sandbox.NodeRouteID
+		bindingOptions = append(bindingOptions, node.WithNodeGeneration(sandbox.NodeGeneration))
+	}
 	expiresAt := s.now().Add(5 * time.Minute)
 	if sandbox.ExpiresAt.Before(expiresAt) {
 		expiresAt = sandbox.ExpiresAt
 	}
-	binding, err := node.BindAuthorizedSandbox(sandbox.ProjectID, sandbox.ID, sandbox.BackendID, operationID, sandbox.Revision, expiresAt, s.nodeBindingIsCurrent, node.WithBindingClock(s.now))
+	binding, err := node.BindAuthorizedSandbox(sandbox.ProjectID, sandbox.ID, bindingTarget, operationID, sandbox.Revision, expiresAt, s.nodeBindingIsCurrent, bindingOptions...)
 	if err != nil {
 		return nil, node.SandboxBinding{}, fmt.Errorf("%w: could not bind authorized node operation: %v", ErrBackend, err)
 	}
@@ -215,7 +224,11 @@ func (s *Service) nodeBindingIsCurrent(projectID, sandboxID, backendID string, r
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, err := s.getSandbox(projectID, sandboxID)
-	if err != nil || current.BackendID != backendID || current.Revision != revision || !s.now().Before(current.ExpiresAt) {
+	currentTarget := current.BackendID
+	if current.NodeRouteID != "" {
+		currentTarget = current.NodeRouteID
+	}
+	if err != nil || currentTarget != backendID || current.Revision != revision || !s.now().Before(current.ExpiresAt) {
 		return false
 	}
 	return current.State == domain.SandboxRunning || (current.State == domain.SandboxStandby && current.Lifecycle.AutoResume)
