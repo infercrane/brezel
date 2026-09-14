@@ -58,7 +58,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 }
 
 func TestDeploymentScriptsParse(t *testing.T) {
-	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "artifact-supply-chain.sh", "benchmark.sh"} {
+	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "artifact-supply-chain.sh", "benchmark.sh", "host-tuning.sh"} {
 		command := exec.Command("sh", "-n", script)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("sh -n %s: %v: %s", script, err, output)
@@ -284,6 +284,7 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		"BREZEL_ENGINE_POSTGRES_IMAGE", "BREZEL_ENGINE_REDIS_IMAGE",
 		"BREZEL_ENGINE_CLICKHOUSE_IMAGE", "BREZEL_ENGINE_VECTOR_IMAGE",
 		"pull_policy: never", "BREZEL_ENGINE_ARTIFACT_BASE_URL",
+		"BREZEL_VM_OVERCOMMIT_MEMORY", "BREZEL_HOST_TUNING_SCRIPT",
 	} {
 		if !strings.Contains(override, required) {
 			t.Fatalf("engine override is missing locked distribution setting %q", required)

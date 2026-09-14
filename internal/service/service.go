@@ -30,6 +30,7 @@ var (
 	ErrConflict = errors.New("resource conflict")
 	ErrDenied   = errors.New("request denied")
 	ErrQuota    = errors.New("project quota exceeded")
+	ErrCapacity = errors.New("runtime capacity exhausted")
 	ErrBackend  = errors.New("backend failure")
 )
 
@@ -39,6 +40,7 @@ const DefaultStandbyGraceSeconds int64 = 15
 
 type Limits struct {
 	MaxActiveSandboxesPerProject    int
+	MaxActiveSandboxesTotal         int
 	MaxWorkspacesPerProject         int
 	MaxConcurrentGuestOpsPerProject int
 	MaxEnvironmentsPerProject       int
@@ -47,6 +49,7 @@ type Limits struct {
 
 var DefaultLimits = Limits{
 	MaxActiveSandboxesPerProject:    64,
+	MaxActiveSandboxesTotal:         512,
 	MaxWorkspacesPerProject:         64,
 	MaxConcurrentGuestOpsPerProject: 128,
 	MaxEnvironmentsPerProject:       256,
@@ -149,7 +152,7 @@ func New(st store.Store, be backend.Backend, signer *receipt.Signer, options ...
 	if routed, ok := s.dataPlane.(interface{ RequiresNodeAssignment() bool }); ok && routed.RequiresNodeAssignment() && s.routeAdmin == nil {
 		return nil, errors.New("remote node data plane requires a node route administrator")
 	}
-	if s.limits.MaxActiveSandboxesPerProject < 1 || s.limits.MaxWorkspacesPerProject < 1 || s.limits.MaxConcurrentGuestOpsPerProject < 1 || s.limits.MaxEnvironmentsPerProject < 1 || s.limits.MaxConnectorsPerProject < 1 {
+	if s.limits.MaxActiveSandboxesPerProject < 1 || s.limits.MaxActiveSandboxesTotal < 1 || s.limits.MaxWorkspacesPerProject < 1 || s.limits.MaxConcurrentGuestOpsPerProject < 1 || s.limits.MaxEnvironmentsPerProject < 1 || s.limits.MaxConnectorsPerProject < 1 {
 		return nil, errors.New("all runtime limits must be positive")
 	}
 	return s, nil
@@ -393,13 +396,20 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 			return nil
 		}
 		active := 0
+		activeTotal := 0
 		for _, existing := range state.Sandboxes {
-			if existing.ProjectID == projectID && !terminal(existing.State) {
-				active++
+			if !terminal(existing.State) {
+				activeTotal++
+				if existing.ProjectID == projectID {
+					active++
+				}
 			}
 		}
 		if active >= s.limits.MaxActiveSandboxesPerProject {
 			return ErrQuota
+		}
+		if activeTotal >= s.limits.MaxActiveSandboxesTotal {
+			return ErrCapacity
 		}
 		var ok bool
 		if in.CheckpointID != "" {

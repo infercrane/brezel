@@ -16,6 +16,8 @@ ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 ENGINE_IMAGE_LOCK="$SCRIPT_DIR/engine.images.lock"
 ENGINE_ARTIFACT_LOCK="$SCRIPT_DIR/engine.artifacts.lock"
 ARTIFACT_SUPPLY_CHAIN="$SCRIPT_DIR/artifact-supply-chain.sh"
+BREZEL_HOST_TUNING_SCRIPT="$SCRIPT_DIR/host-tuning.sh"
+export BREZEL_HOST_TUNING_SCRIPT
 
 read_lock() {
   key=$1

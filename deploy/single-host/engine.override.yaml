@@ -1,4 +1,14 @@
 services:
+  host-setup:
+    environment:
+      # Lazy Firecracker snapshot mappings reserve virtual commit before guest
+      # pages are faulted in. The product-level global sandbox limit remains
+      # the physical-memory admission boundary.
+      BREZEL_VM_OVERCOMMIT_MEMORY: ${BREZEL_VM_OVERCOMMIT_MEMORY:-1}
+    volumes:
+      - ${BREZEL_HOST_TUNING_SCRIPT:?set BREZEL_HOST_TUNING_SCRIPT to the audited host tuning script}:/opt/brezel/host-tuning.sh:ro
+    command: ["/bin/sh", "-c", "cat /opt/e2b/scripts/host-setup.sh /opt/brezel/host-tuning.sh | exec nsenter -t 1 -m -u -i -n -p -- /bin/bash -s"]
+
   postgres:
     image: ${BREZEL_ENGINE_POSTGRES_IMAGE:?set BREZEL_ENGINE_POSTGRES_IMAGE from engine.images.lock}
     pull_policy: never

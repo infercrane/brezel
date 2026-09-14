@@ -76,6 +76,7 @@ func TestLoadLimitsRejectsUnboundedOrMalformedValues(t *testing.T) {
 		t.Fatal("zero sandbox limit was accepted")
 	}
 	t.Setenv("BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT", "5")
+	t.Setenv("BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL", "10")
 	t.Setenv("BREZEL_MAX_WORKSPACES_PER_PROJECT", "nope")
 	if _, err := loadLimits(); err == nil {
 		t.Fatal("malformed workspace limit was accepted")
@@ -88,7 +89,7 @@ func TestLoadLimitsRejectsUnboundedOrMalformedValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if limits.MaxActiveSandboxesPerProject != 5 || limits.MaxWorkspacesPerProject != 6 || limits.MaxConcurrentGuestOpsPerProject != 7 || limits.MaxEnvironmentsPerProject != 8 || limits.MaxConnectorsPerProject != 9 {
+	if limits.MaxActiveSandboxesPerProject != 5 || limits.MaxActiveSandboxesTotal != 10 || limits.MaxWorkspacesPerProject != 6 || limits.MaxConcurrentGuestOpsPerProject != 7 || limits.MaxEnvironmentsPerProject != 8 || limits.MaxConnectorsPerProject != 9 {
 		t.Fatalf("limits = %#v", limits)
 	}
 }

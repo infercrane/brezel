@@ -1379,6 +1379,7 @@ func TestReadinessFailsWhenBackendIsUnavailable(t *testing.T) {
 func TestProjectResourceQuotasFailBeforeBackendMutation(t *testing.T) {
 	h := newHarnessWithServiceOptions(t, service.WithLimits(service.Limits{
 		MaxActiveSandboxesPerProject:    1,
+		MaxActiveSandboxesTotal:         4,
 		MaxWorkspacesPerProject:         1,
 		MaxConcurrentGuestOpsPerProject: 1,
 		MaxEnvironmentsPerProject:       4,
@@ -1414,9 +1415,41 @@ func TestProjectResourceQuotasFailBeforeBackendMutation(t *testing.T) {
 	}
 }
 
+func TestGlobalSandboxCapacityFailsBeforeBackendMutationAcrossProjects(t *testing.T) {
+	h := newHarnessWithServiceOptions(t, service.WithLimits(service.Limits{
+		MaxActiveSandboxesPerProject:    4,
+		MaxActiveSandboxesTotal:         1,
+		MaxWorkspacesPerProject:         4,
+		MaxConcurrentGuestOpsPerProject: 4,
+		MaxEnvironmentsPerProject:       4,
+		MaxConnectorsPerProject:         4,
+	}))
+	defer h.close()
+	firstEnvironment := createEnvironment(t, h, "project-a")
+	createSandbox(t, h, "project-a", firstEnvironment, "capacity-sandbox-one", nil)
+	secondEnvironment := createEnvironment(t, h, "project-b")
+	before := h.backend.createCalls
+	body := map[string]any{
+		"environment_revision": secondEnvironment,
+		"lifecycle":            map[string]any{"expires_after_seconds": 3600},
+		"network":              map[string]any{"allow_internet": false},
+	}
+	response, result := request(t, h, http.MethodPost, "/v1/sandboxes", "project-b", "capacity-sandbox-two", body)
+	if response.StatusCode != http.StatusTooManyRequests || errorCode(result) != "capacity_exhausted" {
+		t.Fatalf("global capacity returned %d %#v", response.StatusCode, result)
+	}
+	if response.Header.Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After = %q", response.Header.Get("Retry-After"))
+	}
+	if h.backend.createCalls != before {
+		t.Fatal("sandbox backend was called after global capacity rejection")
+	}
+}
+
 func TestGuestOperationQuotaReleasesProjectSlot(t *testing.T) {
 	h := newHarnessWithServiceOptions(t, service.WithLimits(service.Limits{
 		MaxActiveSandboxesPerProject:    4,
+		MaxActiveSandboxesTotal:         8,
 		MaxWorkspacesPerProject:         4,
 		MaxConcurrentGuestOpsPerProject: 1,
 		MaxEnvironmentsPerProject:       4,

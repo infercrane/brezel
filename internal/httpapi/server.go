@@ -948,6 +948,9 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "capability_unavailable", err.Error())
 	case errors.Is(err, service.ErrQuota):
 		writeError(w, http.StatusTooManyRequests, "quota_exceeded", "project capacity limit reached")
+	case errors.Is(err, service.ErrCapacity):
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "capacity_exhausted", "runtime capacity is temporarily exhausted")
 	case errors.Is(err, service.ErrBackend):
 		writeError(w, http.StatusBadGateway, "backend_failure", "sandbox backend did not confirm the operation")
 	default:

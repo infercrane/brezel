@@ -348,6 +348,10 @@ func loadLimits() (service.Limits, error) {
 	if err != nil {
 		return limits, err
 	}
+	limits.MaxActiveSandboxesTotal, err = parsePositiveIntEnv("BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL", limits.MaxActiveSandboxesTotal)
+	if err != nil {
+		return limits, err
+	}
 	limits.MaxWorkspacesPerProject, err = parsePositiveIntEnv("BREZEL_MAX_WORKSPACES_PER_PROJECT", limits.MaxWorkspacesPerProject)
 	if err != nil {
 		return limits, err
