@@ -73,6 +73,10 @@ Command responses are NDJSON events with base64-encoded byte chunks followed by
 one terminal exit event. Arguments, output, paths, and file contents are not
 persisted in normal lifecycle events or receipts.
 
+These public endpoints currently send bytes through the durable API process.
+The internal node relay described below is implemented but is not selected by
+the default server wiring and is not yet a public direct-to-node SDK contract.
+
 ## HTTP previews
 
 ```text
@@ -83,6 +87,69 @@ ANY  /p/{opaque_lease}/{application_path}
 A preview lease is short-lived and checked against project, sandbox state,
 generation, and port. The shared-origin proxy strips cookies, referrers, and
 internal credentials. WebSockets are rejected.
+
+## Internal node relay
+
+The node relay protocol is an internal, versioned implementation boundary, not
+a tenant API. It is intended to carry admitted command, file, and application-
+port traffic directly to the assigned node while lifecycle, placement, quota,
+and route binding remain authoritative in the durable service.
+
+```text
+GET  /healthz
+GET  /readyz
+GET  /v1/routes/{opaque_route_id}
+POST /v1/commands
+PUT  /v1/files?path={absolute_path}
+GET  /v1/files?path={absolute_path}
+ANY  /v1/ports/{port}/{application_path}
+```
+
+The transport uses mutual TLS 1.3. The API expects exactly
+`spiffe://brezel/node/<node-id>` plus the node's DNS or IP SAN; the node expects
+exactly `spiffe://brezel/api/<api-id>`. Certificates also require the matching
+server or client extended key usage.
+
+Every operation request carries:
+
+```text
+Authorization: BrezelCapability <signed-token>
+X-Brezel-Route-ID: <opaque-route-id>
+```
+
+The Ed25519 token is valid for at most 30 seconds and one operation. It binds
+issuer, key ID, audience, node ID, node boot identity, route ID and generation,
+project ID, sandbox ID, operation, canonical request digest, random
+single-use identifier, and operation-specific size, port, or duration bounds.
+The relay authenticates the signed envelope before reading request content,
+then acquires an operation lease for the exact ready route generation. The
+lease prevents standby, release, or rebinding while the operation is running.
+After matching the canonical request digest, the relay consumes the identifier
+in a bounded replay cache before resolving the private engine binding.
+Saturated replay state fails closed.
+
+Command events use the same bounded NDJSON representation as the public API.
+File responses include path, size, and SHA-256 metadata headers. The port relay
+permits bounded HTTP methods and removes credentials, cookies, forwarding,
+hop-by-hop, and internal routing headers. Current hard ceilings are 128 KiB for
+a command request, 64 MiB and one hour for command output and duration, 32 MiB
+for file upload, 64 MiB for file download, 32 MiB and 64 MiB for port request
+and response, and 16 KiB for a request URL.
+
+The route inspection endpoint returns the relay node ID, a cryptographically
+random process boot identity, and the public route binding. It never returns
+the engine ID. The relay generates a new 128-bit boot identity in every server
+process, so a capability minted for an earlier process cannot be replayed after
+a restart. The relay deliberately does not log customer content, capability
+tokens, or engine identities.
+
+This milestone does not move sandbox create, pause, resume, delete, placement,
+or reconciliation to the relay. It also does not yet provide certificate or
+signing-key rotation, a separately authenticated data-edge handoff, terminals,
+WebSockets, raw TCP, or direct client authorization. The default `brezeld`
+configuration continues to use the in-process engine adapter. Until the data-
+edge and deployment work is complete, the durable API remains the byte path
+for the public command, file, and preview endpoints.
 
 ## Workspaces and checkpoints
 

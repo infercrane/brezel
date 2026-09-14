@@ -32,6 +32,7 @@ changes. It must not be described as hostile shared-multitenant production.
 | Recovery | Durable idempotency, lifecycle events, cleanup intent, expiration reconciliation |
 | Evidence | Ed25519-signed DSSE lifecycle receipt; no customer content by default |
 | Distribution | Pinned source, patches, images, VM artifacts, installer, conformance, benchmark harness |
+| Node relay foundation | Internal mTLS identities, single-operation capabilities, replay defense, generation fencing, and in-flight operation leases; not default wiring |
 
 Release code has no fake backend and no container isolation fallback. The test
 backend exists only in `_test.go` files. A remote engine requires TLS; service
@@ -43,7 +44,7 @@ and engine credentials are read from protected files.
 - interactive PTY, SSH, desktop, or WebSocket transport
 - full-state checkpoint and fork
 - Python and TypeScript SDKs
-- out-of-process node relay and direct data paths
+- packaged out-of-process node service and default direct data paths
 - warm-capacity management and node-local snapshot prefetch
 - OIDC, organizations, RBAC, approvals, or dynamic quota administration
 - multiple nodes, replicated state, workspace backup/restore, or disaster recovery
@@ -80,8 +81,9 @@ and post-reboot matrix before new numbers are published. See
 
 ## Next release gate
 
-The next gate is the node-local relay: mTLS between the durable API and node,
-single-operation signed capabilities, a protected node generation ledger, and
-direct command, file, and preview paths. It must pass local security-negative
-tests and the complete Linux/KVM qualification and benchmark matrix before this
-status changes.
+The relay trust foundation is implemented and passes local protocol, negative,
+concurrency, restart, and race tests. The next gate is to package it as a
+separate node process, enroll and rotate node identity, reconcile route state,
+and make it the default command, file, and preview byte path. That integrated
+path must pass the complete Linux/KVM qualification, failure, and benchmark
+matrix before this status changes.

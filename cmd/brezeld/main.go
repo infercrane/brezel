@@ -65,7 +65,7 @@ func keygen(args []string) error {
 }
 
 func run() error {
-	engineToken, err := loadSecretFile(env("BREZEL_ENGINE_TOKEN_FILE", "./brezel-state/engine.token"))
+	engineToken, err := loadSecretFile(env("BREZEL_ENGINE_TOKEN_FILE", "./.brezel/secrets/engine.token"))
 	if err != nil {
 		return fmt.Errorf("load microVM engine token: %w", err)
 	}
@@ -86,7 +86,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	state, err := store.OpenFile(env("BREZEL_DATA_FILE", "./brezel-state/state.json"))
+	state, err := store.OpenFile(env("BREZEL_DATA_FILE", "./.brezel/state/state.json"))
 	if err != nil {
 		return err
 	}
@@ -146,7 +146,7 @@ func run() error {
 		if !trustedOperatorMode {
 			return errors.New("BREZEL_ACCESS_POLICY_FILE is required; set BREZEL_TRUSTED_OPERATOR_MODE=true only for an isolated development host")
 		}
-		token, err = loadSecretFile(env("BREZEL_SERVICE_TOKEN_FILE", "./brezel-state/service.token"))
+		token, err = loadSecretFile(env("BREZEL_SERVICE_TOKEN_FILE", "./.brezel/secrets/service.token"))
 		if err != nil {
 			return fmt.Errorf("load Brezel service token: %w", err)
 		}

@@ -51,6 +51,11 @@ The trusted computing base includes:
 - identity, secret, KMS, and signing providers; and
 - administrators able to configure or access the platform.
 
+The node relay, its mTLS private keys, API capability-signing keys, replay
+cache, and generation ledger are also trusted. A compromise of either endpoint
+or its signing material is outside the protection supplied by the relay
+protocol itself.
+
 The guest image, guest `root`, commands, agent, application, model output, tool
 output, and customer data are untrusted.
 
@@ -86,6 +91,12 @@ output, and customer data are untrusted.
 11. Cleanup failure remains visible and retryable.
 12. Customer content collection is opt-in, tenant-scoped, and separate from
     operational telemetry.
+13. An API-to-node request requires both a mutually authenticated transport and
+    a valid capability for one exact operation and current route generation.
+14. A private engine ID is resolved only inside its assigned node and never
+    appears in a capability, public response, ordinary log, or receipt.
+15. A relay restart changes its boot identity before accepting traffic; a
+    process-local replay cache is safe only while that invariant holds.
 
 ## MicroVM boundary
 
@@ -99,6 +110,67 @@ sandbox identity and are never exposed by public preview routes.
 
 Plain containers may be useful for trusted development tasks but cannot carry
 the project's microVM or hostile multi-tenant assurance label.
+
+## Node relay boundary
+
+The node relay narrows authority after the durable service admits an operation.
+It does not accept the public bearer token or trust project, sandbox, node, or
+engine identity supplied in an ordinary request.
+
+The transport requires TLS 1.3, a trusted certificate chain, normal DNS or IP
+SAN validation on the node, and exact URI SAN identities of the form
+`spiffe://brezel/api/<api-id>` and `spiffe://brezel/node/<node-id>`. API and
+node certificates have exclusive client and server extended key usages. Local
+certificate, private-key, and CA paths must be private regular files; symlinks
+and group- or world-readable files fail closed. Redirects are not followed and
+the configured HTTP transport does not inherit an ambient proxy.
+
+Transport identity is necessary but insufficient. Every data operation also
+uses a short-lived Ed25519-signed bearer capability that authorizes only one of
+`command.run`, `file.read`, `file.write`, or `port.proxy`. It binds the exact
+node and relay boot, opaque route and generation, project and sandbox, a digest
+of the canonical request descriptor, operation-specific limits, a random
+identifier, and a maximum 30-second authorization lifetime. Command arguments,
+paths, body contents, output, engine IDs, and credentials are not embedded in
+the token. The request digest binds those values without disclosing them.
+
+The relay resolves the route through an exclusively locked, crash-safe node
+ledger only after capability verification. Route generations increase on bind
+and rebind and never reset when a released route ID is reused. An old token
+therefore cannot address a new VM assignment. The private engine ID is held in
+the ledger binding and redacted from JSON and formatted output. The relay
+rechecks the current route and lifecycle state before execution.
+
+A bounded replay cache consumes each capability identifier once until expiry.
+It removes expired entries but never evicts an unexpired identifier to make
+space; saturation denies new operations. The cache is deliberately
+process-local. The relay server generates a fresh random 128-bit boot identity
+inside every process, and capability verification rejects every prior process
+identity before replay admission.
+
+After authenticating the token but before reading a request body, the relay
+checks its static node, boot, route, and operation claims. Once the canonical
+request digest matches, it acquires a process-local lease on the exact ready
+route generation. The route may drain while work finishes, but it cannot enter
+standby, be released, or be rebound until all admitted leases are released.
+
+The implemented protocol caps command requests at 128 KiB, command output at
+64 MiB, command duration at one hour, file uploads at 32 MiB, file downloads at
+64 MiB, proxied HTTP requests and responses at 32 MiB and 64 MiB respectively,
+and request URLs at 16 KiB. It strips internal, authorization, cookie,
+forwarding, and hop-by-hop headers. It has no ordinary content logger. Commands
+are streamed as bounded NDJSON; file and HTTP port bodies are currently
+buffered, which limits scale and increases node memory pressure within those
+bounds.
+
+The relay does not yet authorize lifecycle or placement, expose a public
+capability-minting endpoint, rotate certificates or signing keys, reconcile its
+ledger with a fleet authority, support terminal or WebSocket tunnels, or
+provide a separately authenticated data-edge path. The default server still
+uses the in-process engine data-plane adapter, so current public command, file,
+and preview traffic continues through the durable API. Relay deployment
+remains an internal, non-default release milestone until those integration and
+Linux/KVM failure tests pass.
 
 ## Checkpoint, restore, and fork boundary
 

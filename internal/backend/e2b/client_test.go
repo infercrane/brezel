@@ -44,7 +44,7 @@ func TestCreateMapsSecurityLifecycleAndTenantMetadata(t *testing.T) {
 			t.Fatalf("product-owned standby timer leaked to engine: %#v", body)
 		}
 		metadata := body["metadata"].(map[string]any)
-		if metadata["runtime.project_id"] != "project-a" {
+		if metadata["brezel.project_id"] != "project-a" {
 			t.Fatalf("tenant metadata missing: %#v", metadata)
 		}
 		network := body["network"].(map[string]any)
@@ -318,7 +318,7 @@ func TestFindConfirmsRecoveredRunningGuest(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v2/sandboxes" {
 			t.Fatalf("engine lookup = %s %s", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`[{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-token","metadata":{"runtime.sandbox_id":"local-1","runtime.project_id":"project-a"}}]`))
+		_, _ = w.Write([]byte(`[{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-token","metadata":{"brezel.sandbox_id":"local-1","brezel.project_id":"project-a"}}]`))
 	}))
 	defer server.Close()
 	client, _ := New(server.URL, "test-key", server.Client(), WithGuestURLTemplate(guest.URL))
@@ -333,10 +333,10 @@ func TestFindRecoversByTenantBoundMetadata(t *testing.T) {
 		if r.URL.Path != "/v2/sandboxes" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("metadata") != "runtime.sandbox_id=local-1&runtime.project_id=project-a" {
+		if r.URL.Query().Get("metadata") != "brezel.sandbox_id=local-1&brezel.project_id=project-a" {
 			t.Fatalf("metadata = %q", r.URL.Query().Get("metadata"))
 		}
-		_, _ = w.Write([]byte(`[{"sandboxID":"upstream-1","state":"paused","envdAccessToken":"guest-token","metadata":{"runtime.sandbox_id":"local-1","runtime.project_id":"project-a"}}]`))
+		_, _ = w.Write([]byte(`[{"sandboxID":"upstream-1","state":"paused","envdAccessToken":"guest-token","metadata":{"brezel.sandbox_id":"local-1","brezel.project_id":"project-a"}}]`))
 	}))
 	defer server.Close()
 	client, _ := New(server.URL, "test-key", server.Client())

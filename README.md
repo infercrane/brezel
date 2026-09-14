@@ -113,9 +113,11 @@ Apache-licensed E2B Runtime components as its internal Firecracker engine. It
 does not require E2B Cloud or an E2B API key. The engine is a replaceable
 substrate rather than the product API.
 
-The next trust-boundary milestone moves commands, files, and previews through a
-node-local mTLS relay with one-operation capabilities and a protected generation
-ledger, so live data no longer traverses the durable API process.
+The node-local relay foundation now provides mTLS identity, one-operation
+capabilities, replay protection, and a protected generation ledger. The next
+milestone packages it as a separate node service and makes it the default
+command, file, and preview byte path, so live data no longer traverses the
+durable API process.
 
 Read [Architecture](docs/ARCHITECTURE.md) and the
 [Threat model](docs/THREAT_MODEL.md) before operating a host.

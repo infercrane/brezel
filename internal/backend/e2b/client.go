@@ -184,8 +184,8 @@ func (c *Client) Create(ctx context.Context, in backend.CreateRequest) (backend.
 		"secure":                true,
 		"allow_internet_access": in.Network.AllowInternet,
 		"metadata": map[string]string{
-			"runtime.sandbox_id": in.LocalSandboxID,
-			"runtime.project_id": in.ProjectID,
+			"brezel.sandbox_id": in.LocalSandboxID,
+			"brezel.project_id": in.ProjectID,
 		},
 		"network": network,
 		"envVars": in.Environment,
@@ -220,7 +220,7 @@ func (c *Client) Inspect(ctx context.Context, id string) (backend.Sandbox, error
 func (c *Client) Find(ctx context.Context, localID, projectID string) (backend.Sandbox, error) {
 	u := c.baseURL.ResolveReference(&url.URL{Path: "/v2/sandboxes"})
 	query := u.Query()
-	query.Set("metadata", "runtime.sandbox_id="+localID+"&runtime.project_id="+projectID)
+	query.Set("metadata", "brezel.sandbox_id="+localID+"&brezel.project_id="+projectID)
 	u.RawQuery = query.Encode()
 	var out []struct {
 		SandboxID          string            `json:"sandboxID"`
@@ -234,7 +234,7 @@ func (c *Client) Find(ctx context.Context, localID, projectID string) (backend.S
 		return backend.Sandbox{}, err
 	}
 	for _, candidate := range out {
-		if candidate.Metadata["runtime.sandbox_id"] == localID && candidate.Metadata["runtime.project_id"] == projectID {
+		if candidate.Metadata["brezel.sandbox_id"] == localID && candidate.Metadata["brezel.project_id"] == projectID {
 			return c.observedSandbox(ctx, candidate.SandboxID, sandboxResponse{
 				SandboxID: candidate.SandboxID, State: candidate.State, Domain: candidate.Domain,
 				EnvdAccessToken: candidate.EnvdAccessToken, TrafficAccessToken: candidate.TrafficAccessToken,

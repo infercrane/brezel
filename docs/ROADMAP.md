@@ -10,11 +10,10 @@ The user path is `new`, `run`, files, preview, stop, start, and delete.
 
 Build next:
 
-- out-of-process `brezel-node` relay
-- mTLS API-to-node identity with explicit node enrollment
-- signed, audience-bound, single-operation capabilities
-- atomic node generation ledger and replay protection
-- direct command, file, and preview traffic that bypasses the durable API
+- package the implemented relay foundation as an out-of-process `brezel-node`
+- add explicit node enrollment plus certificate and signing-key rotation
+- reconcile API placement state with the protected node generation ledger
+- make command, file, and preview traffic bypass the durable API by default
 - safe node drain, restart, reconciliation, and cleanup
 - one-command installation on a fresh supported host
 - reproducible sequential, staggered, burst, reboot, and soak benchmarks

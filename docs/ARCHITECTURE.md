@@ -41,10 +41,11 @@
                                     |
               regional placement + durable operation record
                                     |
-        +---------------------------+---------------------------+
+       +---------------------------+---------------------------+
         |                           |                           |
 +-------v--------+          +-------v--------+          +-------v--------+
 | worker node A  |          | worker node B  |          | worker node C  |
+| mTLS node relay|          | mTLS node relay|          | mTLS node relay|
 | microVM worker |          | microVM worker |          | microVM worker |
 | Firecracker VMs|          | Firecracker VMs|          | Firecracker VMs|
 | snapshot cache |          | snapshot cache |          | snapshot cache |
@@ -112,6 +113,57 @@ privileged guest agent.
 Project metadata is attached outside the guest. If a guest extension becomes
 necessary, it must be unprivileged where possible, versioned independently, and
 included in conformance and receipts.
+
+### Node-local relay trust boundary
+
+The node relay is the product-owned boundary between an admitted product
+operation and the private engine guest identity. Its internal protocol carries
+commands, file transfer, and application-port traffic without exposing engine
+IDs or guest-management credentials to a public caller.
+
+The API and each node authenticate one another with TLS 1.3 and exact URI SAN
+identities. A node certificate has the identity
+`spiffe://brezel/node/<node-id>` and the API certificate has
+`spiffe://brezel/api/<api-id>`. Certificate role is also constrained by the
+exclusive server or client extended key usage. The implementation performs
+normal CA and DNS or IP SAN verification in addition to the exact URI check;
+it does not use insecure verification or follow redirects. Certificate, key,
+and CA inputs must be private regular files and cannot be symlinks.
+
+After normal project, lifecycle, and quota admission, the API signs an Ed25519
+capability for exactly one operation: command execution, file read, file write,
+or application-port proxy. The capability binds issuer and key ID, audience,
+node and boot identity, opaque route ID, monotonically increasing route
+generation, project, sandbox, canonical request digest, operation-specific
+byte or time bounds, a random identifier, and a lifetime of at most 30 seconds.
+The relay rejects an invalid or stale binding before resolving the private
+engine ID.
+
+Each node holds a crash-safe, exclusively locked generation ledger. Rebinding a
+route allocates a new generation, so a capability for a prior VM assignment
+cannot reach its replacement. Released routes remain fenced by the durable
+generation clock. An operation lease on the exact route generation prevents
+standby, release, or rebinding until admitted work exits. A bounded in-memory
+replay cache consumes a capability ID once and fails closed rather than
+evicting an unexpired entry. The relay server generates a fresh random 128-bit
+boot identity inside every process; tokens from a prior process then fail before
+replay admission.
+
+The relay protocol has explicit command, file, and port endpoints, bounded
+headers, bodies, output, and operation duration, and no content logger. It
+streams command events but currently buffers file bodies and proxied HTTP
+bodies. Terminal sessions, WebSockets, raw TCP, capability delegation, and
+multi-hop forwarding are not part of this milestone.
+
+This trust boundary is implemented as internal packages, but it is not the
+default `brezeld` production path yet. Lifecycle, placement, and route binding
+still belong to the durable API and engine adapter. The current public command,
+file, and preview endpoints still traverse the durable API process, and there
+is no separately authenticated data-edge handoff to the node. Enabling the
+relay as the default byte path requires node registration, certificate and key
+rotation, route-ledger reconciliation, a data-edge routing path, operational
+packaging, and Linux/KVM failure qualification. See
+[ADR 0009](decisions/0009-node-relay-trust-boundary.md).
 
 ## Primary resources
 
@@ -283,10 +335,14 @@ measurements.
 6. Ask the selected microVM worker to create or resume the Firecracker VM.
 7. Install routing and egress policy before returning a usable endpoint.
 8. Mark `running` only after the guest health check and policy report succeed.
-9. Proxy process, filesystem, terminal, and port requests to the authenticated
-   guest agent without exposing its credential.
-10. Refresh activity with bounded leases; activity does not extend expiration
-    unless the caller is authorized to do so.
+9. Authorize process, filesystem, terminal, and port requests without exposing
+   the guest credential. In the target path, issue one-operation capabilities
+   so command, file, and application-port bytes travel through the node relay
+   rather than the durable API process. The current default path still proxies
+   them through the API-side engine adapter.
+10. Refresh activity through a bounded, coalesced lifecycle signal; the relay
+    hot path must not fsync durable activity state for every byte operation, and
+    activity does not extend absolute expiration.
 
 The single-host adapter accepts a persisted engine `running` observation only
 with an authenticated guest-health proof no older than one second. Create and

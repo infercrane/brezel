@@ -42,16 +42,17 @@ type BindingVerifier func(projectID, sandboxID, backendID string, revision int64
 // Fields deliberately remain private so substrate identifiers cannot leak into
 // public API objects or logs through ordinary serialization.
 type SandboxBinding struct {
-	projectID   string
-	sandboxID   string
-	backendID   string
-	operationID string
-	revision    int64
-	expiresAt   time.Time
-	now         func() time.Time
-	verify      BindingVerifier
-	revoked     *atomic.Bool
-	authorized  bool
+	projectID      string
+	sandboxID      string
+	backendID      string
+	operationID    string
+	revision       int64
+	nodeGeneration uint64
+	expiresAt      time.Time
+	now            func() time.Time
+	verify         BindingVerifier
+	revoked        *atomic.Bool
+	authorized     bool
 }
 
 // BindAuthorizedSandbox creates the handoff used for one admitted guest
@@ -62,6 +63,13 @@ type BindingOption func(*SandboxBinding)
 // service. It is primarily useful for deterministic lifecycle tests.
 func WithBindingClock(now func() time.Time) BindingOption {
 	return func(binding *SandboxBinding) { binding.now = now }
+}
+
+// WithNodeGeneration binds a remote relay handoff to the exact node-local
+// route generation recorded by durable placement. A rebound route must never
+// silently upgrade an already authorized API operation.
+func WithNodeGeneration(generation uint64) BindingOption {
+	return func(binding *SandboxBinding) { binding.nodeGeneration = generation }
 }
 
 func BindAuthorizedSandbox(projectID, sandboxID, backendID, operationID string, revision int64, expiresAt time.Time, verify BindingVerifier, options ...BindingOption) (SandboxBinding, error) {
@@ -110,7 +118,7 @@ func (b SandboxBinding) String() string {
 	if !b.authorized {
 		return "node sandbox binding (invalid)"
 	}
-	return fmt.Sprintf("node sandbox binding project=%q sandbox=%q operation=%q revision=%d", b.projectID, b.sandboxID, b.operationID, b.revision)
+	return fmt.Sprintf("node sandbox binding project=%q sandbox=%q operation=%q revision=%d node_generation=%d", b.projectID, b.sandboxID, b.operationID, b.revision, b.nodeGeneration)
 }
 
 func (b SandboxBinding) validate() error {

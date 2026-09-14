@@ -194,6 +194,25 @@ where data leaves the store; the event path retains atomic replacement, file
 and directory `fsync`, and publish-after-persist ordering. Record the Go
 version, OS, architecture, CPU, run count, and complete output with any result.
 
+### Relay authorization microbenchmark
+
+`internal/node` contains a protocol benchmark for capability issuance,
+Ed25519 verification, replay admission, route-generation leasing, canonical
+request validation, and command-event dispatch. It excludes TLS, network, API
+admission, and guest execution, so it is useful for detecting relay regressions
+but is not sandbox startup or end-to-end latency.
+
+```sh
+go test ./internal/node -run '^$' \
+  -bench '^BenchmarkRelayCommandAuthorization$' -benchmem -count=5
+```
+
+On 2026-09-14, an Apple M4 development machine running Darwin arm64 observed
+87.4 to 102.9 microseconds per operation, about 21.7 kB allocated, and 151
+allocations per operation across five runs. This is local engineering evidence,
+not a portable performance claim. Linux/KVM release evidence still requires the
+complete matrix above.
+
 ## Publishing rules
 
 A result is publishable only when:
