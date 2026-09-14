@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 220" role="img" aria-labelledby="title description">
+  <title id="title">Brezel</title>
+  <desc id="description">Brezel wordmark with a continuous pretzel-shaped execution loop</desc>
+  <defs>
+    <linearGradient id="loop" x1="32" y1="28" x2="205" y2="174" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#33D6A6"/>
+      <stop offset="1" stop-color="#6D8CFF"/>
+    </linearGradient>
+    <style>
+      .word { fill: #111827; font: 700 92px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; letter-spacing: 7px; }
+      .rule { fill: #4B5563; font: 600 17px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; letter-spacing: 5px; }
+      @media (prefers-color-scheme: dark) {
+        .word { fill: #F8FAFC; }
+        .rule { fill: #94A3B8; }
+      }
+    </style>
+  </defs>
+
+  <g fill="none" stroke="url(#loop)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M44 78c0-37 44-49 67-13 23-36 67-24 67 13 0 37-38 52-67 27-29 25-67 10-67-27Z"/>
+    <path d="M70 52c12 18 25 37 41 53 16-16 29-35 41-53"/>
+    <path d="M70 119c12 36 70 36 82 0"/>
+  </g>
+  <circle cx="44" cy="78" r="4" fill="#33D6A6"/>
+  <circle cx="178" cy="78" r="4" fill="#6D8CFF"/>
+
+  <text class="word" x="234" y="116">BREZEL</text>
+  <text class="rule" x="240" y="156">STATEFUL AGENT SANDBOXES</text>
+</svg>

@@ -8,11 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/infercrane/brezel/internal/domain"
+	"github.com/infercrane/brezel/internal/securefile"
 )
 
 const maxPolicyBytes = 1 << 20
@@ -47,22 +47,11 @@ func LoadFile(path string) (*Policy, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("access policy file path is required")
 	}
-	info, err := os.Lstat(path)
+	data, err := securefile.Read(path, maxPolicyBytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read access policy: %w", err)
 	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("access policy must be a regular file")
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("access policy permissions must not allow group or other access")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	decoder := json.NewDecoder(io.LimitReader(file, maxPolicyBytes+1))
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	var document policyDocument
 	if err := decoder.Decode(&document); err != nil {
@@ -70,9 +59,6 @@ func LoadFile(path string) (*Policy, error) {
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, errors.New("access policy must contain one JSON document")
-	}
-	if info.Size() > maxPolicyBytes {
-		return nil, errors.New("access policy exceeds 1 MiB")
 	}
 	return parse(document)
 }

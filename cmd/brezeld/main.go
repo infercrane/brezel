@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -23,6 +22,7 @@ import (
 	"github.com/infercrane/brezel/internal/connector"
 	"github.com/infercrane/brezel/internal/httpapi"
 	"github.com/infercrane/brezel/internal/receipt"
+	"github.com/infercrane/brezel/internal/securefile"
 	"github.com/infercrane/brezel/internal/service"
 	"github.com/infercrane/brezel/internal/store"
 	"github.com/infercrane/brezel/internal/telemetry"
@@ -245,39 +245,7 @@ func loadLimits() (service.Limits, error) {
 }
 
 func loadSecretFile(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", errors.New("secret file path is required")
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() {
-		return "", errors.New("secret path must be a regular file")
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("secret file permissions must not allow group or other access")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, (16<<10)+1))
-	if err != nil {
-		return "", err
-	}
-	if len(data) > 16<<10 {
-		return "", errors.New("secret file exceeds 16384 bytes")
-	}
-	value := strings.TrimSpace(string(data))
-	if value == "" {
-		return "", errors.New("secret file is empty")
-	}
-	if strings.ContainsAny(value, "\r\n") {
-		return "", errors.New("secret file contains embedded line breaks")
-	}
-	return value, nil
+	return securefile.ReadText(path, 16<<10)
 }
 
 func reconcileLoop(ctx context.Context, svc *service.Service) {

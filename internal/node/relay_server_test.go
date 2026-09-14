@@ -177,6 +177,78 @@ func TestRelayServerHealthReadinessAndRouteResolution(t *testing.T) {
 	}
 }
 
+func TestRelayServerDrainRejectsNewOperationsWithoutReadingBodies(t *testing.T) {
+	h := newRelayServerHarness(t)
+	h.server.BeginDrain()
+	h.server.BeginDrain()
+	if !h.server.Draining() {
+		t.Fatal("relay did not enter draining state")
+	}
+	if response := h.execute(httptest.NewRequest(http.MethodGet, "/healthz", nil)); response.Code != http.StatusOK {
+		t.Fatalf("health status=%d", response.Code)
+	}
+	if response := h.execute(httptest.NewRequest(http.MethodGet, "/readyz", nil)); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness status=%d", response.Code)
+	}
+	body := &failOnReadBody{}
+	request := httptest.NewRequest(http.MethodPost, "/v1/commands", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.ContentLength = 1
+	if response := h.execute(request); response.Code != http.StatusServiceUnavailable || body.read || h.engine.commandCalls != 0 {
+		t.Fatalf("operation status=%d bodyRead=%v calls=%d", response.Code, body.read, h.engine.commandCalls)
+	}
+}
+
+func TestRelayServerAdmissionRejectsOverloadBeforeReadingBody(t *testing.T) {
+	h := newRelayServerHarness(t)
+	h.server.admission = make(chan struct{}, 1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h.engine.commandStarted = started
+	h.engine.commandRelease = release
+	wire := relayCommandRequest{Argv: []string{"sleep", "1"}}
+	canonical, _ := canonicalRelayJSON(wire)
+	first := httptest.NewRequest(http.MethodPost, "/v1/commands", bytes.NewReader(canonical))
+	first.Header.Set("Content-Type", "application/json")
+	h.authorize(first, h.issue(CapabilityRunCommand, canonical, CapabilityBounds{MaxDurationMillis: 5_000, MaxResponseBytes: 1 << 20}))
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- h.execute(first) }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first operation did not enter the engine")
+	}
+
+	body := &failOnReadBody{}
+	second := httptest.NewRequest(http.MethodPut, "/v1/files?path=%2Fworkspace%2Fa", body)
+	second.ContentLength = 1
+	if response := h.execute(second); response.Code != http.StatusServiceUnavailable || body.read || h.engine.writeCalls != 0 {
+		t.Fatalf("overload status=%d bodyRead=%v writes=%d", response.Code, body.read, h.engine.writeCalls)
+	}
+	close(release)
+	select {
+	case response := <-done:
+		if response.Code != http.StatusOK {
+			t.Fatalf("first operation status=%d", response.Code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first operation did not finish")
+	}
+}
+
+func TestRelayServerRejectsUnsafeAdmissionCapacity(t *testing.T) {
+	h := newRelayServerHarness(t)
+	for _, value := range []int{-1, relayMaxInFlight + 1} {
+		if _, err := NewRelayServer(RelayServerConfig{
+			NodeID: relayServerNodeID, Audience: relayServerAudience, Ledger: h.ledger,
+			Verifier: h.server.verifier, Replay: h.server.replay, Engine: h.engine,
+			MaxInFlight: value,
+		}); err == nil {
+			t.Fatalf("max in-flight %d was accepted", value)
+		}
+	}
+}
+
 func TestRelayServerRotatesBootEpochAndRejectsPreRestartCapability(t *testing.T) {
 	h := newRelayServerHarness(t)
 	wire := relayCommandRequest{Argv: []string{"true"}}

@@ -28,7 +28,8 @@ metadata, header, and credential-response controls. Private address space needs
 an explicit connector setting; loopback, link-local, and known metadata
 addresses remain blocked.
 
-The development resolver reads only non-symlink regular files with mode 0600.
+The development resolver reads only non-symlink regular files with mode 0400
+or 0600.
 Vault, cloud secret managers, and SPIFFE-bound renewal are follow-up adapters.
 
 ## Consequences

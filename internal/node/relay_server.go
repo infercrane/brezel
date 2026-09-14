@@ -37,6 +37,8 @@ const (
 	relayMaxProxyResponse   = 64 << 20
 	relayMaxURLBytes        = 16 << 10
 	relayReadyTimeout       = 2 * time.Second
+	relayDefaultMaxInFlight = 64
+	relayMaxInFlight        = 1_024
 )
 
 var relayEnvironmentKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
@@ -50,7 +52,10 @@ type RelayServerConfig struct {
 	Verifier *CapabilityVerifier
 	Replay   *ReplayCache
 	Engine   backend.Backend
-	Now      func() time.Time
+	// MaxInFlight bounds data operations before any request body is read.
+	// Zero selects the conservative default.
+	MaxInFlight int
+	Now         func() time.Time
 }
 
 // RelayServer is the node-local command, file, and application-port data path.
@@ -67,6 +72,8 @@ type RelayServer struct {
 	engineReady backend.ReadinessBackend
 	now         func() time.Time
 	mux         *http.ServeMux
+	draining    atomic.Bool
+	admission   chan struct{}
 }
 
 func NewRelayServer(config RelayServerConfig) (*RelayServer, error) {
@@ -87,6 +94,13 @@ func NewRelayServer(config RelayServerConfig) (*RelayServer, error) {
 	if config.Engine == nil {
 		return nil, errors.New("node execution engine is required")
 	}
+	maxInFlight := config.MaxInFlight
+	if maxInFlight == 0 {
+		maxInFlight = relayDefaultMaxInFlight
+	}
+	if maxInFlight < 1 || maxInFlight > relayMaxInFlight {
+		return nil, fmt.Errorf("node relay max in-flight operations must be between 1 and %d", relayMaxInFlight)
+	}
 	bootEpoch, err := newRelayBootEpoch()
 	if err != nil {
 		return nil, err
@@ -103,6 +117,7 @@ func NewRelayServer(config RelayServerConfig) (*RelayServer, error) {
 		verifier:  config.Verifier,
 		replay:    config.Replay,
 		dataPlane: NewBackendDataPlane(config.Engine),
+		admission: make(chan struct{}, maxInFlight),
 		now:       now,
 		mux:       http.NewServeMux(),
 	}
@@ -125,7 +140,30 @@ func (s *RelayServer) routes() {
 func (s *RelayServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if relayDataRequest(r) {
+		select {
+		case s.admission <- struct{}{}:
+			defer func() { <-s.admission }()
+		default:
+			writeRelayError(w, http.StatusServiceUnavailable, "overloaded")
+			return
+		}
+	}
 	s.mux.ServeHTTP(w, r)
+}
+
+// BeginDrain stops readiness and rejects new data operations. Requests that
+// already hold a generation lease are allowed to finish during HTTP shutdown.
+// It is safe to call more than once.
+func (s *RelayServer) BeginDrain() { s.draining.Store(true) }
+
+func (s *RelayServer) Draining() bool { return s != nil && s.draining.Load() }
+
+func relayDataRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	return r.URL.Path == "/v1/commands" || r.URL.Path == "/v1/files" || strings.HasPrefix(r.URL.Path, "/v1/ports/")
 }
 
 func (s *RelayServer) health(w http.ResponseWriter, _ *http.Request) {
@@ -133,6 +171,10 @@ func (s *RelayServer) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *RelayServer) ready(w http.ResponseWriter, r *http.Request) {
+	if s.draining.Load() {
+		writeRelayError(w, http.StatusServiceUnavailable, "draining")
+		return
+	}
 	if err := s.ledger.Ready(); err != nil {
 		writeRelayError(w, http.StatusServiceUnavailable, "not_ready")
 		return
@@ -470,6 +512,10 @@ type relayAuthorization struct {
 // a handler reads or hashes a potentially large body. It deliberately avoids
 // a ledger lookup until the bearer token is cryptographically authenticated.
 func (s *RelayServer) authenticate(w http.ResponseWriter, r *http.Request, operation CapabilityOperation) (relayAuthorization, bool) {
+	if s.draining.Load() {
+		writeRelayError(w, http.StatusServiceUnavailable, "draining")
+		return relayAuthorization{}, false
+	}
 	routeID, ok := relayRouteID(r.Header)
 	if !ok {
 		writeRelayError(w, http.StatusUnauthorized, "missing_route")

@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/infercrane/brezel/internal/perfbench"
+	"github.com/infercrane/brezel/internal/securefile"
 )
 
 func main() {
@@ -111,27 +111,11 @@ func loadServiceToken() (string, error) {
 	if path == "" {
 		return "", errors.New("BREZEL_SERVICE_TOKEN_FILE is required; the token is intentionally not accepted in argv or environment values")
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", fmt.Errorf("inspect runtime service token: %w", err)
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("token file must be a private regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("open runtime service token: %w", err)
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, (16<<10)+1))
+	token, err := securefile.ReadText(path, 16<<10)
 	if err != nil {
 		return "", fmt.Errorf("read runtime service token: %w", err)
 	}
-	if len(data) > 16<<10 {
-		return "", errors.New("token file exceeds 16384 bytes")
-	}
-	token := strings.TrimSpace(string(data))
-	if len(token) < 32 || strings.ContainsAny(token, "\r\n") {
+	if len(token) < 32 {
 		return "", errors.New("token file does not contain a valid service token")
 	}
 	return token, nil

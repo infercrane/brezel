@@ -176,6 +176,72 @@ target without an unexplained p95, p99, throughput, or failure-latency
 regression. Never average cold, cached-template, and warm-pool results into one
 startup number.
 
+### Machine-checkable promotion gate
+
+`brezel-bench-compare` turns the protocol above into a fail-closed release
+decision. It requires at least two complete baseline matrices and two complete
+candidate matrices. Replicates must have identical revisions within each set;
+both sets must have the same named host, evidence class, cache state, template,
+project, case set, and matrix configuration. The gate also resolves each
+matrix's `host-before.json` and compares its captured OS, kernel, architecture,
+virtualization, CPU topology, memory size, KVM/TUN availability, root
+filesystem, Docker configuration, and engine-lock digest. Every input must come
+from a clean checkout whose recorded repository revision matches the matrix,
+and replicates must use the same benchmark binary digest. Every attempt and
+cleanup must have passed, with no censored latency.
+
+Declare the metric the change is intended to improve. The gate then checks that
+target and independently protects scheduled and service p95/p99 in every cell,
+plus observed throughput in concurrent cells:
+
+```sh
+bin/brezel-bench-compare \
+  -baseline evidence/A1/summary.json \
+  -baseline evidence/A2/summary.json \
+  -candidate evidence/B1/summary.json \
+  -candidate evidence/B2/summary.json \
+  -target tti-sequential:scheduled_p50_ms \
+  -required-improvement 5 \
+  -max-latency-regression 5 \
+  -max-throughput-loss 5 \
+  > promotion.json
+```
+
+The JSON decision is emitted even when the candidate is rejected, and rejection
+returns a nonzero exit status. Supported target metrics are
+`scheduled_p50_ms`, `scheduled_p95_ms`, `scheduled_p99_ms`, `service_p50_ms`,
+`service_p95_ms`, `service_p99_ms`, and `throughput_per_second`. The default
+two-millisecond absolute tolerance prevents noise in very small latencies from
+dominating the percent guard; it does not relax the declared target
+improvement. This deterministic gate is conservative release automation, not a
+substitute for publishing raw samples or confidence intervals.
+
+### ComputeSDK compatibility
+
+The dependency-free adapter under `benchmarks/computesdk` implements the
+`createCompute().sandbox.create()`, `runCommand()`, and `destroy()` shape used by
+the public ComputeSDK sandbox benchmark. It keeps Brezel authentication in a
+private token file and fails closed on malformed streams, unconfirmed command
+outcomes, and unconfirmed cleanup.
+
+After qualifying a stable HTTPS deployment, run the one-cycle integration
+smoke test before wiring the provider entry into a pinned checkout of the public
+suite:
+
+```sh
+BREZEL_API_URL=https://sandbox.example.internal \
+BREZEL_SERVICE_TOKEN_FILE=/run/secrets/brezel-service-token \
+BREZEL_PROJECT_ID=brezel-benchmark \
+BREZEL_ENVIRONMENT_REVISION=envr_... \
+node benchmarks/computesdk/qualified-smoke.mjs
+```
+
+This adapter enables comparable external measurement; it is not yet a
+published `@computesdk/brezel` package and does not authorize a competitive
+performance claim. Upstream publication still requires a qualified hosted
+endpoint, credentials provisioned to the benchmark operator, an official
+provider package, and independent review.
+
 ### Controller microbenchmarks
 
 `internal/store` contains narrow Go benchmarks for control-state engineering.
@@ -208,10 +274,10 @@ go test ./internal/node -run '^$' \
 ```
 
 On 2026-09-14, an Apple M4 development machine running Darwin arm64 observed
-87.4 to 102.9 microseconds per operation, about 21.7 kB allocated, and 151
-allocations per operation across five runs. This is local engineering evidence,
-not a portable performance claim. Linux/KVM release evidence still requires the
-complete matrix above.
+123.6 to 129.5 microseconds per operation with a three-second benchmark window,
+about 21.7 kB allocated, and 151 allocations per operation across five runs.
+This is local engineering evidence, not a portable performance claim. Linux/KVM
+release evidence still requires the complete matrix above.
 
 ## Publishing rules
 

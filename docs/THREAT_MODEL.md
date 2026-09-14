@@ -149,10 +149,12 @@ inside every process, and capability verification rejects every prior process
 identity before replay admission.
 
 After authenticating the token but before reading a request body, the relay
-checks its static node, boot, route, and operation claims. Once the canonical
-request digest matches, it acquires a process-local lease on the exact ready
-route generation. The route may drain while work finishes, but it cannot enter
-standby, be released, or be rebound until all admitted leases are released.
+checks its static node, boot, route, and operation claims. It then validates and
+hashes only the bounded request shape, acquires a process-local lease and
+private binding for the exact ready route generation, matches the complete
+capability including that digest, and consumes the replay identifier before
+dispatch. The route may drain while work finishes, but it cannot enter standby,
+be released, or be rebound until all admitted leases are released.
 
 The implemented protocol caps command requests at 128 KiB, command output at
 64 MiB, command duration at one hour, file uploads at 32 MiB, file downloads at
@@ -163,14 +165,20 @@ are streamed as bounded NDJSON; file and HTTP port bodies are currently
 buffered, which limits scale and increases node memory pressure within those
 bounds.
 
-The relay does not yet authorize lifecycle or placement, expose a public
-capability-minting endpoint, rotate certificates or signing keys, reconcile its
-ledger with a fleet authority, support terminal or WebSocket tunnels, or
-provide a separately authenticated data-edge path. The default server still
-uses the in-process engine data-plane adapter, so current public command, file,
-and preview traffic continues through the durable API. Relay deployment
-remains an internal, non-default release milestone until those integration and
-Linux/KVM failure tests pass.
+The packaged node process has a separate bounded mTLS control listener for
+route bind and generation-fenced state transitions. It applies an
+already-authorized controller decision; it does not independently authorize
+product lifecycle or placement. Control responses never contain the private
+engine identity. Rebind and removal retries remain intentionally ambiguous and
+fail closed until durable node-operation receipts exist.
+
+The system does not yet expose a public capability-minting endpoint, rotate
+certificates or signing keys, reconcile the node ledger with a fleet authority,
+support terminal or WebSocket tunnels, or provide a separately authenticated
+data-edge path. The default server still uses the in-process engine data-plane
+adapter, so current public command, file, and preview traffic continues through
+the durable API. Relay deployment remains a non-default release milestone
+until those integration and Linux/KVM failure tests pass.
 
 ## Checkpoint, restore, and fork boundary
 

@@ -6,9 +6,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"time"
+
+	"github.com/infercrane/brezel/internal/securefile"
 )
 
 const (
@@ -249,40 +249,5 @@ func verifyIdentityAndUsage(certificate *x509.Certificate, expected Identity, us
 }
 
 func readPrivateRegular(path string, maximum int64) ([]byte, error) {
-	if path == "" {
-		return nil, errors.New("file path is required")
-	}
-	before, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
-		return nil, errors.New("path must name a regular file, not a symlink")
-	}
-	if before.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("file permissions must not allow group or other access")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	after, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		return nil, errors.New("file changed while it was being opened")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maximum+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maximum {
-		return nil, fmt.Errorf("file exceeds %d bytes", maximum)
-	}
-	if len(data) == 0 {
-		return nil, errors.New("file is empty")
-	}
-	return data, nil
+	return securefile.Read(path, maximum)
 }

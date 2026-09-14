@@ -34,7 +34,7 @@ services:
       - ${BREZEL_STATE_DIR:?set BREZEL_STATE_DIR to an absolute protected directory}:/var/lib/brezel
       - ${BREZEL_SECRETS_DIR:?set BREZEL_SECRETS_DIR to an absolute protected directory}:/run/brezel-secrets:ro
     healthcheck:
-      test: [CMD, wget, -qO-, http://127.0.0.1:8080/readyz]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
       interval: 10s
       timeout: 3s
       retries: 12

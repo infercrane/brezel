@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/infercrane/brezel/internal/securefile"
 )
 
 type client struct {
@@ -371,26 +373,7 @@ func workspaceMounts(values []string) ([]map[string]string, error) {
 }
 
 func readTokenFile(path string) (string, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("token file must be a private regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, (16<<10)+1))
-	if err != nil {
-		return "", err
-	}
-	if len(data) > 16<<10 {
-		return "", errors.New("token file exceeds 16384 bytes")
-	}
-	return strings.TrimSpace(string(data)), nil
+	return securefile.ReadText(path, 16<<10)
 }
 
 func doctor(ctx context.Context, destination io.Writer) error {

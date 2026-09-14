@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"github.com/infercrane/brezel/internal/domain"
+	"github.com/infercrane/brezel/internal/securefile"
 	"github.com/infercrane/brezel/internal/store"
 )
 
@@ -380,21 +380,8 @@ func (r *FileResolver) Resolve(_ context.Context, handle string) ([]byte, error)
 		return nil, ErrUnavailable
 	}
 	path := filepath.Join(r.root, name)
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o077 != 0 {
-		return nil, ErrUnavailable
-	}
-	file, err := os.Open(path)
+	data, err := securefile.Read(path, 64<<10)
 	if err != nil {
-		return nil, ErrUnavailable
-	}
-	defer file.Close()
-	openedInfo, err := file.Stat()
-	if err != nil || !os.SameFile(info, openedInfo) || !openedInfo.Mode().IsRegular() || openedInfo.Mode()&0o077 != 0 {
-		return nil, ErrUnavailable
-	}
-	data, err := io.ReadAll(io.LimitReader(file, (64<<10)+1))
-	if err != nil || len(data) > 64<<10 {
 		zero(data)
 		return nil, ErrUnavailable
 	}

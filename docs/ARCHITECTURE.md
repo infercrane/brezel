@@ -149,19 +149,28 @@ evicting an unexpired entry. The relay server generates a fresh random 128-bit
 boot identity inside every process; tokens from a prior process then fail before
 replay admission.
 
+The packaged node process exposes two listeners behind the same exact mTLS
+identity: a bounded control listener for route bind and state transitions, and
+a data listener whose per-operation contexts can carry long command streams.
+The control protocol applies compare-and-swap transitions for attach-ready,
+drain, standby, rebind, release, and removal. It never returns a private engine
+identity. This separation keeps streaming data deadlines from weakening route
+control limits.
+
 The relay protocol has explicit command, file, and port endpoints, bounded
 headers, bodies, output, and operation duration, and no content logger. It
 streams command events but currently buffers file bodies and proxied HTTP
 bodies. Terminal sessions, WebSockets, raw TCP, capability delegation, and
 multi-hop forwarding are not part of this milestone.
 
-This trust boundary is implemented as internal packages, but it is not the
-default `brezeld` production path yet. Lifecycle, placement, and route binding
-still belong to the durable API and engine adapter. The current public command,
+This trust boundary is implemented in internal packages and the separate
+`brezel-node` process, but it is not the default `brezeld` path yet. Lifecycle,
+placement, desired route state, enrollment, and reconciliation still belong to
+the durable API and engine adapter. The current public command,
 file, and preview endpoints still traverse the durable API process, and there
 is no separately authenticated data-edge handoff to the node. Enabling the
 relay as the default byte path requires node registration, certificate and key
-rotation, route-ledger reconciliation, a data-edge routing path, operational
+rotation, route-ledger reconciliation, a data-edge routing path, service-unit
 packaging, and Linux/KVM failure qualification. See
 [ADR 0009](decisions/0009-node-relay-trust-boundary.md).
 
@@ -284,7 +293,7 @@ optional spend controls.
 
 The current developer preview implements a narrow bearer connector. It passes a
 five-minute signed lease to the sandbox, adds only the gateway host to the
-effective egress allowlist, and resolves `secret://file/...` handles from 0600
+effective egress allowlist, and resolves `secret://file/...` handles from 0400 or 0600
 operator files. The gateway binds the lease to project, sandbox, and immutable
 connector revisions; checks that the sandbox is still running; strips guest
 authorization and cookie headers; injects the credential outside the VM; and

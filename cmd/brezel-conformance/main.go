@@ -6,12 +6,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/infercrane/brezel/internal/conformance"
+	"github.com/infercrane/brezel/internal/securefile"
 )
 
 func main() {
@@ -68,27 +67,11 @@ func loadServiceToken() (string, error) {
 }
 
 func readTokenFile(path string) (string, error) {
-	info, err := os.Lstat(path)
+	token, err := securefile.ReadText(path, 16<<10)
 	if err != nil {
 		return "", err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("token file must be a private regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, (16<<10)+1))
-	if err != nil {
-		return "", err
-	}
-	if len(data) > 16<<10 {
-		return "", errors.New("token file exceeds 16384 bytes")
-	}
-	token := strings.TrimSpace(string(data))
-	if len(token) < 32 || strings.ContainsAny(token, "\r\n") {
+	if len(token) < 32 {
 		return "", errors.New("token file does not contain a valid service token")
 	}
 	return token, nil

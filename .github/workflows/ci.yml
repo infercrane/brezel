@@ -12,23 +12,47 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.23.x"
           cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.x"
       - name: Unit, contract, and security-negative tests
         run: go test ./...
       - name: Race detector
         run: go test -race ./...
       - name: Vet
         run: go vet ./...
+      - name: Reject whitespace errors
+        shell: bash
+        run: |
+          if [[ -n "${{ github.base_ref }}" ]]; then
+            base="$(git merge-base HEAD "origin/${{ github.base_ref }}")"
+            git diff --check "$base" HEAD
+          else
+            git diff-tree --check --no-commit-id --root -r HEAD
+          fi
+      - name: ComputeSDK adapter contract
+        run: |
+          node --test benchmarks/computesdk/adapter.test.mjs
+          node --check benchmarks/computesdk/adapter.mjs
+          node --check benchmarks/computesdk/provider-entry.mjs
+          node --check benchmarks/computesdk/qualified-smoke.mjs
       - name: Build release entrypoint
         run: |
           go build -trimpath -o bin/brezeld ./cmd/brezeld
+          go build -trimpath -o bin/brezel-node ./cmd/brezel-node
           go build -trimpath -o bin/brezel-conformance ./cmd/brezel-conformance
           go build -trimpath -o bin/brezel-bench ./cmd/brezel-bench
+          go build -trimpath -o bin/brezel-bench-compare ./cmd/brezel-bench-compare
           go build -trimpath -o bin/brezel ./cmd/brezel
+      - name: Build release image
+        run: docker build --tag brezel-ci:${{ github.sha }} .
       - name: Validate release shell entrypoints
         run: |
           sh -n deploy/single-host/install.sh

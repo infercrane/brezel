@@ -5,16 +5,20 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezeld ./cmd/brezeld \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezel-node ./cmd/brezel-node \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezel-conformance ./cmd/brezel-conformance \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezel-bench ./cmd/brezel-bench \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezel-bench-compare ./cmd/brezel-bench-compare \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/brezel ./cmd/brezel
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 RUN addgroup -S brezel \
     && adduser -S -G brezel brezel
 COPY --from=build /out/brezeld /usr/local/bin/brezeld
+COPY --from=build /out/brezel-node /usr/local/bin/brezel-node
 COPY --from=build /out/brezel-conformance /usr/local/bin/brezel-conformance
 COPY --from=build /out/brezel-bench /usr/local/bin/brezel-bench
+COPY --from=build /out/brezel-bench-compare /usr/local/bin/brezel-bench-compare
 COPY --from=build /out/brezel /usr/local/bin/brezel
 USER brezel:brezel
 ENTRYPOINT ["/usr/local/bin/brezeld"]

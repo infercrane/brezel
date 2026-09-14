@@ -121,12 +121,14 @@ The Ed25519 token is valid for at most 30 seconds and one operation. It binds
 issuer, key ID, audience, node ID, node boot identity, route ID and generation,
 project ID, sandbox ID, operation, canonical request digest, random
 single-use identifier, and operation-specific size, port, or duration bounds.
-The relay authenticates the signed envelope before reading request content,
-then acquires an operation lease for the exact ready route generation. The
-lease prevents standby, release, or rebinding while the operation is running.
-After matching the canonical request digest, the relay consumes the identifier
-in a bounded replay cache before resolving the private engine binding.
-Saturated replay state fails closed.
+The relay authenticates the signed envelope and its static node, boot, route,
+and operation claims before reading request content. It then reads only the
+bounded request shape and computes its canonical digest. The relay acquires an
+operation lease and private binding for the exact ready route generation,
+matches the complete capability including the digest against that binding,
+consumes the identifier in a bounded replay cache, and only then dispatches to
+the engine. The lease prevents standby, release, or rebinding while the
+operation is running. Saturated replay state fails closed.
 
 Command events use the same bounded NDJSON representation as the public API.
 File responses include path, size, and SHA-256 metadata headers. The port relay
@@ -143,13 +145,35 @@ process, so a capability minted for an earlier process cannot be replayed after
 a restart. The relay deliberately does not log customer content, capability
 tokens, or engine identities.
 
+The packaged node process exposes route lifecycle on a separate bounded mTLS
+control listener. These endpoints accept only the exact API peer identity and
+apply an already-authorized controller decision to the local generation
+ledger:
+
+```text
+PUT  /internal/v1/routes/{opaque_route_id}
+POST /internal/v1/routes/{opaque_route_id}/attach-ready
+POST /internal/v1/routes/{opaque_route_id}/drain
+POST /internal/v1/routes/{opaque_route_id}/standby
+POST /internal/v1/routes/{opaque_route_id}/rebind
+POST /internal/v1/routes/{opaque_route_id}/release
+POST /internal/v1/routes/{opaque_route_id}/remove
+```
+
+Requests bind the route, project, sandbox, generation, and expected state.
+Private engine identities occur only in bind or rebind requests and the local
+ledger; responses never return them. Bind and monotonic transitions converge
+on safe retries. Rebind and remove deliberately reject ambiguous retries until
+durable operation receipts are implemented.
+
 This milestone does not move sandbox create, pause, resume, delete, placement,
-or reconciliation to the relay. It also does not yet provide certificate or
-signing-key rotation, a separately authenticated data-edge handoff, terminals,
-WebSockets, raw TCP, or direct client authorization. The default `brezeld`
-configuration continues to use the in-process engine adapter. Until the data-
-edge and deployment work is complete, the durable API remains the byte path
-for the public command, file, and preview endpoints.
+or reconciliation authority to the relay. It also does not yet provide
+certificate or signing-key rotation, durable node-operation receipts, a
+separately authenticated data-edge handoff, terminals, WebSockets, raw TCP, or
+direct client authorization. The default `brezeld` configuration continues to
+use the in-process engine adapter. Until the data-edge and deployment work is
+complete, the durable API remains the byte path for the public command, file,
+and preview endpoints.
 
 ## Workspaces and checkpoints
 
