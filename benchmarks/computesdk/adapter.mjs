@@ -686,6 +686,10 @@ export function createBrezelCompute(configInput = {}) {
           return sandboxHandle(config, ready);
         } catch (error) {
           if (requested) return cleanupFailedCreate(config, requested.id, error);
+          // A client error is a definitive API decision, not a lost create
+          // response. Replaying it would add latency and obscure the useful
+          // status behind an idempotent-reconciliation AggregateError.
+          if (error instanceof BrezelHttpError && error.status >= 400 && error.status < 500) throw error;
           return reconcileUnknownCreate(config, body, idempotencyKey, error);
         } finally {
           deadline.dispose();

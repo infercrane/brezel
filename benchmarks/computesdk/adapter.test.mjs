@@ -44,6 +44,11 @@ async function fixture(t, options = {}) {
 
     if (request.method === "POST" && request.url === "/v1/sandboxes") {
       createPostCount += 1;
+      if (options.createErrorStatus) {
+        response.statusCode = options.createErrorStatus;
+        response.end(JSON.stringify({ error: { code: "invalid_environment", message: "environment is unavailable" } }));
+        return;
+      }
       if (options.dropFirstCreateResponse && createPostCount === 1) {
         response.destroy();
         return;
@@ -220,6 +225,27 @@ test("reconciles and deletes an idempotent create when the first response is los
     requests.filter((request) => request.method === "DELETE" && request.url === "/v1/sandboxes/sb_test").length,
     1,
     "the reconciled sandbox was deleted",
+  );
+});
+
+test("returns a definitive create client error without reconciliation", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t, { createErrorStatus: 404 });
+  const compute = createBrezelCompute({
+    baseUrl,
+    tokenFile,
+    projectId: "project-test",
+    environmentRevision: "envr_missing",
+    createTimeoutMs: 2_000,
+  });
+
+  await assert.rejects(
+    compute.sandbox.create(),
+    /Brezel API request failed \(invalid_environment\): environment is unavailable/,
+  );
+  assert.equal(
+    requests.filter((request) => request.method === "POST" && request.url === "/v1/sandboxes").length,
+    1,
+    "a definitive client error must not be retried as a lost response",
   );
 });
 
