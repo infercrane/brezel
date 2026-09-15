@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 func TestLoadNodeConfigRequiresTrustMaterialAndBoundsValues(t *testing.T) {
@@ -63,6 +67,21 @@ func TestLoadNodeConfigRequiresTrustMaterialAndBoundsValues(t *testing.T) {
 	t.Setenv("BREZEL_NODE_CONTROL_LISTEN_ADDR", "127.0.0.1:8443")
 	if _, err := loadNodeConfig(); err == nil || !strings.Contains(err.Error(), "must differ") {
 		t.Fatalf("shared control/data listener error=%v", err)
+	}
+}
+
+func TestErrorPhaseObserverLogsOnlyFailedClosedEnumPhase(t *testing.T) {
+	var output bytes.Buffer
+	observer := errorPhaseObserver{logger: log.New(&output, "", 0)}
+
+	observer.ObservePhase(telemetry.OperationCommand, telemetry.PhaseGuestProcessStart, telemetry.OutcomeSuccess, 12*time.Millisecond)
+	if output.Len() != 0 {
+		t.Fatalf("successful phase unexpectedly logged: %q", output.String())
+	}
+
+	observer.ObservePhase(telemetry.OperationCommand, telemetry.PhaseGuestProcessRun, telemetry.OutcomeError, 17*time.Millisecond)
+	if got, want := output.String(), "Brezel node backend phase failed operation=command phase=guest_process_run duration_ms=17\n"; got != want {
+		t.Fatalf("log=%q want=%q", got, want)
 	}
 }
 

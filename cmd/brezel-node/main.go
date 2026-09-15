@@ -26,6 +26,7 @@ import (
 	"github.com/infercrane/brezel/internal/nodeidentity"
 	"github.com/infercrane/brezel/internal/nodeledger"
 	"github.com/infercrane/brezel/internal/securefile"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 const maxNodeKeyFileBytes = 16 << 10
@@ -57,6 +58,20 @@ type capabilityKeyPolicy struct {
 type capabilityVerificationKey struct {
 	ID              string `json:"id"`
 	PublicKeyBase64 string `json:"public_key_base64"`
+}
+
+// errorPhaseObserver emits only closed-enum operation and phase names. It is
+// deliberately unable to receive sandbox identifiers, commands, paths, or
+// customer output, while still making node-local stream failures diagnosable.
+type errorPhaseObserver struct {
+	logger *log.Logger
+}
+
+func (o errorPhaseObserver) ObservePhase(operation telemetry.Operation, phase telemetry.Phase, outcome telemetry.Outcome, duration time.Duration) {
+	if o.logger == nil || outcome != telemetry.OutcomeError {
+		return
+	}
+	o.logger.Printf("Brezel node backend phase failed operation=%s phase=%s duration_ms=%d", operation, phase, duration.Milliseconds())
 }
 
 func main() {
@@ -103,6 +118,7 @@ func run() (resultErr error) {
 		&http.Client{Transport: engineTransport, Timeout: 30 * time.Second},
 		e2b.WithGuestURLTemplate(config.guestURLTemplate),
 		e2b.WithDurableWorkspaces(config.durableWorkspaces),
+		e2b.WithPhaseObserver(errorPhaseObserver{logger: log.Default()}),
 	)
 	if err != nil {
 		return fmt.Errorf("configure microVM engine: %w", err)
