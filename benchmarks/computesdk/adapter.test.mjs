@@ -170,7 +170,7 @@ test("implements the benchmark create, runCommand, and destroy lifecycle", async
     network: { allow_internet: false },
   });
   const commandRequest = requests.find((request) => request.url?.endsWith("/commands"));
-  assert.deepEqual(JSON.parse(commandRequest.body).argv, ["/bin/sh", "-lc", "node -v"]);
+  assert.deepEqual(JSON.parse(commandRequest.body).argv, ["/bin/sh", "-c", "node -v"]);
   for (const request of requests) assert.equal(request.body.includes(token), false);
 });
 

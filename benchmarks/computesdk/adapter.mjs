@@ -342,7 +342,11 @@ async function runCommand(config, sandboxId, command, options = {}) {
   try {
     const response = await request(config, "POST", `/v1/sandboxes/${encodeURIComponent(sandboxId)}/commands`, {
       body: JSON.stringify({
-        argv: ["/bin/sh", "-lc", commandLine],
+        // ComputeSDK commands are explicit programs, not interactive login
+        // sessions. A login shell executes mutable image profile files before
+        // the requested command and can both fail on non-POSIX `source` usage
+        // and add unmeasured startup work.
+        argv: ["/bin/sh", "-c", commandLine],
         cwd: options.cwd ?? "",
         env: options.env ?? {},
         timeout_seconds: timeoutSeconds,

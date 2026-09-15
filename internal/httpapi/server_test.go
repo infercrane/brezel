@@ -1725,6 +1725,51 @@ func TestGuestOperationQuotaReleasesProjectSlot(t *testing.T) {
 	}
 }
 
+func TestCommandStreamMakesSuccessfulExitCodeExplicit(t *testing.T) {
+	h := newHarness(t)
+	defer h.close()
+	environment := createEnvironment(t, h, "project-a")
+	sandboxID, _ := createSandbox(t, h, "project-a", environment, "command-exit-code-0001", nil)
+	body := strings.NewReader(`{"argv":["/bin/true"],"timeout_seconds":30}`)
+	request, err := http.NewRequest(http.MethodPost, h.server.URL+"/v1/sandboxes/"+sandboxID+"/commands", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	request.Header.Set("X-Project-ID", "project-a")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := h.server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("command returned %d", response.StatusCode)
+	}
+	decoder := json.NewDecoder(response.Body)
+	foundExit := false
+	for decoder.More() {
+		var event map[string]any
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		if event["type"] != string(backend.CommandExited) {
+			if _, exists := event["exit_code"]; exists {
+				t.Fatalf("non-terminal command event included exit_code: %#v", event)
+			}
+			continue
+		}
+		foundExit = true
+		value, exists := event["exit_code"]
+		if !exists || value != float64(0) {
+			t.Fatalf("successful terminal event did not include exit_code 0: %#v", event)
+		}
+	}
+	if !foundExit {
+		t.Fatal("command stream did not include a terminal event")
+	}
+}
+
 func errorCode(body map[string]any) string {
 	value, _ := body["error"].(map[string]any)
 	code, _ := value["code"].(string)

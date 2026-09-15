@@ -483,7 +483,7 @@ func (s *Server) runCommand(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			wrote = true
 		}
-		if err := json.NewEncoder(w).Encode(event); err != nil {
+		if err := json.NewEncoder(w).Encode(commandEventViewFrom(event)); err != nil {
 			return err
 		}
 		if flusher, ok := w.(http.Flusher); ok {
@@ -505,6 +505,38 @@ func (s *Server) runCommand(w http.ResponseWriter, r *http.Request) {
 		"type":         "error",
 		"error":        map[string]string{"code": "command_failed", "message": "command stream ended before a confirmed exit"},
 	})
+}
+
+// commandEventView keeps a successful zero exit status explicit on the public
+// NDJSON wire without adding an irrelevant exit_code field to non-terminal
+// events. A missing terminal status is ambiguous to streaming SDKs because it
+// cannot be distinguished from a truncated event.
+type commandEventView struct {
+	ExecutionID string                   `json:"execution_id,omitempty"`
+	Type        backend.CommandEventType `json:"type"`
+	PID         uint32                   `json:"pid,omitempty"`
+	Data        []byte                   `json:"data,omitempty"`
+	ExitCode    *int32                   `json:"exit_code,omitempty"`
+	Exited      bool                     `json:"exited,omitempty"`
+	Status      string                   `json:"status,omitempty"`
+	Error       string                   `json:"error,omitempty"`
+}
+
+func commandEventViewFrom(event backend.CommandEvent) commandEventView {
+	view := commandEventView{
+		ExecutionID: event.ExecutionID,
+		Type:        event.Type,
+		PID:         event.PID,
+		Data:        event.Data,
+		Exited:      event.Exited,
+		Status:      event.Status,
+		Error:       event.Error,
+	}
+	if event.Type == backend.CommandExited {
+		exitCode := event.ExitCode
+		view.ExitCode = &exitCode
+	}
+	return view
 }
 
 func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
