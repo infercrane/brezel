@@ -139,6 +139,47 @@ func TestEvaluateRejectsMissingAndInconsistentCleanupEvidence(t *testing.T) {
 	}
 }
 
+func TestEvaluateRejectsPassedCaseThatClaimsCleanupWasNotRequired(t *testing.T) {
+	valid := testMatrix("base", 100, 120, 10)
+	forged := testMatrix("candidate", 90, 115, 10)
+	forged.Cases[0].Cleanup.Attempts.NotRequired = 1
+	forged.Cases[0].Cleanup.Attempts.Attempted--
+	forged.Cases[0].Cleanup.Attempts.Confirmed--
+	forged.Cases[0].Cleanup.Resources.Expected--
+	forged.Cases[0].Cleanup.Resources.Confirmed--
+
+	if _, err := Evaluate(Config{
+		BaselinePaths:  []string{writeMatrix(t, valid), writeMatrix(t, valid)},
+		CandidatePaths: []string{writeMatrix(t, forged), writeMatrix(t, forged)},
+		Targets:        []Target{{Case: "tti-sequential", Metric: MetricScheduledP50}},
+	}); err == nil {
+		t.Fatal("passed case without confirmed cleanup was accepted")
+	}
+}
+
+func TestEvaluateRejectsAggregateTotalsThatDoNotMatchCases(t *testing.T) {
+	valid := testMatrix("base", 100, 120, 10)
+	forged := testMatrix("candidate", 90, 115, 10)
+	forged.RequestedAttempts++
+	forged.PlannedAttempts++
+	forged.ScheduledAttempts++
+	forged.StartedAttempts++
+	forged.CompletedAttempts++
+	forged.SuccessfulAttempts++
+	forged.Cleanup.Attempts.Attempted++
+	forged.Cleanup.Attempts.Confirmed++
+	forged.Cleanup.Resources.Expected++
+	forged.Cleanup.Resources.Confirmed++
+
+	if _, err := Evaluate(Config{
+		BaselinePaths:  []string{writeMatrix(t, valid), writeMatrix(t, valid)},
+		CandidatePaths: []string{writeMatrix(t, forged), writeMatrix(t, forged)},
+		Targets:        []Target{{Case: "tti-sequential", Metric: MetricScheduledP50}},
+	}); err == nil {
+		t.Fatal("matrix totals inconsistent with case evidence were accepted")
+	}
+}
+
 func testMatrix(revision string, p50, p99, throughput float64) matrix {
 	result := matrix{
 		SchemaVersion: matrixSchemaVersion, Target: "host-a", RuntimeRevision: revision,
@@ -148,7 +189,10 @@ func testMatrix(revision string, p50, p99, throughput float64) matrix {
 		PlannedAttempts: 124, RequestedAttempts: 124, ScheduledAttempts: 124,
 		StartedAttempts: 124, CompletedAttempts: 124, SuccessfulAttempts: 124,
 	}
-	result.Cleanup.Attempts.NotRequired = 124
+	result.Cleanup.Attempts.Attempted = 124
+	result.Cleanup.Attempts.Confirmed = 124
+	result.Cleanup.Resources.Expected = 124
+	result.Cleanup.Resources.Confirmed = 124
 	result.Cases = []matrixCase{
 		passingCase("tti-sequential", p50, p99, 0, 100),
 		passingCase("warm-exec-burst", p50/2, p99/2, throughput, 24),
@@ -158,7 +202,10 @@ func testMatrix(revision string, p50, p99, throughput float64) matrix {
 
 func passingCase(key string, p50, p99, throughput float64, runs int) matrixCase {
 	value := matrixCase{Key: key, Outcome: "passed", Requested: runs, Scheduled: runs, Started: runs, Completed: runs, Succeeded: runs, ObservedCompletionsPerSecond: throughput}
-	value.Cleanup.Attempts.NotRequired = runs
+	value.Cleanup.Attempts.Attempted = runs
+	value.Cleanup.Attempts.Confirmed = runs
+	value.Cleanup.Resources.Expected = runs
+	value.Cleanup.Resources.Confirmed = runs
 	value.ScheduledLatency = latency{Samples: runs, P50MS: p50, P95MS: p99 * 0.9, P99MS: p99}
 	value.ServiceLatency = latency{Samples: runs, P50MS: p50 * 0.9, P95MS: p99 * 0.8, P99MS: p99 * 0.9}
 	return value

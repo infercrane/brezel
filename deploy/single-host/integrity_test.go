@@ -59,11 +59,51 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 }
 
 func TestDeploymentScriptsParse(t *testing.T) {
-	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "artifact-supply-chain.sh", "benchmark.sh", "host-tuning.sh"} {
+	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "artifact-supply-chain.sh", "benchmark.sh", "host-tuning.sh"} {
 		command := exec.Command("sh", "-n", script)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("sh -n %s: %v: %s", script, err, output)
 		}
+	}
+}
+
+func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
+	meminfo := filepath.Join(t.TempDir(), "meminfo")
+	content := strings.Join([]string{
+		"MemTotal:       33554432 kB",
+		"HugePages_Total:    9216",
+		"HugePages_Free:     9216",
+		"HugePages_Rsvd:        0",
+		"Hugepagesize:       2048 kB",
+		"",
+	}, "\n")
+	if err := os.WriteFile(meminfo, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(mode string, env ...string) ([]byte, error) {
+		command := exec.Command("sh", "capacity-contract.sh", mode)
+		command.Env = append(os.Environ(), append([]string{"BREZEL_TEST_MEMINFO_FILE=" + meminfo}, env...)...)
+		return command.CombinedOutput()
+	}
+
+	if output, err := run("plan"); err != nil {
+		t.Fatalf("default capacity plan failed: %v: %s", err, output)
+	} else if !strings.Contains(string(output), `"required_hugepages_2m":9216`) {
+		t.Fatalf("capacity plan did not bind quota to lifecycle headroom: %s", output)
+	}
+	if output, err := run("live"); err != nil {
+		t.Fatalf("live capacity contract failed: %v: %s", err, output)
+	}
+	if output, err := run("plan", "BREZEL_ENGINE_HUGEPAGES=2048"); err == nil {
+		t.Fatalf("capacity contract accepted an eight-guest hugepage pool for a 32-guest quota: %s", output)
+	} else if !strings.Contains(string(output), "require at least 9216") {
+		t.Fatalf("capacity failure did not explain the required pool: %s", output)
+	}
+	if output, err := run("plan", "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=33"); err == nil {
+		t.Fatalf("capacity contract accepted more active guests than qualified network slots: %s", output)
+	} else if !strings.Contains(string(output), "32-slot") {
+		t.Fatalf("network capacity failure was unclear: %s", output)
 	}
 }
 
@@ -337,6 +377,7 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		"BREZEL_ENGINE_CLICKHOUSE_IMAGE", "BREZEL_ENGINE_VECTOR_IMAGE",
 		"pull_policy: never", "BREZEL_ENGINE_ARTIFACT_BASE_URL",
 		"BREZEL_VM_OVERCOMMIT_MEMORY", "BREZEL_HOST_TUNING_SCRIPT",
+		"BREZEL_ENGINE_HUGEPAGES", "HUGEPAGES:",
 		"brezel-orchestrator-install", "BREZEL_ENGINE_ORCHESTRATOR_BINARY",
 		"BREZEL_ENGINE_ORCHESTRATOR_SHA256",
 		"fetch-artifacts:\n        condition: service_completed_successfully",

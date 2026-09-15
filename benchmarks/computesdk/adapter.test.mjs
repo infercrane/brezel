@@ -200,10 +200,15 @@ test("rejects an oversized command event before parsing it", async (t) => {
 });
 
 test("waits through expired until deletion is confirmed", async (t) => {
-  const { baseUrl, tokenFile } = await fixture(t, { deleteStates: ["expired", "deleting", "deleted"] });
+  const { baseUrl, tokenFile, requests } = await fixture(t, { deleteStates: ["expired", "deleting", "deleted"] });
   const compute = createBrezelCompute({ baseUrl, tokenFile, projectId: "p", environmentRevision: "envr_test" });
   const instance = await compute.sandbox.create();
   await instance.destroy();
+  const deleteIndex = requests.findIndex((request) => request.method === "DELETE" && request.url === "/v1/sandboxes/sb_test");
+  const cleanupReads = requests.slice(deleteIndex + 1).filter(
+    (request) => request.method === "GET" && request.url === "/v1/sandboxes/sb_test",
+  );
+  assert.equal(cleanupReads.length, 3, "destroy waited through expired and deleting before accepting deleted");
 });
 
 test("rejects cleanup when an expired sandbox is never confirmed deleted", async (t) => {

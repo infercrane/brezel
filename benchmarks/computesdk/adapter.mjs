@@ -264,6 +264,12 @@ async function waitForState(config, sandboxId, acceptable, timeoutMs, parentSign
   }
 }
 
+async function waitForDeletion(config, sandboxId, timeoutMs) {
+  // Expired means policy has forbidden further use while cleanup is pending.
+  // Only a deleted resource or a 404 from getSandbox confirms absence.
+  return waitForState(config, sandboxId, new Set(["deleted"]), timeoutMs);
+}
+
 function decodeBase64(value) {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
     throw new Error("Brezel command stream contained invalid base64 output");
@@ -400,7 +406,7 @@ function sandboxHandle(config, wire) {
         if (error instanceof BrezelHttpError && error.status === 404) return;
         throw error;
       }
-      await waitForState(config, wire.id, new Set(["deleted"]), config.destroyTimeoutMs);
+      await waitForDeletion(config, wire.id, config.destroyTimeoutMs);
     },
     async getInfo() {
       const current = await getSandbox(config, wire.id);
@@ -443,7 +449,7 @@ async function cleanupFailedCreate(config, sandboxId, originalError) {
   let cleanupError;
   try {
     await requestJson(config, "DELETE", `/v1/sandboxes/${encodeURIComponent(sandboxId)}`, undefined, randomUUID());
-    await waitForState(config, sandboxId, new Set(["deleted"]), config.destroyTimeoutMs);
+    await waitForDeletion(config, sandboxId, config.destroyTimeoutMs);
   } catch (error) {
     if (!(error instanceof BrezelHttpError && error.status === 404)) cleanupError = error;
   }

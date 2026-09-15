@@ -391,8 +391,13 @@ func validateMatrix(value matrix) error {
 		value.StartedAttempts != value.RequestedAttempts || value.CompletedAttempts != value.RequestedAttempts || value.SuccessfulAttempts != value.RequestedAttempts {
 		return errors.New("matrix attempt totals are missing or inconsistent")
 	}
-	if value.Cleanup.Attempts.NotRequired+value.Cleanup.Attempts.Attempted != value.RequestedAttempts ||
-		value.Cleanup.Attempts.Confirmed != value.Cleanup.Attempts.Attempted ||
+	// A passed benchmark attempt necessarily created at least one runtime
+	// resource. "not_required" is valid evidence for a definitively rejected
+	// mutation, but such an attempt cannot appear in a passed matrix.
+	if value.Cleanup.Attempts.NotRequired != 0 ||
+		value.Cleanup.Attempts.Attempted != value.RequestedAttempts ||
+		value.Cleanup.Attempts.Confirmed != value.RequestedAttempts ||
+		value.Cleanup.Resources.Expected < value.RequestedAttempts ||
 		value.Cleanup.Resources.Confirmed != value.Cleanup.Resources.Expected {
 		return errors.New("matrix cleanup confirmation totals are missing or inconsistent")
 	}
@@ -400,6 +405,8 @@ func validateMatrix(value matrix) error {
 		return errors.New("matrix case count does not match expected_cases")
 	}
 	seen := make(map[string]struct{}, len(value.Cases))
+	var requested, scheduled, started, completed, succeeded int
+	var cleanupAttempted, cleanupConfirmed, cleanupResourcesExpected, cleanupResourcesConfirmed int
 	for _, current := range value.Cases {
 		if current.Key == "" || current.Outcome != "passed" || current.Requested < 1 || current.Scheduled != current.Requested || current.Started != current.Requested ||
 			current.Completed != current.Requested || current.Succeeded != current.Requested || current.Failed != 0 || current.LatencyCensored != 0 {
@@ -408,8 +415,10 @@ func validateMatrix(value matrix) error {
 		if current.Cleanup.Attempts.Failed != 0 || current.Cleanup.Resources.Failed != 0 {
 			return fmt.Errorf("case %q has unconfirmed cleanup", current.Key)
 		}
-		if current.Cleanup.Attempts.NotRequired+current.Cleanup.Attempts.Attempted != current.Requested ||
-			current.Cleanup.Attempts.Confirmed != current.Cleanup.Attempts.Attempted ||
+		if current.Cleanup.Attempts.NotRequired != 0 ||
+			current.Cleanup.Attempts.Attempted != current.Requested ||
+			current.Cleanup.Attempts.Confirmed != current.Requested ||
+			current.Cleanup.Resources.Expected < current.Requested ||
 			current.Cleanup.Resources.Confirmed != current.Cleanup.Resources.Expected {
 			return fmt.Errorf("case %q cleanup confirmation totals are missing or inconsistent", current.Key)
 		}
@@ -420,6 +429,21 @@ func validateMatrix(value matrix) error {
 			return fmt.Errorf("case %q is duplicated", current.Key)
 		}
 		seen[current.Key] = struct{}{}
+		requested += current.Requested
+		scheduled += current.Scheduled
+		started += current.Started
+		completed += current.Completed
+		succeeded += current.Succeeded
+		cleanupAttempted += current.Cleanup.Attempts.Attempted
+		cleanupConfirmed += current.Cleanup.Attempts.Confirmed
+		cleanupResourcesExpected += current.Cleanup.Resources.Expected
+		cleanupResourcesConfirmed += current.Cleanup.Resources.Confirmed
+	}
+	if requested != value.RequestedAttempts || scheduled != value.ScheduledAttempts || started != value.StartedAttempts ||
+		completed != value.CompletedAttempts || succeeded != value.SuccessfulAttempts ||
+		cleanupAttempted != value.Cleanup.Attempts.Attempted || cleanupConfirmed != value.Cleanup.Attempts.Confirmed ||
+		cleanupResourcesExpected != value.Cleanup.Resources.Expected || cleanupResourcesConfirmed != value.Cleanup.Resources.Confirmed {
+		return errors.New("matrix totals do not match the sum of its cases")
 	}
 	return nil
 }

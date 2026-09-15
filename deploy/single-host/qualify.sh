@@ -9,6 +9,7 @@ QUALIFICATION_DIR="$INSTALL_DIR/qualification"
 ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
 ENGINE_ENV="$INSTALL_DIR/engine/embed/compose/.env"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
+CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 
 if [ ! -s "$TOKEN_FILE" ]; then
   echo "runtime service token is missing; run install.sh first" >&2
@@ -252,6 +253,8 @@ run_engine_fast_path_qualification() {
   engine_sandbox_id=$(resolve_engine_sandbox_id "$ACTIVE_SANDBOX_ID")
   min_network_slots=${BREZEL_MIN_READY_NETWORK_SLOTS:-16}
 
+  capacity_json=$("$CAPACITY_PROBE" live)
+
   if ! capability_json=$(engine_compose exec -T orchestrator \
     nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" \
     < "$ENGINE_CAPABILITY_PROBE"); then
@@ -266,7 +269,7 @@ run_engine_fast_path_qualification() {
   fast_path_duration=$(( $(date +%s%3N) - fast_path_started_ms ))
   report_tmp=$(mktemp "$QUALIFICATION_DIR/.report.XXXXXX")
   printf '%s\n' \
-    "{\"target\":\"$fast_path_target\",\"scope\":\"installed engine snapshot, paging, rootfs, cache, and network fast paths\",\"qualification\":\"engine_fast_path_conformant\",\"started_at\":\"$fast_path_started\",\"finished_at\":\"$fast_path_finished\",\"duration_ms\":$fast_path_duration,\"observed\":$capability_json}" \
+    "{\"target\":\"$fast_path_target\",\"scope\":\"installed engine snapshot, paging, rootfs, cache, network, and host-capacity fast paths\",\"qualification\":\"engine_fast_path_conformant\",\"started_at\":\"$fast_path_started\",\"finished_at\":\"$fast_path_finished\",\"duration_ms\":$fast_path_duration,\"observed\":{\"engine\":$capability_json,\"capacity\":$capacity_json}}" \
     > "$report_tmp"
   chmod 600 "$report_tmp"
   mv -- "$report_tmp" "$QUALIFICATION_DIR/$fast_path_target.json"

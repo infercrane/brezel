@@ -14,11 +14,21 @@ ENGINE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0001-harden-volume-secre
 ENGINE_BUILD_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0002-pin-api-build-images.patch"
 ENGINE_ORCHESTRATOR_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0003-acknowledge-delete-after-sandbox-teardown.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
+CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_IMAGE_LOCK="$SCRIPT_DIR/engine.images.lock"
 ENGINE_ARTIFACT_LOCK="$SCRIPT_DIR/engine.artifacts.lock"
 ARTIFACT_SUPPLY_CHAIN="$SCRIPT_DIR/artifact-supply-chain.sh"
 BREZEL_HOST_TUNING_SCRIPT="$SCRIPT_DIR/host-tuning.sh"
 export BREZEL_HOST_TUNING_SCRIPT
+
+# Keep these defaults identical to the packaged Compose profile. The capacity
+# probe validates their physical feasibility before downloads or builds.
+BREZEL_GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}
+BREZEL_ENGINE_HUGEPAGES=${BREZEL_ENGINE_HUGEPAGES:-9216}
+BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
+BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=${BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT:-32}
+export BREZEL_GUEST_MEMORY_MIB BREZEL_ENGINE_HUGEPAGES
+export BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT
 
 read_lock() {
   key=$1
@@ -118,6 +128,8 @@ check_ufw_guest_network() {
 }
 
 check_ufw_guest_network
+
+"$CAPACITY_PROBE" plan >/dev/null
 
 if [ "$(sha256sum "$ENGINE_PATCH" | awk '{print $1}')" != "$ENGINE_PATCH_SHA256" ]; then
   echo "engine API patch verification failed" >&2
@@ -263,6 +275,7 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 # deterministic on upgrades even when Compose retains completed containers.
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps preflight
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps host-setup
+"$CAPACITY_PROBE" live >/dev/null
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps fetch-artifacts
 "$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" /
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps brezel-orchestrator-install

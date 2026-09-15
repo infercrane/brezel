@@ -29,6 +29,7 @@ IO_BYTES=${BREZEL_BENCH_IO_BYTES:-1048576}
 PREVIEW_PORT=${BREZEL_BENCH_PREVIEW_PORT:-8080}
 BASE_URL=${BREZEL_BENCH_BASE_URL:-http://127.0.0.1:8080}
 BASE_URL=${BASE_URL%/}
+CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 
 # Compose interpolation is also used while capturing the exact running image.
 # Keep it aligned with the installed single-host service identity even when the
@@ -131,6 +132,7 @@ fi
 if ! curl --fail --silent --show-error --max-time 5 "$BASE_URL/readyz" >/dev/null; then
   fail "runtime API is not ready at $BASE_URL"
 fi
+"$CAPACITY_PROBE" live >/dev/null
 
 started_compact=$(date -u +%Y%m%dT%H%M%SZ)
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -201,6 +203,10 @@ capture_host() {
     --arg cpu_governors "$cpu_governors" \
     --arg memory_total_kib "$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)" \
     --arg memory_available_kib "$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo)" \
+    --arg hugepages_total "$(awk '/^HugePages_Total:/ {print $2; exit}' /proc/meminfo)" \
+    --arg hugepages_free "$(awk '/^HugePages_Free:/ {print $2; exit}' /proc/meminfo)" \
+    --arg hugepages_reserved "$(awk '/^HugePages_Rsvd:/ {print $2; exit}' /proc/meminfo)" \
+    --arg hugepage_size_kib "$(awk '/^Hugepagesize:/ {print $2; exit}' /proc/meminfo)" \
     --arg load_average "$(cut -d ' ' -f 1-3 /proc/loadavg)" \
     --arg root_source "$root_source" \
     --arg root_fstype "$root_fstype" \
@@ -216,7 +222,7 @@ capture_host() {
     --arg engine_lock_sha256 "$(sha256sum "$SCRIPT_DIR/engine.lock" | awk '{print $1}')" \
     --argjson kvm_available "$([ -c /dev/kvm ] && printf true || printf false)" \
     --argjson tun_available "$([ -c /dev/net/tun ] && printf true || printf false)" \
-    '{schema_version:1,phase:$phase,captured_at:$captured_at,host:{os:{id:$os_id,version:$os_version},kernel_release:$kernel_release,architecture:$architecture,virtualization:$virtualization,cpu:{model:$cpu_model,sockets:$cpu_sockets,cores_per_socket:$cpu_cores_per_socket,threads_per_core:$cpu_threads_per_core,governors:$cpu_governors},memory:{total_kib:$memory_total_kib,available_kib:$memory_available_kib},load_average:$load_average,root_filesystem:{source:$root_source,type:$root_fstype,options:$root_options,available_bytes:$root_available_bytes},devices:{kvm:$kvm_available,tun:$tun_available}},software:{docker:{server_version:$docker_server_version,storage_driver:$docker_storage_driver,cgroup_version:$docker_cgroup_version,runtime_image_id:$runtime_image_id},repository:{revision:$repo_revision,dirty:$repo_dirty},benchmark_binary_sha256:$benchmark_binary_sha256,engine_lock_sha256:$engine_lock_sha256}}' \
+    '{schema_version:1,phase:$phase,captured_at:$captured_at,host:{os:{id:$os_id,version:$os_version},kernel_release:$kernel_release,architecture:$architecture,virtualization:$virtualization,cpu:{model:$cpu_model,sockets:$cpu_sockets,cores_per_socket:$cpu_cores_per_socket,threads_per_core:$cpu_threads_per_core,governors:$cpu_governors},memory:{total_kib:$memory_total_kib,available_kib:$memory_available_kib,hugepages_total:$hugepages_total,hugepages_free:$hugepages_free,hugepages_reserved:$hugepages_reserved,hugepage_size_kib:$hugepage_size_kib},load_average:$load_average,root_filesystem:{source:$root_source,type:$root_fstype,options:$root_options,available_bytes:$root_available_bytes},devices:{kvm:$kvm_available,tun:$tun_available}},software:{docker:{server_version:$docker_server_version,storage_driver:$docker_storage_driver,cgroup_version:$docker_cgroup_version,runtime_image_id:$runtime_image_id},repository:{revision:$repo_revision,dirty:$repo_dirty},benchmark_binary_sha256:$benchmark_binary_sha256,engine_lock_sha256:$engine_lock_sha256}}' \
     > "$destination"
   chmod 600 "$destination"
 }

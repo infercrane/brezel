@@ -2,6 +2,10 @@ services:
   host-setup:
     pull_policy: never
     environment:
+      # 32 active 512 MiB guests plus four lifecycle-overlap slots. The
+      # product capacity gate verifies this reservation against both the API
+      # quota and physical host memory before any engine build begins.
+      HUGEPAGES: ${BREZEL_ENGINE_HUGEPAGES:-9216}
       # Lazy Firecracker snapshot mappings reserve virtual commit before guest
       # pages are faulted in. The product-level global sandbox limit remains
       # the physical-memory admission boundary.
