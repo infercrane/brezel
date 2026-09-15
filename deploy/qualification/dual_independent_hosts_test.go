@@ -157,3 +157,17 @@ func TestDualHostHarnessPublishesStatusAfterChecksums(t *testing.T) {
 		t.Fatalf("final publication order is not checksum, passed status, finalized: checksum=%d status=%d finalized=%d", checksum, passed, finalized)
 	}
 }
+
+func TestDualHostFixtureDoesNotUseALoginShell(t *testing.T) {
+	data, err := os.ReadFile(harnessPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	if strings.Contains(source, `/bin/sh -lc 'printf %s "$1" > /workspace/dual-independent-host`) {
+		t.Fatal("fixture invokes a POSIX shell as a login shell")
+	}
+	if !strings.Contains(source, `/bin/sh -c 'printf %s "$1" > /workspace/dual-independent-host`) {
+		t.Fatal("fixture does not use the expected non-login POSIX shell")
+	}
+}

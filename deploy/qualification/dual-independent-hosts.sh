@@ -269,7 +269,7 @@ remote_create_fixture() {
   validate_resource_id "$sandbox_id" sandbox_id
   marker=$(openssl rand -hex 32)
   marker_sha=$(printf '%s' "$marker" | sha256sum | awk '{print $1}')
-  remote_cli exec "$sandbox_id" /bin/sh -lc 'printf %s "$1" > /workspace/dual-independent-host && sync' dual-fixture "$marker" >/dev/null
+  remote_cli exec "$sandbox_id" /bin/sh -c 'printf %s "$1" > /workspace/dual-independent-host && sync' dual-fixture "$marker" >/dev/null
   state_tmp=$(mktemp "$(dirname -- "$state_file")/.dual-independent-state.XXXXXX")
   jq -n \
     --arg label "$label" --arg run_id "$run_id" --arg workspace_id "$workspace_id" \
