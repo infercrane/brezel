@@ -1,0 +1,324 @@
+diff --git a/embed/compose/scripts/node/build-base-template.mjs b/embed/compose/scripts/node/build-base-template.mjs
+index 476946e7d..f9cfc347f 100644
+--- a/embed/compose/scripts/node/build-base-template.mjs
++++ b/embed/compose/scripts/node/build-base-template.mjs
+@@ -1,5 +1,3 @@
+-import { Template } from 'e2b'
+-
+ async function main() {
+   const apiUrl = process.env.E2B_API_URL
+   const apiKey = process.env.E2B_API_KEY
+@@ -9,12 +7,47 @@ async function main() {
+     process.exit(2)
+   }
+ 
++  const integer = (name, fallback, minimum, maximum) => {
++    const raw = process.env[name] ?? String(fallback)
++    if (!/^[0-9]+$/.test(raw)) throw new Error(`${name} must be an integer`)
++    const value = Number(raw)
++    if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
++      throw new Error(`${name} must be between ${minimum} and ${maximum}`)
++    }
++    return value
++  }
++  const cpuCount = integer('BASE_TEMPLATE_CPU_COUNT', 2, 1, 32)
++  const memoryMB = integer('BASE_TEMPLATE_MEMORY_MB', 512, 128, 262144)
++  const minFreeDiskMb = integer('BASE_TEMPLATE_MIN_FREE_DISK_MB', 512, 0, 25600)
++  const sourceImage = process.env.BASE_TEMPLATE_SOURCE_IMAGE ?? 'e2bdev/base'
++
++  async function request(path, init = {}) {
++    const res = await fetch(`${apiUrl}${path}`, {
++      ...init,
++      headers: {
++        'Content-Type': 'application/json',
++        'X-API-Key': apiKey,
++        ...(init.headers ?? {}),
++      },
++    })
++    const text = await res.text()
++    if (!res.ok) throw new Error(`${init.method ?? 'GET'} ${path} failed with ${res.status}: ${text.slice(0, 500)}`)
++    return text ? JSON.parse(text) : undefined
++  }
++
+-  async function baseIsReady() {
++  async function defaultBaseIsReady() {
+-    const res = await fetch(`${apiUrl}/templates`, { headers: { 'X-API-Key': apiKey } })
+-    if (!res.ok) throw new Error(`GET /templates failed with ${res.status}`)
+-    const templates = await res.json()
++    // The templates listing exposes total filesystem size, not the requested
++    // post-build free-space target. Reuse is therefore safe only for the
++    // upstream default shape; custom benchmark/production shapes are rebuilt
++    // so a stale or nearly-full template cannot satisfy a larger contract.
++    if (cpuCount !== 2 || memoryMB !== 512 || minFreeDiskMb !== 512 || sourceImage !== 'e2bdev/base') return false
++    const templates = await request('/templates')
+     return templates.some(
+-      (t) => [...(t.aliases ?? []), ...(t.names ?? [])].includes('base') && t.buildStatus === 'ready',
++      (t) =>
++        [...(t.aliases ?? []), ...(t.names ?? [])].includes('base') &&
++        t.buildStatus === 'ready' &&
++        Number(t.cpuCount) === cpuCount &&
++        Number(t.memoryMB) === memoryMB,
+     )
+   }
+ 
+@@ -21,9 +54,9 @@ async function main() {
+-  if (process.env.FORCE_REBUILD !== '1' && (await baseIsReady())) {
++  if (process.env.FORCE_REBUILD !== '1' && (await defaultBaseIsReady())) {
+     console.log('build-base-template: alias "base" already has a ready build; nothing to do')
+     process.exit(0)
+   }
+ 
+-  console.log('build-base-template: building alias "base" from e2bdev/base (512 MiB, 2 vCPU)')
++  console.log(`build-base-template: building alias "base" from ${sourceImage} (${memoryMB} MiB, ${cpuCount} vCPU, at least ${minFreeDiskMb} MiB free disk)`)
+   const started = Date.now()
+   const RETRY_MS = 5_000
+   const RETRY_TOTAL_MS = 120_000
+@@ -32,12 +65,17 @@ async function main() {
+     return /\b503\b/.test(m) && /build client/i.test(m)
+   }
+   const deadline = Date.now() + RETRY_TOTAL_MS
++  let build
+   for (;;) {
+     try {
+-      await Template.build(Template().fromBaseImage(), 'base', {
+-        memoryMB: 512,
+-        cpuCount: 2,
+-        onBuildLogs: (entry) => console.log(String(entry)),
++      build = await request('/v3/templates', {
++        method: 'POST',
++        body: JSON.stringify({
++          name: 'base',
++          cpuCount,
++          memoryMB,
++          minFreeDiskMb,
++        }),
+       })
+       break
+     } catch (err) {
+@@ -46,6 +84,22 @@ async function main() {
+       await new Promise((resolve) => setTimeout(resolve, RETRY_MS))
+     }
+   }
++
++  await request(`/v2/templates/${encodeURIComponent(build.templateID)}/builds/${encodeURIComponent(build.buildID)}`, {
++    method: 'POST',
++    body: JSON.stringify({ fromImage: sourceImage, steps: [], force: process.env.FORCE_REBUILD === '1' }),
++  })
++
++  let logsOffset = 0
++  for (;;) {
++    const status = await request(`/templates/${encodeURIComponent(build.templateID)}/builds/${encodeURIComponent(build.buildID)}/status?logsOffset=${logsOffset}`)
++    for (const entry of status.logEntries ?? []) console.log(`${entry.level ?? 'info'}: ${entry.message ?? ''}`)
++    logsOffset += (status.logEntries ?? []).length
++    if (status.status === 'ready') break
++    if (status.status === 'error') throw new Error(status.reason?.message ?? 'template build failed')
++    if (status.status !== 'building' && status.status !== 'waiting') throw new Error(`unexpected template build status: ${status.status}`)
++    await new Promise((resolve) => setTimeout(resolve, 1_000))
++  }
+   console.log(`build-base-template: done in ${Math.round((Date.now() - started) / 1000)}s`)
+ }
+ 
+diff --git a/packages/orchestrator/pkg/cfg/model.go b/packages/orchestrator/pkg/cfg/model.go
+index 303edcfac..f4c199d45 100644
+--- a/packages/orchestrator/pkg/cfg/model.go
++++ b/packages/orchestrator/pkg/cfg/model.go
+@@ -19,7 +19,10 @@ import (
+ 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
+ )
+ 
+-const DefaultBusyboxVersion = "1.36.1"
++const (
++	DefaultBusyboxVersion    = "1.36.1"
++	maxLocalResourcePoolSize = 4096
++)
+ 
+ type BuilderConfig struct {
+ 	DomainName             string `env:"DOMAIN_NAME"              envDefault:""`
+@@ -108,6 +111,8 @@ type Config struct {
+ 	RedisPoolSize                       int               `env:"REDIS_POOL_SIZE"               envDefault:"5"`
+ 	RedisMinIdleConns                   int               `env:"REDIS_MIN_IDLE_CONNS"          envDefault:"2"`
+ 	NBDPoolSize                         int               `env:"NBD_POOL_SIZE"                 envDefault:"64"`
++	NetworkNewSlotsPoolSize             int               `env:"NETWORK_NEW_SLOTS_POOL_SIZE"   envDefault:"32"`
++	NetworkReusedSlotsPoolSize          int               `env:"NETWORK_REUSED_SLOTS_POOL_SIZE" envDefault:"100"`
+ 	Services                            []string          `env:"ORCHESTRATOR_SERVICES"         envDefault:"orchestrator"`
+ 	PersistentVolumeMounts              map[string]string `env:"PERSISTENT_VOLUME_MOUNTS"`
+ }
+@@ -179,6 +184,15 @@ func Parse() (Config, error) {
+ 	if config.MaxStartingInstancesPerNode < 0 {
+ 		return config, fmt.Errorf("MAX_STARTING_INSTANCES_PER_NODE must be non-negative")
+ 	}
++	if config.NBDPoolSize < 1 || config.NBDPoolSize > maxLocalResourcePoolSize {
++		return config, fmt.Errorf("NBD_POOL_SIZE must be between 1 and %d", maxLocalResourcePoolSize)
++	}
++	if config.NetworkNewSlotsPoolSize < 1 || config.NetworkNewSlotsPoolSize > maxLocalResourcePoolSize {
++		return config, fmt.Errorf("NETWORK_NEW_SLOTS_POOL_SIZE must be between 1 and %d", maxLocalResourcePoolSize)
++	}
++	if config.NetworkReusedSlotsPoolSize < 1 || config.NetworkReusedSlotsPoolSize > maxLocalResourcePoolSize {
++		return config, fmt.Errorf("NETWORK_REUSED_SLOTS_POOL_SIZE must be between 1 and %d", maxLocalResourcePoolSize)
++	}
+ 
+ 	bc := config.BuilderConfig
+ 	if err = makePathsAbsolute(&bc); err != nil {
+diff --git a/packages/orchestrator/pkg/cfg/model_test.go b/packages/orchestrator/pkg/cfg/model_test.go
+index b8524eba6..448eabc82 100644
+--- a/packages/orchestrator/pkg/cfg/model_test.go
++++ b/packages/orchestrator/pkg/cfg/model_test.go
+@@ -105,6 +105,48 @@ func TestParse(t *testing.T) {
+ 		require.ErrorContains(t, err, "MAX_STARTING_INSTANCES_PER_NODE must be non-negative")
+ 	})
+ 
++	t.Run("local resource pools have bounded defaults", func(t *testing.T) {
++		config, err := Parse()
++		require.NoError(t, err)
++
++		assert.Equal(t, 64, config.NBDPoolSize)
++		assert.Equal(t, 32, config.NetworkNewSlotsPoolSize)
++		assert.Equal(t, 100, config.NetworkReusedSlotsPoolSize)
++	})
++
++	t.Run("local resource pools accept scaled overrides", func(t *testing.T) {
++		t.Setenv("NBD_POOL_SIZE", "128")
++		t.Setenv("NETWORK_NEW_SLOTS_POOL_SIZE", "128")
++		t.Setenv("NETWORK_REUSED_SLOTS_POOL_SIZE", "128")
++
++		config, err := Parse()
++		require.NoError(t, err)
++		assert.Equal(t, 128, config.NBDPoolSize)
++		assert.Equal(t, 128, config.NetworkNewSlotsPoolSize)
++		assert.Equal(t, 128, config.NetworkReusedSlotsPoolSize)
++	})
++
++	for _, tc := range []struct {
++		name string
++		key  string
++	}{
++		{name: "NBD", key: "NBD_POOL_SIZE"},
++		{name: "new network slots", key: "NETWORK_NEW_SLOTS_POOL_SIZE"},
++		{name: "reused network slots", key: "NETWORK_REUSED_SLOTS_POOL_SIZE"},
++	} {
++		t.Run("local resource pool rejects zero "+tc.name, func(t *testing.T) {
++			t.Setenv(tc.key, "0")
++			_, err := Parse()
++			require.ErrorContains(t, err, tc.key+" must be between 1 and 4096")
++		})
++
++		t.Run("local resource pool rejects excessive "+tc.name, func(t *testing.T) {
++			t.Setenv(tc.key, "4097")
++			_, err := Parse()
++			require.ErrorContains(t, err, tc.key+" must be between 1 and 4096")
++		})
++	}
++
+ 	t.Run("build cache policy accepts bounded overrides", func(t *testing.T) {
+ 		t.Setenv("BUILD_CACHE_TTL", "4h")
+ 		t.Setenv("BUILD_CACHE_MAX_BYTES", "34359738368")
+diff --git a/packages/orchestrator/pkg/factories/run.go b/packages/orchestrator/pkg/factories/run.go
+index 41d4a5918..5e497f0e9 100644
+--- a/packages/orchestrator/pkg/factories/run.go
++++ b/packages/orchestrator/pkg/factories/run.go
+@@ -834,7 +834,14 @@ func run(config cfg.Config, opts Options) (success bool) {
+ 			logger.L().Fatal(ctx, "failed to create v2 veth observer", zap.Error(obsErr))
+ 		}
+ 
+-		v2Pool := networkv2.NewV2Pool(slotStorage, config.NetworkConfig, hostFw, observer, networkv2.WithPoolMetrics(v2Metrics))
++		v2Pool := networkv2.NewV2Pool(
++			slotStorage,
++			config.NetworkConfig,
++			hostFw,
++			observer,
++			networkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize),
++			networkv2.WithPoolMetrics(v2Metrics),
++		)
+ 		startService("network pool", func() error {
+ 			v2Pool.Populate(ctx)
+ 
+@@ -848,7 +855,7 @@ func run(config cfg.Config, opts Options) (success bool) {
+ 				logger.L().Fatal(ctx, "refusing to start v1: stale v2 host firewall table could hijack v1 sandbox egress", zap.Error(err))
+ 			}
+ 		}
+-		v1Pool := network.NewPool(network.NewSlotsPoolSize, network.ReusedSlotsPoolSize, slotStorage, config.NetworkConfig)
++		v1Pool := network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize, slotStorage, config.NetworkConfig)
+ 		startService("network pool", func() error {
+ 			v1Pool.Populate(ctx)
+ 
+diff --git a/packages/orchestrator/pkg/sandbox/network/v2/pool.go b/packages/orchestrator/pkg/sandbox/network/v2/pool.go
+index 3a1b40205..0ca52a415 100644
+--- a/packages/orchestrator/pkg/sandbox/network/v2/pool.go
++++ b/packages/orchestrator/pkg/sandbox/network/v2/pool.go
+@@ -75,6 +75,13 @@ func WithPopulateRetryDelay(delay time.Duration) V2PoolOption {
+ 	return func(pool *V2Pool) { pool.populateRetryDelay = delay }
+ }
+ 
++func WithPoolSizes(newSlotsPoolSize, reusedSlotsPoolSize int) V2PoolOption {
++	return func(pool *V2Pool) {
++		pool.newSlotsPoolSize = newSlotsPoolSize
++		pool.reusedSlotsPoolSize = reusedSlotsPoolSize
++	}
++}
++
+ // V2Pool implements network.PoolInterface using the v2 nftables datapath.
+ type V2Pool struct {
+ 	config      network.Config
+@@ -94,8 +101,10 @@ type V2Pool struct {
+ 	// it before draining the pool.
+ 	returnsWG sync.WaitGroup
+ 
+-	metrics            *Metrics
+-	populateRetryDelay time.Duration
++	metrics             *Metrics
++	populateRetryDelay  time.Duration
++	newSlotsPoolSize    int
++	reusedSlotsPoolSize int
+ }
+ 
+ // Compile-time check that V2Pool satisfies network.PoolInterface.
+@@ -138,19 +147,21 @@ func ValidateV2Prerequisites() error {
+ 
+ func NewV2Pool(storage network.Storage, config network.Config, hostFw *HostFirewall, observer *VethObserver, options ...V2PoolOption) *V2Pool {
+ 	pool := &V2Pool{
+-		config:             config,
+-		storage:            storage,
+-		hostFw:             hostFw,
+-		observer:           observer,
+-		registry:           NewSlotV2Registry(),
+-		newSlots:           make(chan *network.Slot, network.NewSlotsPoolSize-1),
+-		reusedSlots:        make(chan *network.Slot, network.ReusedSlotsPoolSize),
+-		done:               make(chan struct{}),
+-		populateRetryDelay: defaultPopulateRetryDelay,
++		config:              config,
++		storage:             storage,
++		hostFw:              hostFw,
++		observer:            observer,
++		registry:            NewSlotV2Registry(),
++		done:                make(chan struct{}),
++		populateRetryDelay:  defaultPopulateRetryDelay,
++		newSlotsPoolSize:    network.NewSlotsPoolSize,
++		reusedSlotsPoolSize: network.ReusedSlotsPoolSize,
+ 	}
+ 	for _, option := range options {
+ 		option(pool)
+ 	}
++	pool.newSlots = make(chan *network.Slot, pool.newSlotsPoolSize-1)
++	pool.reusedSlots = make(chan *network.Slot, pool.reusedSlotsPoolSize)
+ 	if pool.metrics == nil && hostFw != nil {
+ 		pool.metrics = hostFw.metrics
+ 	}
+diff --git a/packages/orchestrator/pkg/sandbox/network/v2/pool_retry_test.go b/packages/orchestrator/pkg/sandbox/network/v2/pool_retry_test.go
+index 28565be75..5e9ee90b0 100644
+--- a/packages/orchestrator/pkg/sandbox/network/v2/pool_retry_test.go
++++ b/packages/orchestrator/pkg/sandbox/network/v2/pool_retry_test.go
+@@ -84,6 +84,14 @@ func TestV2Pool_CloseExitsBackoffPromptly(t *testing.T) {
+ 	requireReceive(t, done)
+ }
+ 
++func TestV2Pool_ConfigurablePoolSizes(t *testing.T) {
++	t.Parallel()
++
++	pool := NewV2Pool(&failingStorage{}, testConfig(), nil, nil, WithPoolSizes(128, 129))
++	require.Equal(t, 127, cap(pool.newSlots))
++	require.Equal(t, 129, cap(pool.reusedSlots))
++}
++
+ func requireReceive(t *testing.T, done <-chan struct{}) {
+ 	t.Helper()
+ 	select {

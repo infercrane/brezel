@@ -215,10 +215,22 @@ before publishing results.
 A dependency-free adapter under [`benchmarks/computesdk`](benchmarks/computesdk)
 also exercises Brezel through the public ComputeSDK sandbox shape. It is an
 integration and independent-benchmark bridge, not yet a published provider
-package or a performance claim. The currently qualified engine capacity is 32,
-so the release does not meet Brezel's internal submission gate for ComputeSDK's
-public 100-way Burst TTI comparison. Read the [benchmark methodology and entry
-gates](docs/BENCHMARKING.md).
+package or a performance claim. Candidate host profiles and fail-closed
+rehearsals now exist for the 8-vCPU/16-GiB DAX workload and a separately sized
+100-way Burst TTI run. They remain release candidates until both profiles pass
+on a named KVM host with complete cleanup and retained evidence. Read the
+[benchmark methodology and entry gates](docs/BENCHMARKING.md).
+
+Load benchmark profiles through the checked runner so every value reaches the
+installer and Compose process tree:
+
+```console
+./deploy/profiles/run.sh deploy/profiles/computesdk-dax.env make qualify-single-host
+./deploy/profiles/run.sh deploy/profiles/burst-100-capacity.env make qualify-single-host
+```
+
+The profiles are mutually exclusive host-wide environment shapes. Requalify
+after switching one; do not mix their results.
 
 ## Host requirements
 

@@ -33,6 +33,7 @@ async function fixture(t, options = {}) {
   let deleteRequested = false;
   let deleteGetCount = 0;
   let commandCount = 0;
+  let createPostCount = 0;
   const server = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -42,6 +43,11 @@ async function fixture(t, options = {}) {
     const parsedUrl = new URL(request.url, "http://127.0.0.1");
 
     if (request.method === "POST" && request.url === "/v1/sandboxes") {
+      createPostCount += 1;
+      if (options.dropFirstCreateResponse && createPostCount === 1) {
+        response.destroy();
+        return;
+      }
       response.statusCode = 202;
       response.end(JSON.stringify({
         resource: sandbox(options.createState ?? "requested"),
@@ -184,6 +190,37 @@ test("does not poll an immediate-running create response", async (t) => {
     0,
   );
   await instance.destroy();
+});
+
+test("reconciles and deletes an idempotent create when the first response is lost", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t, {
+    createState: "running",
+    dropFirstCreateResponse: true,
+  });
+  const compute = createBrezelCompute({
+    baseUrl,
+    tokenFile,
+    projectId: "project-test",
+    environmentRevision: "envr_test",
+    createTimeoutMs: 2_000,
+    destroyTimeoutMs: 2_000,
+  });
+
+  await assert.rejects(compute.sandbox.create(), /fetch failed|socket|other side closed/i);
+
+  const creates = requests.filter((request) => request.method === "POST" && request.url === "/v1/sandboxes");
+  assert.equal(creates.length, 2, "the unknown create was reconciled exactly once");
+  assert.ok(creates[0].headers["idempotency-key"]);
+  assert.equal(
+    creates[1].headers["idempotency-key"],
+    creates[0].headers["idempotency-key"],
+    "reconciliation reused the original idempotency key",
+  );
+  assert.equal(
+    requests.filter((request) => request.method === "DELETE" && request.url === "/v1/sandboxes/sb_test").length,
+    1,
+    "the reconciled sandbox was deleted",
+  );
 });
 
 test("enables sandbox internet only from an explicit true environment value", async (t) => {

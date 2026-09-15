@@ -350,13 +350,14 @@ Only Blaxel publishes enough internals in these sources for an architectural
 comparison. Do not reverse-engineer the Isorun or Miosa leaderboard position
 into an undocumented hypervisor, scheduler, cache, or pool design.
 
-Brezel does not yet meet its internal gate for a meaningful public run. The current base
-environment is fixed at 512 MiB, arbitrary OCI-derived environments are not
-implemented, and the qualified single-host profile caps active sandboxes at
-32. DAX expects a full Linux environment with root or sudo, a package manager,
-curl, internet access, and an 8-vCPU/16-GiB resource shape. Burst TTI launches
-100 sandboxes concurrently. Submitting the current profile would measure known
-product limits rather than a competitive runtime.
+Brezel does not yet meet its internal gate for a meaningful public run. The
+last qualified single-host profile caps active sandboxes at 32. Candidate
+profiles now build an 8-vCPU/16-GiB DAX environment and a separate 100-way
+capacity environment, but neither is evidence until it passes on a named KVM
+host. DAX expects a full Linux environment with root or sudo, a package
+manager, curl, internet access, and a large writable root. Burst TTI launches
+100 sandboxes concurrently. Publishing either candidate before qualification
+would turn configuration into an unsupported performance claim.
 
 The entry gate is therefore:
 
@@ -394,6 +395,47 @@ with common build tools, host-local immutable image artifacts, a fast local
 ephemeral writable root, and a separately mounted durable workspace. The
 ephemeral root is the package-manager and compiler hot path; a durable
 workspace is the acknowledged-data path and must retain its crash guarantees.
+
+#### Rehearsal commands
+
+Install and qualify exactly one host-wide benchmark profile at a time:
+
+```sh
+./deploy/profiles/run.sh deploy/profiles/computesdk-dax.env make qualify-single-host
+./deploy/profiles/run.sh deploy/profiles/burst-100-capacity.env make qualify-single-host
+```
+
+For DAX, use a dedicated empty project and run the pinned upstream workload at
+least three times:
+
+```sh
+BREZEL_API_URL=https://sandbox.example.net \
+BREZEL_SERVICE_TOKEN_FILE=/run/secrets/brezel-service-token \
+BREZEL_PROJECT_ID=brezel-dax \
+BREZEL_ENVIRONMENT_REVISION=base \
+BREZEL_ALLOW_INTERNET=true \
+BREZEL_SOURCE_REVISION="$(git rev-parse HEAD)" \
+BREZEL_BENCHMARK_REGION=us-east4 \
+node benchmarks/computesdk/dax-rehearsal.mjs > dax-report.json
+```
+
+For Burst TTI, reinstall and requalify the 100-way profile, then run:
+
+```sh
+BREZEL_API_URL=https://sandbox.example.net \
+BREZEL_SERVICE_TOKEN_FILE=/run/secrets/brezel-service-token \
+BREZEL_PROJECT_ID=brezel-burst \
+BREZEL_ENVIRONMENT_REVISION=base \
+BREZEL_SOURCE_REVISION="$(git rev-parse HEAD)" \
+node benchmarks/computesdk/burst-rehearsal.mjs > burst-report.json
+```
+
+Each rehearsal refuses a nonempty project, validates the guest shape, holds all
+100 burst sandboxes simultaneously, requires confirmed deletion, and exits
+nonzero on any task or cleanup failure. The DAX internet exception belongs only
+on a disposable benchmark project. The HTTPS edge uses host networking on a
+dedicated benchmark host so it can reach the loopback API; this exception is
+not a general multitenant deployment recommendation.
 
 ### Controller microbenchmarks
 

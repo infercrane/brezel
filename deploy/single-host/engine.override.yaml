@@ -6,6 +6,10 @@ services:
       # product capacity gate verifies this reservation against both the API
       # quota and physical host memory before any engine build begins.
       HUGEPAGES: ${BREZEL_ENGINE_HUGEPAGES:-9216}
+      # The kernel NBD module is the physical ceiling for the orchestrator's
+      # device pool. Keep the host module and the process-level pool on the
+      # same operator-owned value.
+      NBDS_MAX: ${BREZEL_ENGINE_NBD_POOL_SIZE:-64}
       # Lazy Firecracker snapshot mappings reserve virtual commit before guest
       # pages are faulted in. The product-level global sandbox limit remains
       # the physical-memory admission boundary.
@@ -52,6 +56,10 @@ services:
       PGPASSWORD: postgres
       PGDATABASE: postgres
       BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL: ${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
+      BREZEL_GUEST_VCPUS: ${BREZEL_GUEST_VCPUS:-2}
+      BREZEL_GUEST_MEMORY_MIB: ${BREZEL_GUEST_MEMORY_MIB:-512}
+      BREZEL_GUEST_MIN_FREE_DISK_MIB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}
+      BREZEL_GUEST_MAX_FREE_DISK_MIB: ${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}
     volumes:
       - ${BREZEL_ENGINE_CAPACITY_SCRIPT:?set BREZEL_ENGINE_CAPACITY_SCRIPT to the audited engine capacity script}:/opt/brezel/engine-capacity-contract.sh:ro
     entrypoint: ["/bin/sh"]
@@ -142,6 +150,9 @@ services:
       # An explicit value is operator-owned and is not replaced by a remote
       # feature-flag refresh.
       MAX_STARTING_INSTANCES_PER_NODE: ${BREZEL_ENGINE_MAX_STARTING_SANDBOXES:?set the audited local starting-sandbox limit}
+      NETWORK_NEW_SLOTS_POOL_SIZE: ${BREZEL_ENGINE_NETWORK_NEW_SLOTS:?set the audited new network-slot capacity}
+      NETWORK_REUSED_SLOTS_POOL_SIZE: ${BREZEL_ENGINE_NETWORK_REUSED_SLOTS:?set the audited reused network-slot capacity}
+      NBD_POOL_SIZE: ${BREZEL_ENGINE_NBD_POOL_SIZE:?set the audited NBD capacity}
       # The upstream launcher enters the host mount namespace before starting
       # the orchestrator. Pass the protected absolute host path rather than a
       # container mount target. The engine exposes workspace contents only
@@ -181,6 +192,11 @@ services:
 
   base-template:
     pull_policy: never
+    environment:
+      BASE_TEMPLATE_SOURCE_IMAGE: e2bdev/base@sha256:197ad15124a51884aea5a629b96045cd8300bdbbb6df648647004fad99fc59ec
+      BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}
+      BASE_TEMPLATE_MEMORY_MB: ${BREZEL_GUEST_MEMORY_MIB:-512}
+      BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}
 
   smoke:
     pull_policy: never

@@ -104,11 +104,12 @@ figures and raw evidence are in [Qualification
 
 The separate node process, default single-host byte path, row-scoped lifecycle
 operations, bounded snapshot-diff cache, readiness gate, and three-start
-admission default completed the named-host workflow. The immediate performance
-gate is reducing and explaining checkpoint/restore tails without weakening the
-all-success requirement. Brezel's internal submission gate requires capacity to
-rise from 32 to at least 100 command-ready sandboxes before a public ComputeSDK
-Burst TTI run.
+admission default completed the named-host workflow. Candidate profiles now
+exist for DAX and 100 simultaneous command-ready sandboxes, together with
+strict workload and cleanup rehearsals. They do not raise the qualified ceiling
+until the named GCP KVM run passes. The immediate performance gate is measuring
+those profiles, locating their dominant tails, and improving them without
+weakening the all-success requirement.
 Longer soak, disk-full, interrupted-upgrade, backup/restore, and rollback
 exercises remain required. Existing evidence qualifies independent single-host
 operation only; it does not establish multi-node scheduling, shared control,

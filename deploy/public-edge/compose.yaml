@@ -1,0 +1,36 @@
+name: brezel-public-edge
+
+services:
+  edge:
+    image: caddy:2.10.2-alpine@sha256:d8c17a862962def15cde69863a3a463f25a2664942eafd7bdbf050e9c3116b83
+    pull_policy: always
+    restart: unless-stopped
+    cpus: 1.0
+    mem_limit: 256m
+    pids_limit: 128
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      BREZEL_PUBLIC_HOST: ${BREZEL_PUBLIC_HOST:?set the public DNS name}
+      BREZEL_ACME_EMAIL: ${BREZEL_ACME_EMAIL:?set the ACME contact address}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${BREZEL_EDGE_DATA_DIR:?set an absolute protected edge data directory}:/data
+      - ${BREZEL_EDGE_CONFIG_DIR:?set an absolute protected edge config directory}:/config
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

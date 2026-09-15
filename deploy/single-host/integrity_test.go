@@ -3,6 +3,7 @@ package singlehost
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +35,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"orchestrator_cache_patch_sha256":          "0004-bound-snapshot-diff-cache.patch",
 		"orchestrator_nfs_durability_patch_sha256": "0005-make-nfs-writes-crash-durable.patch",
 		"engine_start_admission_patch_sha256":      "0006-bound-start-admission-retries.patch",
+		"engine_local_capacity_patch_sha256":       "0007-scale-local-resource-pools-and-template-shape.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -62,7 +64,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 }
 
 func TestDeploymentScriptsParse(t *testing.T) {
-	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "engine-capacity-contract.sh", "engine-auth-cache-contract.sh", "artifact-supply-chain.sh", "runtime-attestation.sh", "benchmark.sh", "host-tuning.sh"} {
+	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "engine-capacity-contract.sh", "engine-auth-cache-contract.sh", "artifact-supply-chain.sh", "runtime-attestation.sh", "benchmark.sh", "host-tuning.sh", "../profiles/run.sh", "../public-edge/preflight.sh"} {
 		command := exec.Command("sh", "-n", script)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("sh -n %s: %v: %s", script, err, output)
@@ -185,6 +187,62 @@ func TestQualificationCapacityPreflightPrecedesAnyCreate(t *testing.T) {
 	if !strings.Contains(content, `MIN_READY_NETWORK_SLOTS" -lt "$MAX_ACTIVE_SANDBOXES_TOTAL`) {
 		t.Fatal("qualification can weaken network readiness below active capacity")
 	}
+	for _, required := range []string{
+		`BREZEL_GUEST_VCPUS=${BREZEL_GUEST_VCPUS:-2}`,
+		`BREZEL_GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}`,
+		`BREZEL_GUEST_MIN_FREE_DISK_MIB=${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}`,
+		`BREZEL_GUEST_MAX_FREE_DISK_MIB=${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}`,
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("qualification capacity preflight omitted %q", required)
+		}
+	}
+}
+
+func TestPublicEdgeIsNarrowAndDoesNotLogCapabilityURLs(t *testing.T) {
+	caddy, err := os.ReadFile(filepath.Join("..", "public-edge", "Caddyfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := string(caddy)
+	for _, required := range []string{
+		`handle @sandbox_collection`,
+		`handle @sandbox_command`,
+		`handle @preview`,
+		`handle {`,
+		`respond 404`,
+		`flush_interval -1`,
+	} {
+		if !strings.Contains(configuration, required) {
+			t.Fatalf("public edge configuration omitted %q", required)
+		}
+	}
+	if strings.Contains(configuration, "log {") || strings.Contains(configuration, "access_log") {
+		t.Fatal("public edge must not log preview capabilities or file paths from request URLs")
+	}
+
+	compose, err := os.ReadFile(filepath.Join("..", "public-edge", "compose.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"read_only: true", "cap_drop: [ALL]", "pids_limit:", "mem_limit:", "no-new-privileges:true", "max-size: 10m"} {
+		if !strings.Contains(string(compose), required) {
+			t.Fatalf("public edge container contract omitted %q", required)
+		}
+	}
+
+	preflight, err := os.ReadFile(filepath.Join("..", "public-edge", "preflight.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(preflight), "eval ") {
+		t.Fatal("public edge preflight executes a directory variable through eval")
+	}
+	for _, required := range []string{"existing non-symlink directory", "group- or world-writable", "caddy validate"} {
+		if !strings.Contains(string(preflight), required) {
+			t.Fatalf("public edge preflight omitted %q", required)
+		}
+	}
 }
 
 func TestBenchmarkEmptyProjectPreflightPrecedesEnvironmentCreation(t *testing.T) {
@@ -236,6 +294,7 @@ func TestEngineCapacityReconcilerIsRequiredBeforeAPIStartup(t *testing.T) {
 		"BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:",
 		"BREZEL_ENGINE_CAPACITY_SCRIPT",
 		"BREZEL_ENGINE_AUTH_CACHE_SCRIPT",
+		"NBDS_MAX: ${BREZEL_ENGINE_NBD_POOL_SIZE:-64}",
 		"condition: service_completed_successfully",
 	} {
 		if !strings.Contains(content, required) {
@@ -260,7 +319,12 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 
 	run := func(mode string, env ...string) ([]byte, error) {
 		command := exec.Command("sh", "capacity-contract.sh", mode)
-		command.Env = append(os.Environ(), append([]string{"BREZEL_TEST_MEMINFO_FILE=" + meminfo}, env...)...)
+		command.Env = append(os.Environ(), append([]string{
+			"BREZEL_TEST_MEMINFO_FILE=" + meminfo,
+			"BREZEL_TEST_CPU_COUNT=32",
+			"BREZEL_TEST_AVAILABLE_DISK_KIB=67108864",
+			"BREZEL_TEST_NBD_MAX=128",
+		}, env...)...)
 		return command.CombinedOutput()
 	}
 
@@ -291,6 +355,53 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 	}
 	if output, err := run("plan", "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=4", "BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=4", "BREZEL_ENGINE_MAX_STARTING_SANDBOXES=4", "BREZEL_ENGINE_HUGEPAGES=2048"); err != nil {
 		t.Fatalf("capacity contract rejected a coherent four-sandbox profile: %v: %s", err, output)
+	}
+	if output, err := run("plan", "BREZEL_TEST_CPU_COUNT=1"); err == nil {
+		t.Fatalf("capacity contract accepted a host smaller than one guest: %s", output)
+	}
+	if output, err := run("plan", "BREZEL_TEST_AVAILABLE_DISK_KIB=1024"); err == nil {
+		t.Fatalf("capacity contract accepted insufficient host disk: %s", output)
+	}
+	if output, err := run("live", "BREZEL_TEST_NBD_MAX=32", "BREZEL_ENGINE_NBD_POOL_SIZE=64"); err == nil {
+		t.Fatalf("capacity contract accepted an undersized kernel NBD ceiling: %s", output)
+	}
+	lowFree := strings.Replace(content, "HugePages_Free:     9216", "HugePages_Free:     1024", 1)
+	if err := os.WriteFile(meminfo, []byte(lowFree), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := run("live"); err == nil {
+		t.Fatalf("capacity contract accepted a consumed hugepage pool: %s", output)
+	}
+}
+
+func TestCapacityProfilesArePhysicallyCoherent(t *testing.T) {
+	profiles := []struct {
+		name      string
+		memoryKiB int
+		want      string
+	}{
+		{name: "computesdk-dax.env", memoryKiB: 48 * 1024 * 1024, want: `"guest_vcpus":8`},
+		{name: "burst-100-capacity.env", memoryKiB: 64 * 1024 * 1024, want: `"max_active_sandboxes":100`},
+	}
+	for _, profile := range profiles {
+		t.Run(profile.name, func(t *testing.T) {
+			profilePath := filepath.Join("..", "profiles", profile.name)
+			if _, err := os.Stat(profilePath); err != nil {
+				t.Fatal(err)
+			}
+			meminfo := filepath.Join(t.TempDir(), "meminfo")
+			if err := os.WriteFile(meminfo, []byte("MemTotal: "+fmt.Sprint(profile.memoryKiB)+" kB\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("sh", "-c", `BREZEL_TEST_MEMINFO_FILE="$2" BREZEL_TEST_CPU_COUNT=32 BREZEL_TEST_AVAILABLE_DISK_KIB=209715200 exec sh ../profiles/run.sh "$1" sh capacity-contract.sh plan`, "profile", profilePath, meminfo)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("profile rejected: %v: %s", err, output)
+			}
+			if !strings.Contains(string(output), profile.want) {
+				t.Fatalf("profile result omitted %s: %s", profile.want, output)
+			}
+		})
 	}
 }
 
@@ -617,10 +728,10 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/shared/pkg/featureflags/flags.go":                           "NewStringFlag(\"resume-prefetch-source\", \"init\")\n",
 		"packages/shared/pkg/storage/sandbox.go":                              "fmt.Sprintf(\"rootfs-%s-%s.cow\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/sandbox\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/template\"\n",
 		"packages/orchestrator/pkg/sandbox/network/pool.go":                   "NewSlotsPoolSize    = 32\nReusedSlotsPoolSize = 100\n",
-		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(network.NewSlotsPoolSize, network.ReusedSlotsPoolSize\n",
+		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
 		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
-		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
+		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
 		"packages/orchestrator/pkg/server/main.go":                            "resolveStartingSandboxesLimit\n",
 		"packages/api/internal/orchestrator/placement/placement.go":           "resourceExhaustedRetryDelay\n",
 		"packages/api/internal/orchestrator/placement/config.go":              "resourceExhaustedBackoffMax\n",
@@ -629,6 +740,7 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/nfsproxy/chroot/file.go":                   "syncing NFS write\nsyncing NFS truncate\n",
 		"packages/orchestrator/pkg/nfsproxy/chroot/fs.go":                     "syncDirectoryTree\nerrors.Join(syncPath(f.chroot, newParent), syncPath(f.chroot, oldParent))\n",
 		"embed/compose/compose.yaml":                                          "TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates\nNBD_POOL_SIZE: \"64\"\nNETWORK_VERSION: \"1\"\n",
+		"embed/compose/scripts/node/build-base-template.mjs":                  "BASE_TEMPLATE_MIN_FREE_DISK_MB\nminFreeDiskMb\n",
 	}
 	for name, content := range files {
 		path := filepath.Join(root, name)
@@ -702,7 +814,9 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"rootfs.NewNBDProvider",
 		"NewSlotsPoolSize",
 		"anon_inode:[userfaultfd]",
-		"NBD_POOL_SIZE=64",
+		"NETWORK_NEW_SLOTS_POOL_SIZE",
+		"NETWORK_REUSED_SLOTS_POOL_SIZE",
+		"NBD_POOL_SIZE",
 		"NETWORK_VERSION=1",
 		"TEMPLATE_STORAGE_URL=file:///var/lib/e2b/storage/templates",
 		"/orchestrator/sandbox/rootfs-",
@@ -821,6 +935,58 @@ func TestInstallerPinsAndValidatesStartAdmissionPatch(t *testing.T) {
 	} {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("engine capability probe is missing start-admission contract %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0007-scale-local-resource-pools-and-template-shape.patch",
+		"engine_local_capacity_patch_sha256",
+		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_LOCAL_CAPACITY_PATCH"`,
+		`"$ENGINE_START_ADMISSION_PATCH_SHA256" "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256"`,
+		"engine local-capacity patch verification failed",
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing local-capacity invariant %q", required)
+		}
+	}
+
+	overrideData, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := string(overrideData)
+	for _, required := range []string{
+		"NETWORK_NEW_SLOTS_POOL_SIZE: ${BREZEL_ENGINE_NETWORK_NEW_SLOTS:",
+		"NETWORK_REUSED_SLOTS_POOL_SIZE: ${BREZEL_ENGINE_NETWORK_REUSED_SLOTS:",
+		"NBD_POOL_SIZE: ${BREZEL_ENGINE_NBD_POOL_SIZE:",
+		"BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}",
+		"BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}",
+	} {
+		if !strings.Contains(override, required) {
+			t.Fatalf("engine override is missing local-capacity setting %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.engine.local_capacity_patch_sha256",
+		"artifact.orchestrator.local_resource_pools=operator-sized",
+		"artifact.template.resource_shape=operator-sized",
+		"the local-capacity patch requires the start-admission patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("distribution manifest writer is missing local-capacity identity %q", required)
 		}
 	}
 }

@@ -17,6 +17,8 @@ test-integrations:
 	node --check benchmarks/computesdk/adapter.mjs
 	node --check benchmarks/computesdk/provider-entry.mjs
 	node --check benchmarks/computesdk/qualified-smoke.mjs
+	node --check benchmarks/computesdk/dax-rehearsal.mjs
+	node --check benchmarks/computesdk/burst-rehearsal.mjs
 
 test-race:
 	go test -race ./...

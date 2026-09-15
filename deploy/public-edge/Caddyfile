@@ -1,0 +1,74 @@
+{
+	admin off
+	email {$BREZEL_ACME_EMAIL}
+}
+
+{$BREZEL_PUBLIC_HOST} {
+	@readiness {
+		method GET
+		path /readyz
+	}
+	@sandbox_collection {
+		method GET POST
+		path /v1/sandboxes
+	}
+	@sandbox_member {
+		method GET DELETE
+		path_regexp member ^/v1/sandboxes/[^/]+$
+	}
+	@sandbox_command {
+		method POST
+		path_regexp command ^/v1/sandboxes/[^/]+/commands$
+	}
+	@sandbox_file {
+		method GET PUT
+		path_regexp file ^/v1/sandboxes/[^/]+/files$
+	}
+	@sandbox_lease {
+		method POST
+		path_regexp lease ^/v1/sandboxes/[^/]+/ports/[0-9]+/leases$
+	}
+	@preview {
+		method GET HEAD POST PUT PATCH DELETE OPTIONS
+		path /p/*
+	}
+
+	handle @readiness {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @sandbox_collection {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @sandbox_member {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @sandbox_command {
+		reverse_proxy 127.0.0.1:8080 {
+			# Commands are NDJSON streams. Forward every event instead of waiting
+			# for a proxy buffer so the edge does not inflate first-output latency.
+			flush_interval -1
+		}
+	}
+	handle @sandbox_file {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @sandbox_lease {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @preview {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		respond 404
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Access logging is intentionally disabled. Preview capability tokens and
+	# file paths travel in request URIs and must never enter an edge log.
+}

@@ -319,10 +319,10 @@ async function waitForState(config, sandboxId, acceptable, timeoutMs, parentSign
   }
 }
 
-async function waitForDeletion(config, sandboxId, timeoutMs) {
+async function waitForDeletion(config, sandboxId, timeoutMs, parentSignal) {
   // Expired means policy has forbidden further use while cleanup is pending.
   // Only a deleted resource or a 404 from getSandbox confirms absence.
-  return waitForState(config, sandboxId, new Set(["deleted"]), timeoutMs);
+  return waitForState(config, sandboxId, new Set(["deleted"]), timeoutMs, parentSignal);
 }
 
 function decodeBase64(value) {
@@ -539,13 +539,18 @@ function sandboxHandle(config, wire) {
       return runCommand(config, wire.id, command, options);
     },
     async destroy() {
+      const deadline = withDeadline(undefined, config.destroyTimeoutMs);
       try {
-        await requestJson(config, "DELETE", `/v1/sandboxes/${encodeURIComponent(wire.id)}`, undefined, randomUUID());
-      } catch (error) {
-        if (error instanceof BrezelHttpError && error.status === 404) return;
-        throw error;
+        try {
+          await requestJson(config, "DELETE", `/v1/sandboxes/${encodeURIComponent(wire.id)}`, undefined, randomUUID(), deadline.signal);
+        } catch (error) {
+          if (error instanceof BrezelHttpError && error.status === 404) return;
+          throw error;
+        }
+        await waitForDeletion(config, wire.id, config.destroyTimeoutMs, deadline.signal);
+      } finally {
+        deadline.dispose();
       }
-      await waitForDeletion(config, wire.id, config.destroyTimeoutMs);
     },
     async getInfo() {
       const current = await getSandbox(config, wire.id);
@@ -585,18 +590,43 @@ function sandboxHandle(config, wire) {
 }
 
 async function cleanupFailedCreate(config, sandboxId, originalError) {
+  const deadline = withDeadline(undefined, config.destroyTimeoutMs);
   let cleanupError;
   try {
-    await requestJson(config, "DELETE", `/v1/sandboxes/${encodeURIComponent(sandboxId)}`, undefined, randomUUID());
-    await waitForDeletion(config, sandboxId, config.destroyTimeoutMs);
+    await requestJson(config, "DELETE", `/v1/sandboxes/${encodeURIComponent(sandboxId)}`, undefined, randomUUID(), deadline.signal);
+    await waitForDeletion(config, sandboxId, config.destroyTimeoutMs, deadline.signal);
   } catch (error) {
     if (!(error instanceof BrezelHttpError && error.status === 404)) cleanupError = error;
+  } finally {
+    deadline.dispose();
   }
   if (cleanupError) {
     throw new AggregateError(
       [originalError, cleanupError],
       "Brezel sandbox creation failed and cleanup could not be confirmed",
     );
+  }
+  throw originalError;
+}
+
+async function reconcileUnknownCreate(config, body, idempotencyKey, originalError) {
+  const deadline = withDeadline(undefined, config.destroyTimeoutMs);
+  try {
+    const response = await requestJson(config, "POST", "/v1/sandboxes", body, idempotencyKey, deadline.signal);
+    const requested = validateSandbox(response?.resource);
+    try {
+      await requestJson(config, "DELETE", `/v1/sandboxes/${encodeURIComponent(requested.id)}`, undefined, randomUUID(), deadline.signal);
+      await waitForDeletion(config, requested.id, config.destroyTimeoutMs, deadline.signal);
+    } catch (cleanupError) {
+      if (!(cleanupError instanceof BrezelHttpError && cleanupError.status === 404)) {
+        throw new AggregateError([originalError, cleanupError], "Brezel create response was lost and cleanup could not be confirmed");
+      }
+    }
+  } catch (reconcileError) {
+    if (reconcileError instanceof AggregateError) throw reconcileError;
+    throw new AggregateError([originalError, reconcileError], "Brezel create response was lost and idempotent reconciliation failed");
+  } finally {
+    deadline.dispose();
   }
   throw originalError;
 }
@@ -640,15 +670,21 @@ export function createBrezelCompute(configInput = {}) {
               lifecycle: { expires_after_seconds: ttlSeconds },
               network: { allow_internet: config.allowInternet },
             };
-        const response = await requestJson(config, "POST", "/v1/sandboxes", body, randomUUID(), options.signal);
-        const requested = validateSandbox(response?.resource);
-        if (requested.state === "running") return sandboxHandle(config, requested);
+        const idempotencyKey = randomUUID();
+        const deadline = withDeadline(options.signal, config.createTimeoutMs);
+        let requested;
         try {
-          const ready = await waitForState(config, requested.id, new Set(["running"]), config.createTimeoutMs, options.signal);
+          const response = await requestJson(config, "POST", "/v1/sandboxes", body, idempotencyKey, deadline.signal);
+          requested = validateSandbox(response?.resource);
+          if (requested.state === "running") return sandboxHandle(config, requested);
+          const ready = await waitForState(config, requested.id, new Set(["running"]), config.createTimeoutMs, deadline.signal);
           if (!ready) throw new Error("Brezel sandbox disappeared while it was being created");
           return sandboxHandle(config, ready);
         } catch (error) {
-          return cleanupFailedCreate(config, requested.id, error);
+          if (requested) return cleanupFailedCreate(config, requested.id, error);
+          return reconcileUnknownCreate(config, body, idempotencyKey, error);
+        } finally {
+          deadline.dispose();
         }
       },
       async getById(sandboxId) {

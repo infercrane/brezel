@@ -62,8 +62,14 @@ check_source() {
     "NewSlotsPoolSize    = 32" "the new network-slot pool"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/network/pool.go" \
     "ReusedSlotsPoolSize = 100" "the reused network-slot pool"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"NETWORK_NEW_SLOTS_POOL_SIZE"' "the configurable new network-slot pool"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"NETWORK_REUSED_SLOTS_POOL_SIZE"' "the configurable reused network-slot pool"
   require_literal "$source_root/packages/orchestrator/pkg/factories/run.go" \
-    "network.NewPool(network.NewSlotsPoolSize, network.ReusedSlotsPoolSize" "network pool construction"
+    "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize" "configured v1 network pool construction"
+  require_literal "$source_root/packages/orchestrator/pkg/factories/run.go" \
+    "networkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)" "configured v2 network pool construction"
   require_literal "$source_root/packages/orchestrator/pkg/server/sandboxes.go" \
     "if err := sbx.Stop(ctx); err != nil" "delete acknowledgement after bounded sandbox teardown"
   require_literal "$source_root/packages/orchestrator/pkg/server/sandboxes.go" \
@@ -118,8 +124,12 @@ check_source() {
     'NBD_POOL_SIZE: "64"' "the pinned NBD device pool"
   require_literal "$source_root/embed/compose/compose.yaml" \
     'NETWORK_VERSION: "1"' "the qualified network implementation"
+  require_literal "$source_root/embed/compose/scripts/node/build-base-template.mjs" \
+    "BASE_TEMPLATE_MIN_FREE_DISK_MB" "the configurable base-template free disk target"
+  require_literal "$source_root/embed/compose/scripts/node/build-base-template.mjs" \
+    "minFreeDiskMb" "the base-template free disk request"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"new":32,"reused":100},"nbd_pool":64,"network_version":1}'
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"network_version":1}'
 }
 
 find_orchestrator_pid() {
@@ -235,6 +245,15 @@ check_live() {
   esac
   [ "$actual_starting_limit" -eq "$expected_starting_limit" ] || \
     fail "the live local starting-sandbox limit is $actual_starting_limit; expected $expected_starting_limit"
+  expected_network_new=${4:-}
+  expected_network_reused=${5:-}
+  expected_nbd_pool=${6:-}
+  for expected_capacity in "$expected_network_new" "$expected_network_reused" "$expected_nbd_pool"; do
+    case "$expected_capacity" in
+      ""|*[!0-9]*) fail "live resource-pool expectations must be positive integers" ;;
+    esac
+    [ "$expected_capacity" -gt 0 ] || fail "live resource-pool expectations must be greater than zero"
+  done
   expected_orchestrator_sha256=$(tr '\000' '\n' < "/proc/$orchestrator_pid/environ" | \
     sed -n 's/^BREZEL_ENGINE_ORCHESTRATOR_SHA256=//p')
   printf '%s\n' "$expected_orchestrator_sha256" | grep -Eq '^[0-9a-f]{64}$' || \
@@ -242,8 +261,29 @@ check_live() {
   actual_orchestrator_sha256=$(sha256sum "/proc/$orchestrator_pid/exe" | awk '{print $1}')
   [ "$actual_orchestrator_sha256" = "$expected_orchestrator_sha256" ] || \
     fail "the live orchestrator binary digest does not match the source-built artifact"
-  tr '\000' '\n' < "/proc/$orchestrator_pid/environ" | grep -Fxq 'NBD_POOL_SIZE=64' || \
-    fail "the live orchestrator is not using the qualified 64-device NBD pool"
+  actual_network_new=$(process_environment_value "$orchestrator_pid" NETWORK_NEW_SLOTS_POOL_SIZE)
+  actual_network_reused=$(process_environment_value "$orchestrator_pid" NETWORK_REUSED_SLOTS_POOL_SIZE)
+  actual_nbd_pool=$(process_environment_value "$orchestrator_pid" NBD_POOL_SIZE)
+  for actual_capacity in "$actual_network_new" "$actual_network_reused" "$actual_nbd_pool"; do
+    case "$actual_capacity" in
+      ""|*[!0-9]*) fail "a live local resource-pool size is missing or malformed" ;;
+    esac
+    [ "$actual_capacity" -gt 0 ] || fail "live local resource-pool sizes must be greater than zero"
+  done
+  [ "$actual_network_new" -eq "$expected_network_new" ] || \
+    fail "the live new network-slot pool is $actual_network_new; expected $expected_network_new"
+  [ "$actual_network_reused" -eq "$expected_network_reused" ] || \
+    fail "the live reused network-slot pool is $actual_network_reused; expected $expected_network_reused"
+  [ "$actual_nbd_pool" -eq "$expected_nbd_pool" ] || \
+    fail "the live NBD pool is $actual_nbd_pool; expected $expected_nbd_pool"
+  [ -r /sys/module/nbd/parameters/nbds_max ] || \
+    fail "the live host does not expose the kernel NBD device ceiling"
+  kernel_nbd_max=$(cat /sys/module/nbd/parameters/nbds_max)
+  case "$kernel_nbd_max" in
+    ""|*[!0-9]*) fail "the live kernel NBD device ceiling is malformed" ;;
+  esac
+  [ "$kernel_nbd_max" -ge "$expected_nbd_pool" ] || \
+    fail "the live kernel exposes $kernel_nbd_max NBD devices; expected at least $expected_nbd_pool"
   tr '\000' '\n' < "/proc/$orchestrator_pid/environ" | grep -Fxq 'NETWORK_VERSION=1' || \
     fail "the live orchestrator is not using qualified network version 1"
   tr '\000' '\n' < "/proc/$orchestrator_pid/environ" | \
@@ -300,7 +340,7 @@ check_live() {
   cache_policy_json=$(observe_cache_policy "$orchestrator_pid")
 
   printf '%s\n' \
-    "{\"live_contract\":\"conformant\",\"snapshot_restore\":\"observed\",\"lazy_paging\":\"observed\",\"template_prefetch\":\"usable_mapping_observed\",\"cow_rootfs\":\"observed\",\"local_template_cache\":\"observed\",\"max_starting_sandboxes\":$actual_starting_limit,\"snapshot_diff_cache\":$cache_policy_json,\"nbd_pool\":64,\"network_version\":1,\"ready_network_namespaces\":$network_slots,\"minimum_ready_network_namespaces\":$min_network_slots}"
+    "{\"live_contract\":\"conformant\",\"snapshot_restore\":\"observed\",\"lazy_paging\":\"observed\",\"template_prefetch\":\"usable_mapping_observed\",\"cow_rootfs\":\"observed\",\"local_template_cache\":\"observed\",\"max_starting_sandboxes\":$actual_starting_limit,\"snapshot_diff_cache\":$cache_policy_json,\"nbd_pool\":$actual_nbd_pool,\"network_new_slots\":$actual_network_new,\"network_reused_slots\":$actual_network_reused,\"network_version\":1,\"ready_network_namespaces\":$network_slots,\"minimum_ready_network_namespaces\":$min_network_slots}"
 }
 
 check_cache() {
@@ -323,7 +363,7 @@ case "${1:-}" in
     check_cache
     ;;
   *)
-    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID MIN_READY_NETWORK_SLOTS MAX_STARTING_SANDBOXES | cache" >&2
+    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID MIN_READY_NETWORK_SLOTS MAX_STARTING_SANDBOXES NETWORK_NEW_SLOTS NETWORK_REUSED_SLOTS NBD_POOL_SIZE | cache" >&2
     exit 2
     ;;
 esac

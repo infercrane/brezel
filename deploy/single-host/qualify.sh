@@ -14,6 +14,9 @@ ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
 MAX_ACTIVE_SANDBOXES_TOTAL=${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
 MIN_READY_NETWORK_SLOTS=${BREZEL_MIN_READY_NETWORK_SLOTS:-32}
 ENGINE_MAX_STARTING_SANDBOXES=${BREZEL_ENGINE_MAX_STARTING_SANDBOXES:-3}
+ENGINE_NETWORK_NEW_SLOTS=${BREZEL_ENGINE_NETWORK_NEW_SLOTS:-32}
+ENGINE_NETWORK_REUSED_SLOTS=${BREZEL_ENGINE_NETWORK_REUSED_SLOTS:-100}
+ENGINE_NBD_POOL_SIZE=${BREZEL_ENGINE_NBD_POOL_SIZE:-64}
 
 if [ ! -s "$TOKEN_FILE" ]; then
   echo "runtime service token is missing; run install.sh first" >&2
@@ -67,13 +70,17 @@ preflight_capacity_contract() {
     echo "BREZEL_MIN_READY_NETWORK_SLOTS cannot be lower than BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL" >&2
     return 1
   fi
-  if [ "$MIN_READY_NETWORK_SLOTS" -gt 32 ]; then
-    echo "BREZEL_MIN_READY_NETWORK_SLOTS cannot exceed the qualified 32-slot new-sandbox network pool" >&2
+  if [ "$MIN_READY_NETWORK_SLOTS" -gt "$ENGINE_NETWORK_NEW_SLOTS" ]; then
+    echo "BREZEL_MIN_READY_NETWORK_SLOTS cannot exceed the configured $ENGINE_NETWORK_NEW_SLOTS-slot new-sandbox network pool" >&2
     return 1
   fi
 
   PREFLIGHT_ENGINE_CAPACITY_JSON=$(engine_compose exec -T \
     -e "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=$MAX_ACTIVE_SANDBOXES_TOTAL" \
+    -e "BREZEL_GUEST_VCPUS=${BREZEL_GUEST_VCPUS:-2}" \
+    -e "BREZEL_GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}" \
+    -e "BREZEL_GUEST_MIN_FREE_DISK_MIB=${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}" \
+    -e "BREZEL_GUEST_MAX_FREE_DISK_MIB=${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}" \
     postgres sh -s -- verify < "$ENGINE_CAPACITY_PROBE")
 }
 
@@ -282,13 +289,21 @@ run_engine_fast_path_qualification() {
   min_network_slots=$MIN_READY_NETWORK_SLOTS
   max_starting_sandboxes=$ENGINE_MAX_STARTING_SANDBOXES
 
-  capacity_json=$("$CAPACITY_PROBE" live)
+  # The empty-host capacity result was captured before any qualification VM
+  # was admitted. Reuse that evidence here; a live guest legitimately owns
+  # part of the hugepage pool at this point.
+  capacity_json=$PREFLIGHT_CAPACITY_JSON
   engine_capacity_json=$(engine_compose exec -T \
     -e "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=$MAX_ACTIVE_SANDBOXES_TOTAL" \
+    -e "BREZEL_GUEST_VCPUS=${BREZEL_GUEST_VCPUS:-2}" \
+    -e "BREZEL_GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}" \
+    -e "BREZEL_GUEST_MIN_FREE_DISK_MIB=${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}" \
+    -e "BREZEL_GUEST_MAX_FREE_DISK_MIB=${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}" \
     postgres sh -s -- verify < "$ENGINE_CAPACITY_PROBE")
 
   if ! capability_json=$(engine_compose exec -T orchestrator \
     nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" "$max_starting_sandboxes" \
+      "$ENGINE_NETWORK_NEW_SLOTS" "$ENGINE_NETWORK_REUSED_SLOTS" "$ENGINE_NBD_POOL_SIZE" \
     < "$ENGINE_CAPABILITY_PROBE"); then
     echo "the installed engine did not satisfy the live fast-path contract" >&2
     return 1

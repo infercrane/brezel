@@ -125,6 +125,7 @@ write_manifest() {
   orchestrator_cache_patch_sha256=${8:-}
   orchestrator_nfs_durability_patch_sha256=${9:-}
   engine_start_admission_patch_sha256=${10:-}
+  engine_local_capacity_patch_sha256=${11:-}
   verify_host_artifacts "$artifact_lock" "$host_root" "$orchestrator_override_sha256"
   if [ -n "$orchestrator_patch_sha256" ]; then
     require_sha256 "$orchestrator_patch_sha256" "orchestrator patch SHA-256"
@@ -140,6 +141,10 @@ write_manifest() {
   if [ -n "$engine_start_admission_patch_sha256" ]; then
     [ -n "$orchestrator_nfs_durability_patch_sha256" ] || fail "the start-admission patch requires the NFS durability patch identity"
     require_sha256 "$engine_start_admission_patch_sha256" "engine start-admission patch SHA-256"
+  fi
+  if [ -n "$engine_local_capacity_patch_sha256" ]; then
+    [ -n "$engine_start_admission_patch_sha256" ] || fail "the local-capacity patch requires the start-admission patch identity"
+    require_sha256 "$engine_local_capacity_patch_sha256" "engine local-capacity patch SHA-256"
   fi
   output_dir=$(dirname "$output")
   mkdir -p "$output_dir"
@@ -181,6 +186,11 @@ write_manifest() {
       printf 'artifact.orchestrator.start_admission=operator-pinned-local-limit\n'
       printf 'artifact.api.capacity_retry=capped-exponential-backoff-with-jitter\n'
     fi
+    if [ -n "$engine_local_capacity_patch_sha256" ]; then
+      printf 'artifact.engine.local_capacity_patch_sha256=%s\n' "$engine_local_capacity_patch_sha256"
+      printf 'artifact.orchestrator.local_resource_pools=operator-sized\n'
+      printf 'artifact.template.resource_shape=operator-sized\n'
+    fi
   } > "$temporary"
   chmod 600 "$temporary"
   mv -f -- "$temporary" "$output"
@@ -188,7 +198,7 @@ write_manifest() {
 }
 
 usage() {
-  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256]" >&2
+  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256]" >&2
   exit 2
 }
 
@@ -211,8 +221,8 @@ case "$command" in
     verify_host_artifacts "$2" "$3" "${4:-}"
     ;;
   manifest)
-    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ]; } || usage
-    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}"
+    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ]; } || usage
+    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}"
     ;;
   *) usage ;;
 esac
