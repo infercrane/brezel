@@ -336,22 +336,6 @@ func (p *Pool) Create(ctx context.Context, request backend.CreateRequest) (backe
 }
 
 func (p *Pool) completeClaim(ctx context.Context, current slot, projectID, sandboxID string) (backend.Sandbox, error) {
-	verifyStarted := time.Now()
-	observed, err := p.inner.Inspect(ctx, current.BackendID)
-	telemetry.Observe(p.config.Observer, telemetry.OperationSandboxCreate, telemetry.PhaseWarmVerify, verifyStarted, err)
-	if err != nil || observed.State != domain.SandboxRunning {
-		cause := err
-		if cause == nil {
-			cause = fmt.Errorf("observed state %q", observed.State)
-		}
-		if discardErr := p.discard(context.WithoutCancel(ctx), current); discardErr != nil {
-			// A slot whose destruction cannot be confirmed remains quarantined in
-			// deleting state. Never return it to capacity or claim it for a user.
-			return backend.Sandbox{}, fmt.Errorf("discard unusable claimed warm slot: %w", errors.Join(cause, discardErr))
-		}
-		p.refillAfterFailure(ctx)
-		return backend.Sandbox{}, fmt.Errorf("%w: %w: %v", backend.ErrCapacityUnavailable, errWarmUnavailable, cause)
-	}
 	if current.State == stateClaiming {
 		remaining := time.Until(current.ClaimExpiresAt)
 		remainingSeconds := int64((remaining + time.Second - 1) / time.Second)
@@ -371,6 +355,28 @@ func (p *Pool) completeClaim(ctx context.Context, current slot, projectID, sandb
 		if err := p.finishClaim(current.ID, projectID, sandboxID); err != nil {
 			return backend.Sandbox{}, err
 		}
+		// The engine's timeout operation accepts only a currently running
+		// sandbox and also updates its orchestrator deadline. It is therefore
+		// the first-claim liveness proof; a separate inspect would add a
+		// redundant round trip to every warm create.
+		return backend.Sandbox{ID: current.BackendID, State: domain.SandboxRunning}, nil
+	}
+
+	verifyStarted := time.Now()
+	observed, err := p.inner.Inspect(ctx, current.BackendID)
+	telemetry.Observe(p.config.Observer, telemetry.OperationSandboxCreate, telemetry.PhaseWarmVerify, verifyStarted, err)
+	if err != nil || observed.State != domain.SandboxRunning {
+		cause := err
+		if cause == nil {
+			cause = fmt.Errorf("observed state %q", observed.State)
+		}
+		if discardErr := p.discard(context.WithoutCancel(ctx), current); discardErr != nil {
+			// A slot whose destruction cannot be confirmed remains quarantined in
+			// deleting state. Never return it to capacity or claim it for a user.
+			return backend.Sandbox{}, fmt.Errorf("discard unusable claimed warm slot: %w", errors.Join(cause, discardErr))
+		}
+		p.refillAfterFailure(ctx)
+		return backend.Sandbox{}, fmt.Errorf("%w: %w: %v", backend.ErrCapacityUnavailable, errWarmUnavailable, cause)
 	}
 	return observed, nil
 }

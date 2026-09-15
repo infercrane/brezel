@@ -24,6 +24,7 @@ type fakeBackend struct {
 	next       int
 	created    int
 	deleted    int
+	inspected  int
 	byID       map[string]fakeSandbox
 	timeout    map[string]int64
 	deleteFail error
@@ -64,6 +65,7 @@ func (f *fakeBackend) Find(_ context.Context, localID, project string) (backend.
 func (f *fakeBackend) Inspect(_ context.Context, id string) (backend.Sandbox, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.inspected++
 	current, ok := f.byID[id]
 	if !ok {
 		return backend.Sandbox{}, backend.ErrNotFound
@@ -95,8 +97,12 @@ func (*fakeBackend) Ready(context.Context) error                    { return nil
 func (f *fakeBackend) SetTimeout(_ context.Context, id string, ttlSeconds int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, ok := f.byID[id]; !ok {
+	current, ok := f.byID[id]
+	if !ok {
 		return backend.ErrNotFound
+	}
+	if current.remote.State != domain.SandboxRunning {
+		return errors.New("sandbox is not running")
 	}
 	f.timeout[id] = ttlSeconds
 	return nil
@@ -149,6 +155,9 @@ func TestPoolPrimesClaimsOnceAndRefillsAfterDelete(t *testing.T) {
 	}
 	if inner.created != 2 {
 		t.Fatalf("claim started a new sandbox; created = %d", inner.created)
+	}
+	if inner.inspected != 1 {
+		t.Fatalf("inspect calls = %d, want only the idempotent retry to inspect", inner.inspected)
 	}
 	if got := inner.timeout[first.ID]; got < 119 || got > 120 {
 		t.Fatalf("claimed timeout = %d, want the original 120-second deadline", got)
