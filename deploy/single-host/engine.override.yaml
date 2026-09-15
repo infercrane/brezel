@@ -21,6 +21,10 @@ services:
   postgres:
     image: ${BREZEL_ENGINE_POSTGRES_IMAGE:?set BREZEL_ENGINE_POSTGRES_IMAGE from engine.images.lock}
     pull_policy: never
+    # Reserve the explicit hugetlb pool for Firecracker guests. PostgreSQL's
+    # default "try" mode otherwise consumes pages from the guest admission
+    # budget whenever the host exposes them.
+    command: ["postgres", "-c", "huge_pages=off"]
 
   redis:
     image: ${BREZEL_ENGINE_REDIS_IMAGE:?set BREZEL_ENGINE_REDIS_IMAGE from engine.images.lock}

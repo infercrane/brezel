@@ -407,6 +407,11 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop client-proxy
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop api
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop orchestrator
+# PostgreSQL opportunistically maps its shared buffers through the host
+# hugetlb pool. Stop the old container before measuring the empty guest pool;
+# the override below restarts it with huge_pages=off so database memory can
+# never steal Firecracker admission capacity after the gate passes.
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop postgres
 
 # Host and engine mutations begin only inside the stopped-service boundary.
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps host-setup

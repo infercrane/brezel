@@ -42,6 +42,10 @@ command -v psql >/dev/null 2>&1 || fail "psql is required"
 export PGUSER=${PGUSER:-${POSTGRES_USER:-postgres}}
 export PGDATABASE=${PGDATABASE:-${POSTGRES_DB:-postgres}}
 
+postgres_huge_pages=$(psql -X -v ON_ERROR_STOP=1 -Atc "SHOW huge_pages")
+[ "$postgres_huge_pages" = off ] || \
+  fail "PostgreSQL huge_pages must be off so the Firecracker admission pool remains exclusive"
+
 if [ "$MODE" = apply ]; then
   psql -X -v ON_ERROR_STOP=1 \
     -v expected="$EXPECTED" \

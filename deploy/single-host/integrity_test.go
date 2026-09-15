@@ -160,6 +160,7 @@ func TestUpgradeStopsPublicAdmissionAndForcesDerivedStateGates(t *testing.T) {
 		`stop client-proxy`,
 		`stop api`,
 		`stop orchestrator`,
+		`stop postgres`,
 		`run --rm --no-deps host-setup`,
 		`run --rm --no-deps fetch-artifacts`,
 		`run --rm --no-deps brezel-orchestrator-install`,
@@ -179,6 +180,26 @@ func TestUpgradeStopsPublicAdmissionAndForcesDerivedStateGates(t *testing.T) {
 	}
 	if !strings.Contains(content, `"$INSTALL_SUCCEEDED" != true`) {
 		t.Fatal("installer has no fail-closed public service cleanup")
+	}
+}
+
+func TestPostgresCannotConsumeTheFirecrackerHugepagePool(t *testing.T) {
+	override, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(override), `command: ["postgres", "-c", "huge_pages=off"]`) {
+		t.Fatal("PostgreSQL is not forced off the Firecracker hugetlb pool")
+	}
+
+	contract, err := os.ReadFile("engine-capacity-contract.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"SHOW huge_pages", `"$postgres_huge_pages" = off`} {
+		if !strings.Contains(string(contract), required) {
+			t.Fatalf("engine capacity contract does not verify %q", required)
+		}
 	}
 }
 
