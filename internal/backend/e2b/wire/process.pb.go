@@ -95,6 +95,7 @@ func (x *ProcessConfig) GetCwd() string {
 type StartRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Process       *ProcessConfig         `protobuf:"bytes,1,opt,name=process,proto3" json:"process,omitempty"`
+	Tag           *string                `protobuf:"bytes,3,opt,name=tag,proto3,oneof" json:"tag,omitempty"`
 	Stdin         *bool                  `protobuf:"varint,4,opt,name=stdin,proto3,oneof" json:"stdin,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -135,6 +136,13 @@ func (x *StartRequest) GetProcess() *ProcessConfig {
 		return x.Process
 	}
 	return nil
+}
+
+func (x *StartRequest) GetTag() string {
+	if x != nil && x.Tag != nil {
+		return *x.Tag
+	}
+	return ""
 }
 
 func (x *StartRequest) GetStdin() bool {
@@ -302,6 +310,176 @@ func (x *StartResponse) GetEvent() *ProcessEvent {
 	return nil
 }
 
+type ConnectResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Event         *ProcessEvent          `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectResponse) Reset() {
+	*x = ConnectResponse{}
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectResponse) ProtoMessage() {}
+
+func (x *ConnectResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectResponse.ProtoReflect.Descriptor instead.
+func (*ConnectResponse) Descriptor() ([]byte, []int) {
+	return file_internal_backend_e2b_wire_process_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ConnectResponse) GetEvent() *ProcessEvent {
+	if x != nil {
+		return x.Event
+	}
+	return nil
+}
+
+type ConnectRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Process       *ProcessSelector       `protobuf:"bytes,1,opt,name=process,proto3" json:"process,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectRequest) Reset() {
+	*x = ConnectRequest{}
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectRequest) ProtoMessage() {}
+
+func (x *ConnectRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectRequest.ProtoReflect.Descriptor instead.
+func (*ConnectRequest) Descriptor() ([]byte, []int) {
+	return file_internal_backend_e2b_wire_process_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ConnectRequest) GetProcess() *ProcessSelector {
+	if x != nil {
+		return x.Process
+	}
+	return nil
+}
+
+type ProcessSelector struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Selector:
+	//
+	//	*ProcessSelector_Pid
+	//	*ProcessSelector_Tag
+	Selector      isProcessSelector_Selector `protobuf_oneof:"selector"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProcessSelector) Reset() {
+	*x = ProcessSelector{}
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProcessSelector) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProcessSelector) ProtoMessage() {}
+
+func (x *ProcessSelector) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProcessSelector.ProtoReflect.Descriptor instead.
+func (*ProcessSelector) Descriptor() ([]byte, []int) {
+	return file_internal_backend_e2b_wire_process_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ProcessSelector) GetSelector() isProcessSelector_Selector {
+	if x != nil {
+		return x.Selector
+	}
+	return nil
+}
+
+func (x *ProcessSelector) GetPid() uint32 {
+	if x != nil {
+		if x, ok := x.Selector.(*ProcessSelector_Pid); ok {
+			return x.Pid
+		}
+	}
+	return 0
+}
+
+func (x *ProcessSelector) GetTag() string {
+	if x != nil {
+		if x, ok := x.Selector.(*ProcessSelector_Tag); ok {
+			return x.Tag
+		}
+	}
+	return ""
+}
+
+type isProcessSelector_Selector interface {
+	isProcessSelector_Selector()
+}
+
+type ProcessSelector_Pid struct {
+	Pid uint32 `protobuf:"varint,1,opt,name=pid,proto3,oneof"`
+}
+
+type ProcessSelector_Tag struct {
+	Tag string `protobuf:"bytes,2,opt,name=tag,proto3,oneof"`
+}
+
+func (*ProcessSelector_Pid) isProcessSelector_Selector() {}
+
+func (*ProcessSelector_Tag) isProcessSelector_Selector() {}
+
 type ProcessEvent_StartEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Pid           uint32                 `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
@@ -311,7 +489,7 @@ type ProcessEvent_StartEvent struct {
 
 func (x *ProcessEvent_StartEvent) Reset() {
 	*x = ProcessEvent_StartEvent{}
-	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[5]
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -323,7 +501,7 @@ func (x *ProcessEvent_StartEvent) String() string {
 func (*ProcessEvent_StartEvent) ProtoMessage() {}
 
 func (x *ProcessEvent_StartEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[5]
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -360,7 +538,7 @@ type ProcessEvent_DataEvent struct {
 
 func (x *ProcessEvent_DataEvent) Reset() {
 	*x = ProcessEvent_DataEvent{}
-	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[6]
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -372,7 +550,7 @@ func (x *ProcessEvent_DataEvent) String() string {
 func (*ProcessEvent_DataEvent) ProtoMessage() {}
 
 func (x *ProcessEvent_DataEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[6]
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -456,7 +634,7 @@ type ProcessEvent_EndEvent struct {
 
 func (x *ProcessEvent_EndEvent) Reset() {
 	*x = ProcessEvent_EndEvent{}
-	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[7]
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -468,7 +646,7 @@ func (x *ProcessEvent_EndEvent) String() string {
 func (*ProcessEvent_EndEvent) ProtoMessage() {}
 
 func (x *ProcessEvent_EndEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[7]
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -520,7 +698,7 @@ type ProcessEvent_KeepAlive struct {
 
 func (x *ProcessEvent_KeepAlive) Reset() {
 	*x = ProcessEvent_KeepAlive{}
-	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[8]
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -532,7 +710,7 @@ func (x *ProcessEvent_KeepAlive) String() string {
 func (*ProcessEvent_KeepAlive) ProtoMessage() {}
 
 func (x *ProcessEvent_KeepAlive) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[8]
+	mi := &file_internal_backend_e2b_wire_process_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -561,10 +739,12 @@ const file_internal_backend_e2b_wire_process_proto_rawDesc = "" +
 	"\tEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x06\n" +
-	"\x04_cwd\"e\n" +
+	"\x04_cwd\"\x84\x01\n" +
 	"\fStartRequest\x120\n" +
-	"\aprocess\x18\x01 \x01(\v2\x16.process.ProcessConfigR\aprocess\x12\x19\n" +
-	"\x05stdin\x18\x04 \x01(\bH\x00R\x05stdin\x88\x01\x01B\b\n" +
+	"\aprocess\x18\x01 \x01(\v2\x16.process.ProcessConfigR\aprocess\x12\x15\n" +
+	"\x03tag\x18\x03 \x01(\tH\x00R\x03tag\x88\x01\x01\x12\x19\n" +
+	"\x05stdin\x18\x04 \x01(\bH\x01R\x05stdin\x88\x01\x01B\x06\n" +
+	"\x04_tagB\b\n" +
 	"\x06_stdin\"\x87\x04\n" +
 	"\fProcessEvent\x128\n" +
 	"\x05start\x18\x01 \x01(\v2 .process.ProcessEvent.StartEventH\x00R\x05start\x125\n" +
@@ -588,8 +768,18 @@ const file_internal_backend_e2b_wire_process_proto_rawDesc = "" +
 	"\tKeepAliveB\a\n" +
 	"\x05event\"<\n" +
 	"\rStartResponse\x12+\n" +
-	"\x05event\x18\x01 \x01(\v2\x15.process.ProcessEventR\x05event2C\n" +
-	"\aProcess\x128\n" +
+	"\x05event\x18\x01 \x01(\v2\x15.process.ProcessEventR\x05event\">\n" +
+	"\x0fConnectResponse\x12+\n" +
+	"\x05event\x18\x01 \x01(\v2\x15.process.ProcessEventR\x05event\"D\n" +
+	"\x0eConnectRequest\x122\n" +
+	"\aprocess\x18\x01 \x01(\v2\x18.process.ProcessSelectorR\aprocess\"E\n" +
+	"\x0fProcessSelector\x12\x12\n" +
+	"\x03pid\x18\x01 \x01(\rH\x00R\x03pid\x12\x12\n" +
+	"\x03tag\x18\x02 \x01(\tH\x00R\x03tagB\n" +
+	"\n" +
+	"\bselector2\x83\x01\n" +
+	"\aProcess\x12>\n" +
+	"\aConnect\x12\x17.process.ConnectRequest\x1a\x18.process.ConnectResponse0\x01\x128\n" +
 	"\x05Start\x12\x15.process.StartRequest\x1a\x16.process.StartResponse0\x01B=Z;github.com/infercrane/brezel/internal/backend/e2b/wire;wireb\x06proto3"
 
 var (
@@ -604,33 +794,40 @@ func file_internal_backend_e2b_wire_process_proto_rawDescGZIP() []byte {
 	return file_internal_backend_e2b_wire_process_proto_rawDescData
 }
 
-var file_internal_backend_e2b_wire_process_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_internal_backend_e2b_wire_process_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_internal_backend_e2b_wire_process_proto_goTypes = []any{
 	(*ProcessConfig)(nil),           // 0: process.ProcessConfig
 	(*StartRequest)(nil),            // 1: process.StartRequest
 	(*ProcessEvent)(nil),            // 2: process.ProcessEvent
 	(*StartResponse)(nil),           // 3: process.StartResponse
-	nil,                             // 4: process.ProcessConfig.EnvsEntry
-	(*ProcessEvent_StartEvent)(nil), // 5: process.ProcessEvent.StartEvent
-	(*ProcessEvent_DataEvent)(nil),  // 6: process.ProcessEvent.DataEvent
-	(*ProcessEvent_EndEvent)(nil),   // 7: process.ProcessEvent.EndEvent
-	(*ProcessEvent_KeepAlive)(nil),  // 8: process.ProcessEvent.KeepAlive
+	(*ConnectResponse)(nil),         // 4: process.ConnectResponse
+	(*ConnectRequest)(nil),          // 5: process.ConnectRequest
+	(*ProcessSelector)(nil),         // 6: process.ProcessSelector
+	nil,                             // 7: process.ProcessConfig.EnvsEntry
+	(*ProcessEvent_StartEvent)(nil), // 8: process.ProcessEvent.StartEvent
+	(*ProcessEvent_DataEvent)(nil),  // 9: process.ProcessEvent.DataEvent
+	(*ProcessEvent_EndEvent)(nil),   // 10: process.ProcessEvent.EndEvent
+	(*ProcessEvent_KeepAlive)(nil),  // 11: process.ProcessEvent.KeepAlive
 }
 var file_internal_backend_e2b_wire_process_proto_depIdxs = []int32{
-	4, // 0: process.ProcessConfig.envs:type_name -> process.ProcessConfig.EnvsEntry
-	0, // 1: process.StartRequest.process:type_name -> process.ProcessConfig
-	5, // 2: process.ProcessEvent.start:type_name -> process.ProcessEvent.StartEvent
-	6, // 3: process.ProcessEvent.data:type_name -> process.ProcessEvent.DataEvent
-	7, // 4: process.ProcessEvent.end:type_name -> process.ProcessEvent.EndEvent
-	8, // 5: process.ProcessEvent.keepalive:type_name -> process.ProcessEvent.KeepAlive
-	2, // 6: process.StartResponse.event:type_name -> process.ProcessEvent
-	1, // 7: process.Process.Start:input_type -> process.StartRequest
-	3, // 8: process.Process.Start:output_type -> process.StartResponse
-	8, // [8:9] is the sub-list for method output_type
-	7, // [7:8] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	7,  // 0: process.ProcessConfig.envs:type_name -> process.ProcessConfig.EnvsEntry
+	0,  // 1: process.StartRequest.process:type_name -> process.ProcessConfig
+	8,  // 2: process.ProcessEvent.start:type_name -> process.ProcessEvent.StartEvent
+	9,  // 3: process.ProcessEvent.data:type_name -> process.ProcessEvent.DataEvent
+	10, // 4: process.ProcessEvent.end:type_name -> process.ProcessEvent.EndEvent
+	11, // 5: process.ProcessEvent.keepalive:type_name -> process.ProcessEvent.KeepAlive
+	2,  // 6: process.StartResponse.event:type_name -> process.ProcessEvent
+	2,  // 7: process.ConnectResponse.event:type_name -> process.ProcessEvent
+	6,  // 8: process.ConnectRequest.process:type_name -> process.ProcessSelector
+	5,  // 9: process.Process.Connect:input_type -> process.ConnectRequest
+	1,  // 10: process.Process.Start:input_type -> process.StartRequest
+	4,  // 11: process.Process.Connect:output_type -> process.ConnectResponse
+	3,  // 12: process.Process.Start:output_type -> process.StartResponse
+	11, // [11:13] is the sub-list for method output_type
+	9,  // [9:11] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_internal_backend_e2b_wire_process_proto_init() }
@@ -647,18 +844,22 @@ func file_internal_backend_e2b_wire_process_proto_init() {
 		(*ProcessEvent_Keepalive)(nil),
 	}
 	file_internal_backend_e2b_wire_process_proto_msgTypes[6].OneofWrappers = []any{
+		(*ProcessSelector_Pid)(nil),
+		(*ProcessSelector_Tag)(nil),
+	}
+	file_internal_backend_e2b_wire_process_proto_msgTypes[9].OneofWrappers = []any{
 		(*ProcessEvent_DataEvent_Stdout)(nil),
 		(*ProcessEvent_DataEvent_Stderr)(nil),
 		(*ProcessEvent_DataEvent_Pty)(nil),
 	}
-	file_internal_backend_e2b_wire_process_proto_msgTypes[7].OneofWrappers = []any{}
+	file_internal_backend_e2b_wire_process_proto_msgTypes[10].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_backend_e2b_wire_process_proto_rawDesc), len(file_internal_backend_e2b_wire_process_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

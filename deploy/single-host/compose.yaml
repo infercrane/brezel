@@ -26,7 +26,10 @@ services:
       BREZEL_NODE_LEDGER_FILE: /var/lib/brezel/node/routes.json
       BREZEL_ENGINE_API_URL: http://127.0.0.1:3000
       BREZEL_ENGINE_TOKEN_FILE: /run/brezel-secrets/engine.token
-      BREZEL_GUEST_URL_TEMPLATE: http://127.0.0.1:3002
+      # The node is co-located with the microVM engine. Route directly through
+      # the node-local orchestrator proxy instead of adding the public SDK
+      # client-proxy hop to every command, file, and preview stream.
+      BREZEL_GUEST_URL_TEMPLATE: http://127.0.0.1:5007
       BREZEL_DURABLE_WORKSPACES: "true"
       BREZEL_NODE_MAX_IN_FLIGHT: ${BREZEL_NODE_MAX_IN_FLIGHT:-128}
     volumes:
@@ -47,7 +50,7 @@ services:
     environment:
       BREZEL_ENGINE_API_URL: http://127.0.0.1:3000
       BREZEL_ENGINE_TOKEN_FILE: /run/brezel-secrets/engine.token
-      BREZEL_GUEST_URL_TEMPLATE: http://127.0.0.1:3002
+      BREZEL_GUEST_URL_TEMPLATE: http://127.0.0.1:5007
       BREZEL_DURABLE_WORKSPACES: "true"
       BREZEL_LISTEN_ADDR: 127.0.0.1:8080
       BREZEL_DATA_DB: /var/lib/brezel/brezel.db

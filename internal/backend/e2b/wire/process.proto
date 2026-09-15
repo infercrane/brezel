@@ -7,6 +7,7 @@ package process;
 option go_package = "github.com/infercrane/brezel/internal/backend/e2b/wire;wire";
 
 service Process {
+  rpc Connect(ConnectRequest) returns (stream ConnectResponse);
   rpc Start(StartRequest) returns (stream StartResponse);
 }
 
@@ -19,6 +20,7 @@ message ProcessConfig {
 
 message StartRequest {
   ProcessConfig process = 1;
+  optional string tag = 3;
   optional bool stdin = 4;
 }
 
@@ -54,4 +56,19 @@ message ProcessEvent {
 
 message StartResponse {
   ProcessEvent event = 1;
+}
+
+message ConnectResponse {
+  ProcessEvent event = 1;
+}
+
+message ConnectRequest {
+  ProcessSelector process = 1;
+}
+
+message ProcessSelector {
+  oneof selector {
+    uint32 pid = 1;
+    string tag = 2;
+  }
 }

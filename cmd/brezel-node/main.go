@@ -253,7 +253,7 @@ func loadNodeConfig() (nodeConfig, error) {
 	if err != nil {
 		return config, err
 	}
-	config.guestURLTemplate = env("BREZEL_GUEST_URL_TEMPLATE", "http://127.0.0.1:3002")
+	config.guestURLTemplate = env("BREZEL_GUEST_URL_TEMPLATE", "http://127.0.0.1:5007")
 	config.replayCapacity, err = positiveIntEnv("BREZEL_NODE_REPLAY_CAPACITY", 65_536)
 	if err != nil {
 		return config, err

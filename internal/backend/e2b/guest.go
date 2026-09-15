@@ -2,6 +2,8 @@ package e2b
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +24,8 @@ import (
 const envdPort = 49983
 
 var safeSandboxID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{0,127}$`)
+
+var errGuestProcessOutputIncomplete = errors.New("guest process output continuity was lost")
 
 type guestConnection struct {
 	baseURL      *url.URL
@@ -55,9 +59,14 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 		return err
 	}
 	client := wireconnect.NewProcessClient(c.guestHTTPClient, connection.baseURL.String())
+	executionTag, err := guestExecutionTag()
+	if err != nil {
+		return err
+	}
 	stdin := false
 	request := connect.NewRequest(&wire.StartRequest{
 		Process: &wire.ProcessConfig{Cmd: in.Argv[0], Args: in.Argv[1:], Envs: in.Env, Cwd: optionalString(in.Cwd)},
+		Tag:     &executionTag,
 		Stdin:   &stdin,
 	})
 	connection.setHeaders(request.Header())
@@ -74,6 +83,7 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 	}()
 
 	ended := false
+	var processPID uint32
 	firstEventStarted := time.Now()
 	firstEventObserved := false
 	defer func() {
@@ -96,7 +106,11 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 		var output backend.CommandEvent
 		switch {
 		case event.GetStart() != nil:
-			output = backend.CommandEvent{Type: backend.CommandStarted, PID: event.GetStart().GetPid()}
+			processPID = event.GetStart().GetPid()
+			if processPID == 0 {
+				return errors.New("guest process returned an invalid pid")
+			}
+			output = backend.CommandEvent{Type: backend.CommandStarted, PID: processPID}
 		case event.GetData() != nil:
 			data := event.GetData()
 			switch {
@@ -120,13 +134,83 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 			return err
 		}
 	}
-	if err := stream.Err(); err != nil {
-		return fmt.Errorf("guest process stream: %w", err)
+	streamErr := stream.Err()
+	if streamErr == nil && !ended {
+		streamErr = errors.New("guest process stream closed without an exit event")
 	}
-	if !ended {
-		return errors.New("guest process stream closed without an exit event")
+	if streamErr != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("guest process stream: %w", streamErr)
+		}
+		// Start deliberately detaches the guest process from the request
+		// context. Once its PID has been observed, replaying Start could execute
+		// a side effect twice. Connect to that exact PID instead and wait for its
+		// terminal event so lifecycle cleanup does not race a still-running
+		// process. Envd does not replay stdout/stderr, therefore this path can
+		// recover terminal state but must still reject the command result as
+		// output-incomplete.
+		selector := &wire.ProcessSelector{Selector: &wire.ProcessSelector_Tag{Tag: executionTag}}
+		identity := executionTag
+		if processPID != 0 {
+			selector.Selector = &wire.ProcessSelector_Pid{Pid: processPID}
+			identity = fmt.Sprint(processPID)
+		}
+		if recoverErr := c.awaitGuestProcessTerminal(ctx, client, connection, selector, processPID); recoverErr != nil {
+			return errors.Join(fmt.Errorf("guest process stream: %w", streamErr), fmt.Errorf("recover guest process %s: %w", identity, recoverErr))
+		}
+		return errors.Join(errGuestProcessOutputIncomplete, fmt.Errorf("guest process stream: %w", streamErr))
 	}
 	return nil
+}
+
+func (c *Client) awaitGuestProcessTerminal(ctx context.Context, client wireconnect.ProcessClient, connection guestConnection, selector *wire.ProcessSelector, expectedPID uint32) error {
+	request := connect.NewRequest(&wire.ConnectRequest{Process: selector})
+	connection.setHeaders(request.Header())
+	stream, err := client.Connect(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	started := false
+	ended := false
+	for stream.Receive() {
+		message := stream.Msg()
+		if message == nil || message.GetEvent() == nil {
+			return errors.New("guest process reconnect returned an empty event")
+		}
+		event := message.GetEvent()
+		switch {
+		case event.GetStart() != nil:
+			pid := event.GetStart().GetPid()
+			if pid == 0 {
+				return errors.New("guest process reconnect returned an invalid pid")
+			}
+			if expectedPID != 0 && pid != expectedPID {
+				return fmt.Errorf("guest process reconnect returned pid %d, want %d", pid, expectedPID)
+			}
+			started = true
+		case event.GetEnd() != nil:
+			if !started {
+				return errors.New("guest process reconnect returned an exit before start")
+			}
+			ended = true
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return err
+	}
+	if !started || !ended {
+		return errors.New("guest process reconnect closed without a complete terminal state")
+	}
+	return nil
+}
+
+func guestExecutionTag() (string, error) {
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return "", fmt.Errorf("create guest execution identity: %w", err)
+	}
+	return "brezel-" + hex.EncodeToString(entropy[:]), nil
 }
 
 func optionalString(value string) *string {

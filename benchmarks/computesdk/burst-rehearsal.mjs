@@ -17,7 +17,7 @@ function percentile(values, fraction) {
   return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
 }
 
-async function oneBurst(compute, concurrency, repetition) {
+async function oneBurst(compute, concurrency, repetition, command) {
   const attempts = Array.from({ length: concurrency }, (_, index) => ({ repetition, index, cleanup: "not-started" }));
   const handles = new Map();
   const wallStarted = performance.now();
@@ -27,7 +27,7 @@ async function oneBurst(compute, concurrency, repetition) {
     try {
       const sandbox = await compute.sandbox.create();
       handles.set(attempt.index, sandbox);
-      const result = await sandbox.runCommand("node -v", { timeout: 30_000 });
+      const result = await sandbox.runCommand(command, { timeout: 30_000 });
       attempt.ttiMs = performance.now() - started;
       attempt.exitCode = result.exitCode;
       attempt.version = result.stdout.trim();
@@ -98,6 +98,16 @@ async function run() {
   const runStartedAt = new Date().toISOString();
   const concurrency = boundedInteger("BREZEL_COMPUTESDK_BURST_CONCURRENCY", 100, 100, 1000);
   const repetitions = boundedInteger("BREZEL_COMPUTESDK_BURST_REPETITIONS", 3, 3, 20);
+  const diagnostic = process.env.BREZEL_COMPUTESDK_BURST_DIAGNOSTIC === "1";
+  const diagnosticCommand = process.env.BREZEL_COMPUTESDK_BURST_DIAGNOSTIC_COMMAND;
+  if (diagnosticCommand !== undefined && !diagnostic) {
+    throw new Error("BREZEL_COMPUTESDK_BURST_DIAGNOSTIC=1 is required to override the qualified command");
+  }
+  if (diagnosticCommand !== undefined &&
+      (diagnosticCommand.trim() === "" || Buffer.byteLength(diagnosticCommand) > 4096 || /[\0\r\n]/.test(diagnosticCommand))) {
+    throw new Error("BREZEL_COMPUTESDK_BURST_DIAGNOSTIC_COMMAND must be one non-empty line of at most 4096 bytes");
+  }
+  const command = diagnosticCommand ?? "node -v";
   const compute = createBrezelComputeFromEnv();
   const sourceRevision = process.env.BREZEL_SOURCE_REVISION ?? "";
   if (!/^[0-9a-f]{40}$/.test(sourceRevision)) throw new Error("BREZEL_SOURCE_REVISION must be the exact 40-character Brezel git revision");
@@ -109,7 +119,7 @@ async function run() {
   if ((await compute.sandbox.list()).length !== 0) throw new Error("burst shape preflight cleanup was not confirmed");
   const runs = [];
   for (let repetition = 1; repetition <= repetitions; repetition += 1) {
-    runs.push(await oneBurst(compute, concurrency, repetition));
+    runs.push(await oneBurst(compute, concurrency, repetition, command));
     if ((await compute.sandbox.list()).length !== 0) break;
   }
   const attempts = runs.flatMap((entry) => entry.attempts);
@@ -118,8 +128,9 @@ async function run() {
   const cleanupConformant = after.length === 0 && attempts.every((attempt) => attempt.cleanup === "confirmed");
   const report = {
     schemaVersion: 1,
-    suite: "computesdk-burst-tti-rehearsal",
-    command: "node -v",
+    suite: diagnostic ? "computesdk-burst-diagnostic" : "computesdk-burst-tti-rehearsal",
+    qualifiedWorkload: !diagnostic,
+    command,
     startedAt: runStartedAt,
     finishedAt: new Date().toISOString(),
     provenance: {

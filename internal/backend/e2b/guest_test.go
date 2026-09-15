@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,10 +23,61 @@ import (
 )
 
 type testProcessService struct {
+	wireconnect.UnimplementedProcessHandler
+
 	t             *testing.T
 	omitExit      bool
 	seen          backend.CommandRequest
 	requiredToken string
+}
+
+type reconnectingProcessService struct {
+	wireconnect.UnimplementedProcessHandler
+
+	t             *testing.T
+	reconnectPID  uint32
+	mismatchedPID uint32
+	reconnectTag  string
+	omitStart     bool
+	startCalls    int
+	connectCalls  int
+}
+
+func (s *reconnectingProcessService) Start(_ context.Context, request *connect.Request[wire.StartRequest], stream *connect.ServerStream[wire.StartResponse]) error {
+	s.startCalls++
+	s.reconnectTag = request.Msg.GetTag()
+	if s.reconnectTag == "" {
+		s.t.Fatal("start request omitted the unique execution tag")
+	}
+	if !s.omitStart {
+		if err := stream.Send(&wire.StartResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Start{Start: &wire.ProcessEvent_StartEvent{Pid: s.reconnectPID}}}}); err != nil {
+			return err
+		}
+	}
+	return connect.NewError(connect.CodeUnavailable, errors.New("injected stream cancellation"))
+}
+
+func (s *reconnectingProcessService) Connect(_ context.Context, request *connect.Request[wire.ConnectRequest], stream *connect.ServerStream[wire.ConnectResponse]) error {
+	s.connectCalls++
+	selector := request.Msg.GetProcess()
+	if s.omitStart {
+		if selector.GetTag() != s.reconnectTag {
+			s.t.Fatalf("reconnect tag = %q, want %q", selector.GetTag(), s.reconnectTag)
+		}
+	} else if selector.GetPid() != s.reconnectPID {
+		s.t.Fatalf("reconnect pid = %d, want %d", selector.GetPid(), s.reconnectPID)
+	}
+	pid := s.reconnectPID
+	if s.mismatchedPID != 0 {
+		pid = s.mismatchedPID
+	}
+	if err := stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Start{Start: &wire.ProcessEvent_StartEvent{Pid: pid}}}}); err != nil {
+		return err
+	}
+	if err := stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Data{Data: &wire.ProcessEvent_DataEvent{Output: &wire.ProcessEvent_DataEvent_Stdout{Stdout: []byte("not safe to replay")}}}}}); err != nil {
+		return err
+	}
+	return stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_End{End: &wire.ProcessEvent_EndEvent{Exited: true, ExitCode: 0, Status: "exited"}}}})
 }
 
 func (s *testProcessService) Start(_ context.Context, request *connect.Request[wire.StartRequest], stream *connect.ServerStream[wire.StartResponse]) error {
@@ -131,6 +183,71 @@ func TestGuestRunRejectsStreamWithoutExit(t *testing.T) {
 	err := client.Run(context.Background(), "upstream-1", backend.CommandRequest{Argv: []string{"true"}}, func(backend.CommandEvent) error { return nil })
 	if err == nil {
 		t.Fatal("stream without exit event was accepted")
+	}
+}
+
+func TestGuestRunReconnectsByPIDWithoutReplayingCommand(t *testing.T) {
+	processService := &reconnectingProcessService{t: t, reconnectPID: 73}
+	_, handler := wireconnect.NewProcessHandler(processService)
+	guest := httptest.NewServer(handler)
+	defer guest.Close()
+	api := sandboxDetailServer(t, `{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-secret"}`)
+	defer api.Close()
+	client, _ := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL))
+	var events []backend.CommandEvent
+	err := client.Run(context.Background(), "upstream-1", backend.CommandRequest{Argv: []string{"side-effect-once"}}, func(event backend.CommandEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if !errors.Is(err, errGuestProcessOutputIncomplete) {
+		t.Fatalf("Run() error = %v, want output-incomplete", err)
+	}
+	if processService.startCalls != 1 || processService.connectCalls != 1 {
+		t.Fatalf("calls: start=%d connect=%d, want 1 each", processService.startCalls, processService.connectCalls)
+	}
+	if len(events) != 1 || events[0].Type != backend.CommandStarted || events[0].PID != 73 {
+		t.Fatalf("reconnected data escaped as trusted command output: %#v", events)
+	}
+}
+
+func TestGuestRunRejectsMismatchedReconnectPID(t *testing.T) {
+	processService := &reconnectingProcessService{t: t, reconnectPID: 73, mismatchedPID: 74}
+	_, handler := wireconnect.NewProcessHandler(processService)
+	guest := httptest.NewServer(handler)
+	defer guest.Close()
+	api := sandboxDetailServer(t, `{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-secret"}`)
+	defer api.Close()
+	client, _ := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL))
+	err := client.Run(context.Background(), "upstream-1", backend.CommandRequest{Argv: []string{"side-effect-once"}}, func(backend.CommandEvent) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "returned pid 74, want 73") {
+		t.Fatalf("Run() error = %v, want mismatched reconnect pid", err)
+	}
+	if processService.startCalls != 1 || processService.connectCalls != 1 {
+		t.Fatalf("calls: start=%d connect=%d, want 1 each", processService.startCalls, processService.connectCalls)
+	}
+}
+
+func TestGuestRunRecoversTerminalStateByTagWhenStartEventIsLost(t *testing.T) {
+	processService := &reconnectingProcessService{t: t, reconnectPID: 73, omitStart: true}
+	_, handler := wireconnect.NewProcessHandler(processService)
+	guest := httptest.NewServer(handler)
+	defer guest.Close()
+	api := sandboxDetailServer(t, `{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-secret"}`)
+	defer api.Close()
+	client, _ := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL))
+	var events []backend.CommandEvent
+	err := client.Run(context.Background(), "upstream-1", backend.CommandRequest{Argv: []string{"side-effect-once"}}, func(event backend.CommandEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if !errors.Is(err, errGuestProcessOutputIncomplete) {
+		t.Fatalf("Run() error = %v, want output-incomplete", err)
+	}
+	if processService.startCalls != 1 || processService.connectCalls != 1 {
+		t.Fatalf("calls: start=%d connect=%d, want 1 each", processService.startCalls, processService.connectCalls)
+	}
+	if len(events) != 0 {
+		t.Fatalf("reconnected events escaped as trusted command output: %#v", events)
 	}
 }
 

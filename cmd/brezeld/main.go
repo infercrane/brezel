@@ -94,7 +94,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load microVM engine token: %w", err)
 	}
-	guestURL := env("BREZEL_GUEST_URL_TEMPLATE", "http://127.0.0.1:3002")
+	guestURL := env("BREZEL_GUEST_URL_TEMPLATE", "http://127.0.0.1:5007")
 	durableWorkspaces, err := parseBoolEnv("BREZEL_DURABLE_WORKSPACES", false)
 	if err != nil {
 		return err

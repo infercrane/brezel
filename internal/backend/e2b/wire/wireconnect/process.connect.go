@@ -36,12 +36,15 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// ProcessConnectProcedure is the fully-qualified name of the Process's Connect RPC.
+	ProcessConnectProcedure = "/process.Process/Connect"
 	// ProcessStartProcedure is the fully-qualified name of the Process's Start RPC.
 	ProcessStartProcedure = "/process.Process/Start"
 )
 
 // ProcessClient is a client for the process.Process service.
 type ProcessClient interface {
+	Connect(context.Context, *connect.Request[wire.ConnectRequest]) (*connect.ServerStreamForClient[wire.ConnectResponse], error)
 	Start(context.Context, *connect.Request[wire.StartRequest]) (*connect.ServerStreamForClient[wire.StartResponse], error)
 }
 
@@ -56,6 +59,12 @@ func NewProcessClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 	baseURL = strings.TrimRight(baseURL, "/")
 	processMethods := wire.File_internal_backend_e2b_wire_process_proto.Services().ByName("Process").Methods()
 	return &processClient{
+		connect: connect.NewClient[wire.ConnectRequest, wire.ConnectResponse](
+			httpClient,
+			baseURL+ProcessConnectProcedure,
+			connect.WithSchema(processMethods.ByName("Connect")),
+			connect.WithClientOptions(opts...),
+		),
 		start: connect.NewClient[wire.StartRequest, wire.StartResponse](
 			httpClient,
 			baseURL+ProcessStartProcedure,
@@ -67,7 +76,13 @@ func NewProcessClient(httpClient connect.HTTPClient, baseURL string, opts ...con
 
 // processClient implements ProcessClient.
 type processClient struct {
-	start *connect.Client[wire.StartRequest, wire.StartResponse]
+	connect *connect.Client[wire.ConnectRequest, wire.ConnectResponse]
+	start   *connect.Client[wire.StartRequest, wire.StartResponse]
+}
+
+// Connect calls process.Process.Connect.
+func (c *processClient) Connect(ctx context.Context, req *connect.Request[wire.ConnectRequest]) (*connect.ServerStreamForClient[wire.ConnectResponse], error) {
+	return c.connect.CallServerStream(ctx, req)
 }
 
 // Start calls process.Process.Start.
@@ -77,6 +92,7 @@ func (c *processClient) Start(ctx context.Context, req *connect.Request[wire.Sta
 
 // ProcessHandler is an implementation of the process.Process service.
 type ProcessHandler interface {
+	Connect(context.Context, *connect.Request[wire.ConnectRequest], *connect.ServerStream[wire.ConnectResponse]) error
 	Start(context.Context, *connect.Request[wire.StartRequest], *connect.ServerStream[wire.StartResponse]) error
 }
 
@@ -87,6 +103,12 @@ type ProcessHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewProcessHandler(svc ProcessHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	processMethods := wire.File_internal_backend_e2b_wire_process_proto.Services().ByName("Process").Methods()
+	processConnectHandler := connect.NewServerStreamHandler(
+		ProcessConnectProcedure,
+		svc.Connect,
+		connect.WithSchema(processMethods.ByName("Connect")),
+		connect.WithHandlerOptions(opts...),
+	)
 	processStartHandler := connect.NewServerStreamHandler(
 		ProcessStartProcedure,
 		svc.Start,
@@ -95,6 +117,8 @@ func NewProcessHandler(svc ProcessHandler, opts ...connect.HandlerOption) (strin
 	)
 	return "/process.Process/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case ProcessConnectProcedure:
+			processConnectHandler.ServeHTTP(w, r)
 		case ProcessStartProcedure:
 			processStartHandler.ServeHTTP(w, r)
 		default:
@@ -105,6 +129,10 @@ func NewProcessHandler(svc ProcessHandler, opts ...connect.HandlerOption) (strin
 
 // UnimplementedProcessHandler returns CodeUnimplemented from all methods.
 type UnimplementedProcessHandler struct{}
+
+func (UnimplementedProcessHandler) Connect(context.Context, *connect.Request[wire.ConnectRequest], *connect.ServerStream[wire.ConnectResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("process.Process.Connect is not implemented"))
+}
 
 func (UnimplementedProcessHandler) Start(context.Context, *connect.Request[wire.StartRequest], *connect.ServerStream[wire.StartResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("process.Process.Start is not implemented"))
