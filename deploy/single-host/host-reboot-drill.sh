@@ -321,6 +321,10 @@ write_report() {
   fi
   chmod 600 "$temporary"
   mv "$temporary" "$REPORT_PATH"
+  # The report is part of the qualification ledger. Make its rename durable
+  # before returning success so an immediate second host reset cannot erase
+  # the result that justified cleanup.
+  sync -f "$REPORT_PATH"
 }
 
 report_failure() {
@@ -409,6 +413,10 @@ prepare() {
     > "$temporary"
   chmod 600 "$temporary"
   mv "$temporary" "$PENDING_FILE"
+  # `prepare` is an acknowledged write boundary too. Persist both file data
+  # and the containing-directory rename before telling the operator it is
+  # safe to cut power.
+  sync -f "$PENDING_FILE"
   trap - EXIT HUP INT TERM
   echo "Host-reboot drill prepared with reset method: $DECLARED_RESET_METHOD"
   echo "Apply that host reset, wait for SSH, then run:"
@@ -583,6 +591,7 @@ verify() {
 
   write_report passed host_reboot_workspace_recovery_conformant "" ""
   rm -f "$PENDING_FILE"
+  sync -f "$INSTALL_DIR/qualification"
   echo "Host-reboot workspace recovery report: $REPORT_PATH"
 }
 
