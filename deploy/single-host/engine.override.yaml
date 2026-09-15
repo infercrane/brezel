@@ -50,6 +50,9 @@ services:
     image: ${E2B_TOOLS_IMAGE:?set E2B_TOOLS_IMAGE from engine.images.lock}
     pull_policy: never
     restart: "no"
+    depends_on:
+      fetch-artifacts:
+        condition: service_completed_successfully
     network_mode: none
     read_only: true
     cap_drop:

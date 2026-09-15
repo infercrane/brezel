@@ -339,6 +339,7 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		"BREZEL_VM_OVERCOMMIT_MEMORY", "BREZEL_HOST_TUNING_SCRIPT",
 		"brezel-orchestrator-install", "BREZEL_ENGINE_ORCHESTRATOR_BINARY",
 		"BREZEL_ENGINE_ORCHESTRATOR_SHA256",
+		"fetch-artifacts:\n        condition: service_completed_successfully",
 	} {
 		if !strings.Contains(override, required) {
 			t.Fatalf("engine override is missing locked distribution setting %q", required)
