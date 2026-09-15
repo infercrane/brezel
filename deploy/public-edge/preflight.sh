@@ -6,6 +6,14 @@ fail() {
   exit 1
 }
 
+BREZEL_EDGE_UID=${BREZEL_EDGE_UID:-$(id -u)}
+BREZEL_EDGE_GID=${BREZEL_EDGE_GID:-$(id -g)}
+export BREZEL_EDGE_UID BREZEL_EDGE_GID
+[ "$BREZEL_EDGE_UID" -eq "$(id -u)" ] 2>/dev/null || \
+  fail "BREZEL_EDGE_UID must match the protected directory owner"
+[ "$BREZEL_EDGE_GID" -eq "$(id -g)" ] 2>/dev/null || \
+  fail "BREZEL_EDGE_GID must match the protected directory owner group"
+
 case ${BREZEL_PUBLIC_HOST:-} in
   ""|*[!A-Za-z0-9.-]*|.*|*.) fail "BREZEL_PUBLIC_HOST must be a DNS hostname" ;;
 esac

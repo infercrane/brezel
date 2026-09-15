@@ -5,6 +5,10 @@ services:
     image: caddy:2.10.2-alpine@sha256:d8c17a862962def15cde69863a3a463f25a2664942eafd7bdbf050e9c3116b83
     pull_policy: always
     restart: unless-stopped
+    # Run as the owner of the protected certificate directories. Keeping all
+    # capabilities except low-port binding dropped means the container cannot
+    # use root DAC bypass to hide a bad host permission contract.
+    user: "${BREZEL_EDGE_UID:?set the protected edge directory owner uid}:${BREZEL_EDGE_GID:?set the protected edge directory owner gid}"
     cpus: 1.0
     mem_limit: 256m
     pids_limit: 128

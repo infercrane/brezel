@@ -64,7 +64,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 }
 
 func TestDeploymentScriptsParse(t *testing.T) {
-	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "engine-capacity-contract.sh", "engine-auth-cache-contract.sh", "artifact-supply-chain.sh", "runtime-attestation.sh", "benchmark.sh", "host-tuning.sh", "../profiles/run.sh", "../public-edge/preflight.sh"} {
+	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "engine-capacity-contract.sh", "engine-auth-cache-contract.sh", "artifact-supply-chain.sh", "runtime-attestation.sh", "benchmark.sh", "host-tuning.sh", "../profiles/run.sh", "../public-edge/preflight.sh", "../public-edge/up.sh"} {
 		command := exec.Command("sh", "-n", script)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("sh -n %s: %v: %s", script, err, output)
@@ -260,6 +260,9 @@ func TestPublicEdgeIsNarrowAndDoesNotLogCapabilityURLs(t *testing.T) {
 			t.Fatalf("public edge container contract omitted %q", required)
 		}
 	}
+	if !strings.Contains(string(compose), `user: "${BREZEL_EDGE_UID:`) || !strings.Contains(string(compose), `${BREZEL_EDGE_GID:`) {
+		t.Fatal("public edge does not run as the protected directory owner")
+	}
 
 	preflight, err := os.ReadFile(filepath.Join("..", "public-edge", "preflight.sh"))
 	if err != nil {
@@ -268,7 +271,7 @@ func TestPublicEdgeIsNarrowAndDoesNotLogCapabilityURLs(t *testing.T) {
 	if strings.Contains(string(preflight), "eval ") {
 		t.Fatal("public edge preflight executes a directory variable through eval")
 	}
-	for _, required := range []string{"existing non-symlink directory", "group- or world-writable", "caddy validate"} {
+	for _, required := range []string{"existing non-symlink directory", "group- or world-writable", "caddy validate", "BREZEL_EDGE_UID", "BREZEL_EDGE_GID"} {
 		if !strings.Contains(string(preflight), required) {
 			t.Fatalf("public edge preflight omitted %q", required)
 		}
