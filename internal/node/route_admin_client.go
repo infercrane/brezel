@@ -42,6 +42,23 @@ type RouteAdminClient struct {
 	expectedNodeID string
 }
 
+// Ready verifies the exact node control listener and its generation ledger.
+// A healthy data relay is insufficient because lifecycle changes cannot be
+// fenced safely while this endpoint is unavailable.
+func (c *RouteAdminClient) Ready(ctx context.Context) error {
+	var result struct {
+		Status string `json:"status"`
+		NodeID string `json:"node_id"`
+	}
+	if err := c.call(ctx, http.MethodGet, routeAdminReadyPath, nil, &result); err != nil {
+		return err
+	}
+	if result.Status != "ready" || result.NodeID != c.expectedNodeID {
+		return errors.New("node route admin readiness response did not match the expected node")
+	}
+	return nil
+}
+
 // Resolve returns the current public route assignment from the exact node.
 // It is used only for reconciliation; private engine identity remains local.
 func (c *RouteAdminClient) Resolve(ctx context.Context, routeID string) (RouteAdminResult, error) {

@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	routeAdminReadyPath        = "/readyz"
 	routeAdminPrefix           = "/internal/v1/routes/"
 	routeAdminMaxRequestBytes  = 8 << 10
 	routeAdminMaxResponseBytes = 64 << 10

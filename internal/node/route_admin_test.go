@@ -190,6 +190,41 @@ func TestRouteAdminLifecycleAndRetrySemantics(t *testing.T) {
 	}
 }
 
+func TestRouteAdminReadinessRequiresControlListenerAndLedger(t *testing.T) {
+	harness := newRouteAdminHarness(t)
+	if err := harness.client.Ready(context.Background()); err != nil {
+		t.Fatalf("healthy control listener was not ready: %v", err)
+	}
+
+	response := routeAdminRawRequest(harness.handler, http.MethodGet, routeAdminReadyPath, "", nil, false)
+	assertRouteAdminErrorResponse(t, response, http.StatusUnauthorized, "mtls_required")
+
+	if err := harness.ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.client.Ready(context.Background()); !routeAdminErrorIs(err, http.StatusServiceUnavailable, "node_unavailable") {
+		t.Fatalf("closed ledger readiness error=%v", err)
+	}
+}
+
+func TestRouteAdminReadinessRejectsWrongNodeResponse(t *testing.T) {
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"status":"ready","node_id":"node-b"}`)),
+			Request:    request,
+		}, nil
+	})
+	client, err := newRouteAdminClient("https://node.test", &http.Client{Transport: transport}, routeAdminTestNode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Ready(context.Background()); err == nil || !strings.Contains(err.Error(), "expected node") {
+		t.Fatalf("wrong-node readiness response error=%v", err)
+	}
+}
+
 func TestRouteAdminResolveReturnsOnlyPublicAssignment(t *testing.T) {
 	harness := newRouteAdminHarness(t)
 	bound, err := harness.client.Bind(context.Background(), RouteBindRequest{

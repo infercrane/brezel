@@ -15,11 +15,14 @@ ENGINE_BUILD_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0002-pin-api-build
 ENGINE_ORCHESTRATOR_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0003-acknowledge-delete-after-sandbox-teardown.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
+ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
 ENGINE_IMAGE_LOCK="$SCRIPT_DIR/engine.images.lock"
 ENGINE_ARTIFACT_LOCK="$SCRIPT_DIR/engine.artifacts.lock"
 ARTIFACT_SUPPLY_CHAIN="$SCRIPT_DIR/artifact-supply-chain.sh"
 BREZEL_HOST_TUNING_SCRIPT="$SCRIPT_DIR/host-tuning.sh"
+BREZEL_ENGINE_CAPACITY_SCRIPT="$ENGINE_CAPACITY_PROBE"
 export BREZEL_HOST_TUNING_SCRIPT
+export BREZEL_ENGINE_CAPACITY_SCRIPT
 
 # Keep these defaults identical to the packaged Compose profile. The capacity
 # probe validates their physical feasibility before downloads or builds.
@@ -284,8 +287,14 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 # Replacing an executable does not affect an already-running process. Stop the
 # old orchestrator explicitly so all subsequent qualification runs exercise
 # the verified Brezel binary and its synchronous teardown contract.
-docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop orchestrator >/dev/null 2>&1 || true
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop ready client-proxy api orchestrator >/dev/null 2>&1 || true
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" up -d --wait
+
+# Re-read the effective engine admission gate after startup. The one-shot
+# service applies the value before API boot; this second pass makes a stale or
+# overridden database row a hard installation failure.
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
+  run --rm --no-deps brezel-engine-capacity /opt/brezel/engine-capacity-contract.sh verify >/dev/null
 
 # The upstream fetcher also verifies these downloads. Verify them again using
 # product-owned lock data rather than trusting checksums embedded only in the

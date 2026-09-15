@@ -39,6 +39,24 @@ services:
   seed:
     pull_policy: never
 
+  brezel-engine-capacity:
+    image: ${BREZEL_ENGINE_POSTGRES_IMAGE:?set BREZEL_ENGINE_POSTGRES_IMAGE from engine.images.lock}
+    pull_policy: never
+    restart: "no"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+      BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL: ${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
+    volumes:
+      - ${BREZEL_ENGINE_CAPACITY_SCRIPT:?set BREZEL_ENGINE_CAPACITY_SCRIPT to the audited engine capacity script}:/opt/brezel/engine-capacity-contract.sh:ro
+    entrypoint: ["/bin/sh"]
+    command: ["/opt/brezel/engine-capacity-contract.sh", "apply"]
+
   preflight:
     pull_policy: never
 
@@ -122,6 +140,9 @@ services:
         source: ${BREZEL_VOLUME_TOKEN_KEY_FILE:?set BREZEL_VOLUME_TOKEN_KEY_FILE to a protected file}
         target: /run/runtime-volume-token/engine-volume-token.key
         read_only: true
+    depends_on:
+      brezel-engine-capacity:
+        condition: service_completed_successfully
 
   client-proxy:
     pull_policy: never

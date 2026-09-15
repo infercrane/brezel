@@ -69,12 +69,15 @@ func TestNodeRouteResolveRejectsCrossSandboxAssignment(t *testing.T) {
 }
 
 type memoryRouteAdmin struct {
-	mu      sync.Mutex
-	nodeID  string
-	route   nodeledger.Route
-	engine  string
-	removed bool
+	mu       sync.Mutex
+	nodeID   string
+	route    nodeledger.Route
+	engine   string
+	removed  bool
+	readyErr error
 }
+
+func (a *memoryRouteAdmin) Ready(context.Context) error { return a.readyErr }
 
 func (a *memoryRouteAdmin) result() node.RouteAdminResult {
 	return node.RouteAdminResult{NodeID: a.nodeID, Route: a.route}

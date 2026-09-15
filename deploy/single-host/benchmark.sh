@@ -18,8 +18,8 @@ CACHE_STATE=${BREZEL_BENCH_CACHE_STATE:-cached-template}
 BACKEND_TEMPLATE=${BREZEL_BENCH_BACKEND_TEMPLATE:-base}
 PROJECT=${BREZEL_BENCH_PROJECT:-brezel-benchmark}
 SEQUENTIAL_RUNS=${BREZEL_BENCH_SEQUENTIAL_RUNS:-100}
-STAGGERED_RUNS=${BREZEL_BENCH_STAGGERED_RUNS:-24}
-BURST_RUNS=${BREZEL_BENCH_BURST_RUNS:-24}
+STAGGERED_RUNS=${BREZEL_BENCH_STAGGERED_RUNS:-16}
+BURST_RUNS=${BREZEL_BENCH_BURST_RUNS:-16}
 STAGGER_INTERVAL=${BREZEL_BENCH_STAGGER_INTERVAL:-200ms}
 ATTEMPT_TIMEOUT=${BREZEL_BENCH_ATTEMPT_TIMEOUT:-2m}
 CLEANUP_TIMEOUT=${BREZEL_BENCH_CLEANUP_TIMEOUT:-2m}
@@ -30,6 +30,11 @@ PREVIEW_PORT=${BREZEL_BENCH_PREVIEW_PORT:-8080}
 BASE_URL=${BREZEL_BENCH_BASE_URL:-http://127.0.0.1:8080}
 BASE_URL=${BASE_URL%/}
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
+ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
+ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
+ENGINE_ENV="$INSTALL_DIR/engine/embed/compose/.env"
+MAX_ACTIVE_SANDBOXES_TOTAL=${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
+MAX_ACTIVE_SANDBOXES_PER_PROJECT=${BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT:-32}
 
 # Compose interpolation is also used while capturing the exact running image.
 # Keep it aligned with the installed single-host service identity even when the
@@ -105,9 +110,21 @@ validate_identity "$BACKEND_TEMPLATE" BREZEL_BENCH_BACKEND_TEMPLATE
 validate_positive_integer "$SEQUENTIAL_RUNS" BREZEL_BENCH_SEQUENTIAL_RUNS
 validate_positive_integer "$STAGGERED_RUNS" BREZEL_BENCH_STAGGERED_RUNS
 validate_positive_integer "$BURST_RUNS" BREZEL_BENCH_BURST_RUNS
+validate_positive_integer "$MAX_ACTIVE_SANDBOXES_TOTAL" BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL
+validate_positive_integer "$MAX_ACTIVE_SANDBOXES_PER_PROJECT" BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT
 validate_positive_integer "$COOLDOWN_SECONDS" BREZEL_BENCH_COOLDOWN_SECONDS
 validate_bounded_integer "$IO_BYTES" BREZEL_BENCH_IO_BYTES 33554432
 validate_bounded_integer "$PREVIEW_PORT" BREZEL_BENCH_PREVIEW_PORT 65535
+
+active_limit=$MAX_ACTIVE_SANDBOXES_TOTAL
+if [ "$MAX_ACTIVE_SANDBOXES_PER_PROJECT" -lt "$active_limit" ]; then
+  active_limit=$MAX_ACTIVE_SANDBOXES_PER_PROJECT
+fi
+for concurrency in "$STAGGERED_RUNS" "$BURST_RUNS"; do
+  restore_peak=$((concurrency * 2))
+  [ "$restore_peak" -le "$active_limit" ] || \
+    fail "filesystem-restore requires $restore_peak active sandboxes at concurrency $concurrency, above the effective limit of $active_limit"
+done
 
 [ "$EVIDENCE_CLASS" = single-host-linux-kvm ] || fail "single-host runner requires BREZEL_BENCH_EVIDENCE_CLASS=single-host-linux-kvm"
 case "$CACHE_STATE" in
@@ -133,6 +150,9 @@ if ! curl --fail --silent --show-error --max-time 5 "$BASE_URL/readyz" >/dev/nul
   fail "runtime API is not ready at $BASE_URL"
 fi
 "$CAPACITY_PROBE" live >/dev/null
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" exec -T \
+  -e "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=$MAX_ACTIVE_SANDBOXES_TOTAL" \
+  postgres sh -s -- verify < "$ENGINE_CAPACITY_PROBE" >/dev/null
 
 started_compact=$(date -u +%Y%m%dT%H%M%SZ)
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)

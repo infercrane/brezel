@@ -101,8 +101,9 @@ counters and fixed-dimension phase histograms remain available. Phase labels
 are closed operation, phase, and outcome enums; tenant, resource, path,
 command, and content dimensions are structurally unavailable. Access logs use
 matched route patterns rather than raw paths. This is a hardened local authority, not the
-PostgreSQL/Redis multi-writer design shown above. `/readyz` verifies both that
-state boundary and the authenticated engine health route.
+PostgreSQL/Redis multi-writer design shown above. `/readyz` verifies that state
+boundary, the authenticated engine and node data paths, and the separate node
+control listener when routed execution is configured.
 
 ### Guest API
 

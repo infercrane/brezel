@@ -59,10 +59,28 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 }
 
 func TestDeploymentScriptsParse(t *testing.T) {
-	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "artifact-supply-chain.sh", "benchmark.sh", "host-tuning.sh"} {
+	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "engine-capacity-contract.sh", "artifact-supply-chain.sh", "benchmark.sh", "host-tuning.sh"} {
 		command := exec.Command("sh", "-n", script)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("sh -n %s: %v: %s", script, err, output)
+		}
+	}
+}
+
+func TestEngineCapacityReconcilerIsRequiredBeforeAPIStartup(t *testing.T) {
+	override, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(override)
+	for _, required := range []string{
+		"brezel-engine-capacity:",
+		"BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:",
+		"BREZEL_ENGINE_CAPACITY_SCRIPT",
+		"condition: service_completed_successfully",
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("engine override is missing capacity invariant %q", required)
 		}
 	}
 }

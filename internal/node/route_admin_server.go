@@ -56,6 +56,10 @@ func (h *routeAdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeRouteAdminError(w, http.StatusUnauthorized, "mtls_required")
 		return
 	}
+	if r.URL.Path == routeAdminReadyPath {
+		h.ready(w, r)
+		return
+	}
 	routeID, action, ok := parseRouteAdminPath(r.URL.Path)
 	if !ok || r.URL.RawQuery != "" {
 		writeRouteAdminError(w, http.StatusNotFound, "route_not_found")
@@ -95,6 +99,23 @@ func (h *routeAdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeRouteAdminError(w, http.StatusNotFound, "route_not_found")
 	}
+}
+
+func (h *routeAdminHandler) ready(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeRouteAdminError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	if r.URL.RawQuery != "" || requestHasBody(r) {
+		writeRouteAdminError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if err := h.ledger.Ready(); err != nil {
+		writeRouteAdminError(w, http.StatusServiceUnavailable, "node_unavailable")
+		return
+	}
+	writeRouteAdminJSON(w, http.StatusOK, map[string]string{"status": "ready", "node_id": h.nodeID})
 }
 
 func (h *routeAdminHandler) resolve(w http.ResponseWriter, routeID string) {

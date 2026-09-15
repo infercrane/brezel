@@ -62,12 +62,15 @@ and censoring records. Until then, use a separate host load tool for sustained
 experiments and retain its offered-load schedule and every failed or censored
 observation.
 
-Defaults are 100 sequential attempts and 24 staggered and burst attempts. The
-concurrent defaults deliberately retain 25 percent headroom under the
-distribution's 64-active-sandbox project limit: `filesystem-restore` can hold
-two sandboxes and one checkpoint per attempt, for 48 active sandboxes at the
-default concurrency. `workspace-io` holds one sandbox and one workspace per
-attempt. The benchmark project must be dedicated and empty before a matrix;
+Defaults are 100 sequential attempts and 16 staggered and burst attempts. The
+concurrent defaults exercise the distribution's complete 32-active-sandbox
+admission boundary: `filesystem-restore` can hold a source and restored
+sandbox per attempt. The installer reconciles the embedded engine's tenant
+gate to that same value, and both qualification and benchmarking verify the
+match before creating a VM. The runner also rejects a concurrency whose
+two-sandbox restore peak exceeds either the host or project limit.
+`workspace-io` holds one sandbox and one workspace
+per attempt. The benchmark project must be dedicated and empty before a matrix;
 operators must lower concurrent runs to fit stricter configured limits. A
 published comparison must use
 identical counts, arrival intervals, image, resources, payload size, preview

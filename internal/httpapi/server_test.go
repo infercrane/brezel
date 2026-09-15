@@ -1376,6 +1376,26 @@ func TestReadinessFailsWhenBackendIsUnavailable(t *testing.T) {
 	}
 }
 
+type readinessRouteAdmin struct {
+	service.NodeRouteAdministrator
+	err error
+}
+
+func (a readinessRouteAdmin) Ready(context.Context) error { return a.err }
+
+func TestReadinessFailsWhenNodeControlListenerIsUnavailable(t *testing.T) {
+	h := newHarnessWithServiceOptions(t, service.WithNodeRouteAdministrator(readinessRouteAdmin{err: errors.New("control listener unavailable")}))
+	defer h.close()
+	response, err := h.server.Client().Get(h.server.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("readiness status = %d", response.StatusCode)
+	}
+}
+
 func TestProjectResourceQuotasFailBeforeBackendMutation(t *testing.T) {
 	h := newHarnessWithServiceOptions(t, service.WithLimits(service.Limits{
 		MaxActiveSandboxesPerProject:    1,

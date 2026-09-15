@@ -29,10 +29,11 @@ GET /v1/receipt-public-key
 GET /v1/operations/{operation_id}
 ```
 
-`/healthz` reports process liveness. `/readyz` also checks private durable state
-and the authenticated engine health path. Metrics contain fixed-dimension,
-content-free process and lifecycle data without project, sandbox, command,
-path, or preview-token labels.
+`/healthz` reports process liveness. `/readyz` also checks private durable state,
+the authenticated engine and node data paths, and the separate node control
+listener when routed execution is configured. Metrics contain fixed-dimension,
+content-free process and lifecycle data without project, sandbox, command, path,
+or preview-token labels.
 
 ## Environments
 
@@ -151,6 +152,7 @@ apply an already-authorized controller decision to the local generation
 ledger:
 
 ```text
+GET  /readyz
 PUT  /internal/v1/routes/{opaque_route_id}
 POST /internal/v1/routes/{opaque_route_id}/attach-ready
 POST /internal/v1/routes/{opaque_route_id}/drain

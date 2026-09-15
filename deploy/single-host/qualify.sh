@@ -10,6 +10,8 @@ ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
 ENGINE_ENV="$INSTALL_DIR/engine/embed/compose/.env"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
+ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
+MAX_ACTIVE_SANDBOXES_TOTAL=${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
 
 if [ ! -s "$TOKEN_FILE" ]; then
   echo "runtime service token is missing; run install.sh first" >&2
@@ -251,9 +253,12 @@ run_engine_fast_path_qualification() {
   fi
   cli exec "$ACTIVE_SANDBOX_ID" /bin/true >/dev/null
   engine_sandbox_id=$(resolve_engine_sandbox_id "$ACTIVE_SANDBOX_ID")
-  min_network_slots=${BREZEL_MIN_READY_NETWORK_SLOTS:-16}
+  min_network_slots=${BREZEL_MIN_READY_NETWORK_SLOTS:-32}
 
   capacity_json=$("$CAPACITY_PROBE" live)
+  engine_capacity_json=$(engine_compose exec -T \
+    -e "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=$MAX_ACTIVE_SANDBOXES_TOTAL" \
+    postgres sh -s -- verify < "$ENGINE_CAPACITY_PROBE")
 
   if ! capability_json=$(engine_compose exec -T orchestrator \
     nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" \
@@ -269,7 +274,7 @@ run_engine_fast_path_qualification() {
   fast_path_duration=$(( $(date +%s%3N) - fast_path_started_ms ))
   report_tmp=$(mktemp "$QUALIFICATION_DIR/.report.XXXXXX")
   printf '%s\n' \
-    "{\"target\":\"$fast_path_target\",\"scope\":\"installed engine snapshot, paging, rootfs, cache, network, and host-capacity fast paths\",\"qualification\":\"engine_fast_path_conformant\",\"started_at\":\"$fast_path_started\",\"finished_at\":\"$fast_path_finished\",\"duration_ms\":$fast_path_duration,\"observed\":{\"engine\":$capability_json,\"capacity\":$capacity_json}}" \
+    "{\"target\":\"$fast_path_target\",\"scope\":\"installed engine snapshot, paging, rootfs, cache, network, and host-capacity fast paths\",\"qualification\":\"engine_fast_path_conformant\",\"started_at\":\"$fast_path_started\",\"finished_at\":\"$fast_path_finished\",\"duration_ms\":$fast_path_duration,\"observed\":{\"engine\":$capability_json,\"capacity\":$capacity_json,\"engine_capacity\":$engine_capacity_json}}" \
     > "$report_tmp"
   chmod 600 "$report_tmp"
   mv -- "$report_tmp" "$QUALIFICATION_DIR/$fast_path_target.json"

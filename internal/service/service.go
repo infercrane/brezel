@@ -76,6 +76,7 @@ type Service struct {
 // NodeRouteAdministrator is the private lifecycle authority for a configured
 // execution node. The public API never receives these requests or results.
 type NodeRouteAdministrator interface {
+	Ready(context.Context) error
 	Resolve(context.Context, string) (node.RouteAdminResult, error)
 	Bind(context.Context, node.RouteBindRequest) (node.RouteAdminResult, error)
 	AttachReady(context.Context, node.RouteTransitionRequest) (node.RouteAdminResult, error)
@@ -179,6 +180,11 @@ func (s *Service) Ready(ctx context.Context) error {
 	if dataPlane, ok := s.dataPlane.(interface{ Ready(context.Context) error }); ok {
 		if err := dataPlane.Ready(ctx); err != nil {
 			return fmt.Errorf("node data plane: %w", err)
+		}
+	}
+	if s.routeAdmin != nil {
+		if err := s.routeAdmin.Ready(ctx); err != nil {
+			return fmt.Errorf("node route administrator: %w", err)
 		}
 	}
 	return nil
