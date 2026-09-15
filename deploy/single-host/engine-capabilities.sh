@@ -94,6 +94,15 @@ check_source() {
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/build/cache.go" \
     'orchestrator.build.cache.pressure_evictions' "cache pressure eviction metrics"
 
+  require_literal "$source_root/packages/orchestrator/pkg/nfsproxy/chroot/file.go" \
+    'syncing NFS write' "fsync before a stable NFS write acknowledgement"
+  require_literal "$source_root/packages/orchestrator/pkg/nfsproxy/chroot/file.go" \
+    'syncing NFS truncate' "fsync before a stable NFS truncate acknowledgement"
+  require_literal "$source_root/packages/orchestrator/pkg/nfsproxy/chroot/fs.go" \
+    'syncDirectoryTree' "directory-tree durability after recursive creation"
+  require_literal "$source_root/packages/orchestrator/pkg/nfsproxy/chroot/fs.go" \
+    'errors.Join(syncPath(f.chroot, newParent), syncPath(f.chroot, oldParent))' "both-parent durability after cross-directory rename"
+
   require_literal "$source_root/embed/compose/compose.yaml" \
     'TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates' "local template artifact storage"
   require_literal "$source_root/embed/compose/compose.yaml" \
@@ -101,7 +110,7 @@ check_source() {
   require_literal "$source_root/embed/compose/compose.yaml" \
     'NETWORK_VERSION: "1"' "the qualified network implementation"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"new":32,"reused":100},"nbd_pool":64,"network_version":1}'
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"new":32,"reused":100},"nbd_pool":64,"network_version":1}'
 }
 
 find_orchestrator_pid() {

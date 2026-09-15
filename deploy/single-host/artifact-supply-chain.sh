@@ -123,6 +123,7 @@ write_manifest() {
   orchestrator_override_sha256=${6:-}
   orchestrator_patch_sha256=${7:-}
   orchestrator_cache_patch_sha256=${8:-}
+  orchestrator_nfs_durability_patch_sha256=${9:-}
   verify_host_artifacts "$artifact_lock" "$host_root" "$orchestrator_override_sha256"
   if [ -n "$orchestrator_patch_sha256" ]; then
     require_sha256 "$orchestrator_patch_sha256" "orchestrator patch SHA-256"
@@ -130,6 +131,10 @@ write_manifest() {
   if [ -n "$orchestrator_cache_patch_sha256" ]; then
     [ -n "$orchestrator_patch_sha256" ] || fail "the cache patch requires the lifecycle patch identity"
     require_sha256 "$orchestrator_cache_patch_sha256" "orchestrator cache patch SHA-256"
+  fi
+  if [ -n "$orchestrator_nfs_durability_patch_sha256" ]; then
+    [ -n "$orchestrator_cache_patch_sha256" ] || fail "the NFS durability patch requires the cache patch identity"
+    require_sha256 "$orchestrator_nfs_durability_patch_sha256" "orchestrator NFS durability patch SHA-256"
   fi
   output_dir=$(dirname "$output")
   mkdir -p "$output_dir"
@@ -161,6 +166,11 @@ write_manifest() {
       printf 'artifact.orchestrator.cache_patch_sha256=%s\n' "$orchestrator_cache_patch_sha256"
       printf 'artifact.orchestrator.snapshot_diff_cache=bounded-recoverable-cache\n'
     fi
+    if [ -n "$orchestrator_nfs_durability_patch_sha256" ]; then
+      printf 'artifact.orchestrator.nfs_durability_patch_sha256=%s\n' "$orchestrator_nfs_durability_patch_sha256"
+      printf 'artifact.orchestrator.nfs_write_stability=fsync-before-file-sync-acknowledgement\n'
+      printf 'artifact.orchestrator.nfs_namespace_stability=parent-directory-fsync-before-acknowledgement\n'
+    fi
   } > "$temporary"
   chmod 600 "$temporary"
   mv -f -- "$temporary" "$output"
@@ -168,7 +178,7 @@ write_manifest() {
 }
 
 usage() {
-  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256]" >&2
+  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256]" >&2
   exit 2
 }
 
@@ -191,8 +201,8 @@ case "$command" in
     verify_host_artifacts "$2" "$3" "${4:-}"
     ;;
   manifest)
-    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ]; } || usage
-    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}"
+    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ]; } || usage
+    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}"
     ;;
   *) usage ;;
 esac

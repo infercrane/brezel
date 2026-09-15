@@ -1,0 +1,446 @@
+diff --git a/packages/orchestrator/pkg/nfsproxy/chroot/change.go b/packages/orchestrator/pkg/nfsproxy/chroot/change.go
+index 0168bc2d..f43fb4d6 100644
+--- a/packages/orchestrator/pkg/nfsproxy/chroot/change.go
++++ b/packages/orchestrator/pkg/nfsproxy/chroot/change.go
+@@ -16,19 +16,35 @@ type wrappedChange struct {
+ }
+ 
+ func (w wrappedChange) Chmod(name string, mode os.FileMode) error {
+-	return w.c.Chmod(name, mode)
++	if err := w.c.Chmod(name, mode); err != nil {
++		return err
++	}
++
++	return syncMetadata(w.c, name, true)
+ }
+ 
+ func (w wrappedChange) Lchown(name string, uid, gid int) error {
+-	return w.c.Lchown(name, uid, gid)
++	if err := w.c.Lchown(name, uid, gid); err != nil {
++		return err
++	}
++
++	return syncMetadata(w.c, name, false)
+ }
+ 
+ func (w wrappedChange) Chown(name string, uid, gid int) error {
+-	return w.c.Chown(name, uid, gid)
++	if err := w.c.Chown(name, uid, gid); err != nil {
++		return err
++	}
++
++	return syncMetadata(w.c, name, true)
+ }
+ 
+ func (w wrappedChange) Chtimes(name string, atime time.Time, mtime time.Time) error {
+-	return w.c.Chtimes(name, atime, mtime)
++	if err := w.c.Chtimes(name, atime, mtime); err != nil {
++		return err
++	}
++
++	return syncMetadata(w.c, name, true)
+ }
+ 
+ var _ billy.Change = (*wrappedChange)(nil)
+@@ -36,3 +52,27 @@ var _ billy.Change = (*wrappedChange)(nil)
+ func wrapChange(c *chrooted.Chrooted) *wrappedChange {
+ 	return &wrappedChange{c: c}
+ }
++
++// syncMetadata flushes regular files and directories directly. Other inode
++// types (including a no-follow symlink update) cannot be portably opened for
++// fsync, so flush the containing directory that owns their metadata instead.
++func syncMetadata(fs *chrooted.Chrooted, name string, follow bool) error {
++	var (
++		info os.FileInfo
++		err  error
++	)
++	if follow {
++		info, err = fs.Stat(name)
++	} else {
++		info, err = fs.Lstat(name)
++	}
++	if err != nil {
++		return err
++	}
++
++	if info.Mode().IsRegular() || info.IsDir() {
++		return syncPath(fs, name)
++	}
++
++	return syncParent(fs, name)
++}
+diff --git a/packages/orchestrator/pkg/nfsproxy/chroot/durability_test.go b/packages/orchestrator/pkg/nfsproxy/chroot/durability_test.go
+new file mode 100644
+index 00000000..94f19ac7
+--- /dev/null
++++ b/packages/orchestrator/pkg/nfsproxy/chroot/durability_test.go
+@@ -0,0 +1,62 @@
++//go:build linux
++
++package chroot
++
++import (
++	"os"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/chrooted"
++)
++
++func TestWrappedFSMutationsPassDurabilityBoundary(t *testing.T) {
++	t.Parallel()
++
++	root := t.TempDir()
++	confined, err := chrooted.Chroot(root)
++	require.NoError(t, err)
++	t.Cleanup(func() { assert.NoError(t, confined.Close()) })
++	fs := wrapChrooted(confined)
++
++	file, err := fs.Create("/from")
++	require.NoError(t, err)
++	require.NoError(t, file.Close())
++	require.NoError(t, fs.Rename("/from", "/to"))
++	require.NoError(t, fs.Remove("/to"))
++
++	require.NoError(t, fs.MkdirAll("/parent/child", 0o700))
++	require.NoError(t, fs.Symlink("/target", "/parent/link"))
++	require.NoError(t, fs.Remove("/parent/link"))
++
++	temporary, err := fs.TempFile("/parent", "temporary-")
++	require.NoError(t, err)
++	temporaryName := temporary.Name()
++	require.NoError(t, temporary.Close())
++	require.NoError(t, fs.Remove(temporaryName))
++}
++
++func TestWrappedChangePassesDurabilityBoundary(t *testing.T) {
++	t.Parallel()
++
++	confined, err := chrooted.Chroot(t.TempDir())
++	require.NoError(t, err)
++	t.Cleanup(func() { assert.NoError(t, confined.Close()) })
++	fs := wrapChrooted(confined)
++	change := wrapChange(confined)
++
++	file, err := fs.Create("/metadata")
++	require.NoError(t, err)
++	require.NoError(t, file.Close())
++	require.NoError(t, change.Chmod("/metadata", 0o600))
++	require.NoError(t, change.Chown("/metadata", os.Getuid(), os.Getgid()))
++	require.NoError(t, change.Lchown("/metadata", os.Getuid(), os.Getgid()))
++	now := time.Now().Add(-time.Minute)
++	require.NoError(t, change.Chtimes("/metadata", now, now))
++
++	require.NoError(t, fs.Symlink("/missing", "/dangling"))
++	require.NoError(t, change.Lchown("/dangling", os.Getuid(), os.Getgid()))
++}
+diff --git a/packages/orchestrator/pkg/nfsproxy/chroot/file.go b/packages/orchestrator/pkg/nfsproxy/chroot/file.go
+index df2a6818..e7b96df6 100644
+--- a/packages/orchestrator/pkg/nfsproxy/chroot/file.go
++++ b/packages/orchestrator/pkg/nfsproxy/chroot/file.go
+@@ -3,6 +3,7 @@
+ package chroot
+ 
+ import (
++	"fmt"
+ 	"os"
+ 
+ 	"github.com/go-git/go-billy/v5"
+@@ -10,7 +11,8 @@ import (
+ )
+ 
+ type wrappedFile struct {
+-	file *os.File
++	file   *os.File
++	syncFn func() error
+ }
+ 
+ var _ billy.File = (*wrappedFile)(nil)
+@@ -20,7 +22,20 @@ func (w *wrappedFile) Name() string {
+ }
+ 
+ func (w *wrappedFile) Write(p []byte) (n int, err error) {
+-	return w.file.Write(p)
++	n, err = w.file.Write(p)
++	if err != nil {
++		return n, err
++	}
++
++	// go-nfs currently reports every successful NFSv3 WRITE as FILE_SYNC,
++	// even when the client requested an unstable write. Do not let that stable
++	// acknowledgement leave the host while the data or inode metadata is only
++	// in the page cache.
++	if err := w.sync(); err != nil {
++		return n, fmt.Errorf("syncing NFS write: %w", err)
++	}
++
++	return n, nil
+ }
+ 
+ func (w *wrappedFile) Read(p []byte) (n int, err error) {
+@@ -48,7 +63,23 @@ func (w *wrappedFile) Unlock() error {
+ }
+ 
+ func (w *wrappedFile) Truncate(size int64) error {
+-	return w.file.Truncate(size)
++	if err := w.file.Truncate(size); err != nil {
++		return err
++	}
++
++	if err := w.sync(); err != nil {
++		return fmt.Errorf("syncing NFS truncate: %w", err)
++	}
++
++	return nil
++}
++
++func (w *wrappedFile) sync() error {
++	if w.syncFn != nil {
++		return w.syncFn()
++	}
++
++	return w.file.Sync()
+ }
+ 
+ func maybeWrap(f *os.File) billy.File {
+diff --git a/packages/orchestrator/pkg/nfsproxy/chroot/file_test.go b/packages/orchestrator/pkg/nfsproxy/chroot/file_test.go
+index 2f584815..39b78358 100644
+--- a/packages/orchestrator/pkg/nfsproxy/chroot/file_test.go
++++ b/packages/orchestrator/pkg/nfsproxy/chroot/file_test.go
+@@ -3,6 +3,7 @@
+ package chroot
+ 
+ import (
++	"errors"
+ 	"os"
+ 	"testing"
+ 
+@@ -84,3 +85,54 @@ func TestWrappedFile_LockUnlock(t *testing.T) {
+ 	err = w2.Unlock()
+ 	require.NoError(t, err)
+ }
++
++func TestWrappedFile_WriteSyncsBeforeSuccess(t *testing.T) {
++	t.Parallel()
++
++	file, err := os.CreateTemp(t.TempDir(), "write-sync")
++	require.NoError(t, err)
++	t.Cleanup(func() { assert.NoError(t, file.Close()) })
++
++	syncCalls := 0
++	w := &wrappedFile{
++		file: file,
++		syncFn: func() error {
++			syncCalls++
++
++			return nil
++		},
++	}
++
++	n, err := w.Write([]byte("durable"))
++	require.NoError(t, err)
++	assert.Equal(t, len("durable"), n)
++	assert.Equal(t, 1, syncCalls)
++}
++
++func TestWrappedFile_WriteRejectsFailedSync(t *testing.T) {
++	t.Parallel()
++
++	file, err := os.CreateTemp(t.TempDir(), "write-sync-failure")
++	require.NoError(t, err)
++	t.Cleanup(func() { assert.NoError(t, file.Close()) })
++
++	errSync := errors.New("injected sync failure")
++	w := &wrappedFile{file: file, syncFn: func() error { return errSync }}
++
++	n, writeErr := w.Write([]byte("not acknowledged"))
++	assert.Equal(t, len("not acknowledged"), n)
++	assert.ErrorIs(t, writeErr, errSync)
++}
++
++func TestWrappedFile_TruncateRejectsFailedSync(t *testing.T) {
++	t.Parallel()
++
++	file, err := os.CreateTemp(t.TempDir(), "truncate-sync-failure")
++	require.NoError(t, err)
++	t.Cleanup(func() { assert.NoError(t, file.Close()) })
++
++	errSync := errors.New("injected sync failure")
++	w := &wrappedFile{file: file, syncFn: func() error { return errSync }}
++
++	assert.ErrorIs(t, w.Truncate(4), errSync)
++}
+diff --git a/packages/orchestrator/pkg/nfsproxy/chroot/fs.go b/packages/orchestrator/pkg/nfsproxy/chroot/fs.go
+index 3960659d..a5c937be 100644
+--- a/packages/orchestrator/pkg/nfsproxy/chroot/fs.go
++++ b/packages/orchestrator/pkg/nfsproxy/chroot/fs.go
+@@ -3,7 +3,9 @@
+ package chroot
+ 
+ import (
++	"errors"
+ 	"os"
++	"path"
+ 
+ 	"github.com/go-git/go-billy/v5"
+ 
+@@ -16,8 +18,17 @@ type wrappedFS struct {
+ 
+ func (f *wrappedFS) Create(filename string) (billy.File, error) {
+ 	result, err := f.chroot.Create(filename)
++	if err != nil {
++		return nil, err
++	}
+ 
+-	return maybeWrap(result), err
++	// A stable file write is not enough to make a newly created name survive
++	// a host crash. Flush the inode first and then its containing directory.
++	if err := errors.Join(result.Sync(), syncParent(f.chroot, filename)); err != nil {
++		return nil, errors.Join(err, result.Close())
++	}
++
++	return maybeWrap(result), nil
+ }
+ 
+ func (f *wrappedFS) Open(filename string) (billy.File, error) {
+@@ -28,8 +39,24 @@ func (f *wrappedFS) Open(filename string) (billy.File, error) {
+ 
+ func (f *wrappedFS) OpenFile(filename string, flag int, perm os.FileMode) (billy.File, error) {
+ 	result, err := f.chroot.OpenFile(filename, flag, perm)
+-
+-	return maybeWrap(result), err
++	if err != nil {
++		return nil, err
++	}
++
++	var syncErr error
++	if flag&(os.O_CREATE|os.O_TRUNC) != 0 {
++		syncErr = result.Sync()
++	}
++	if flag&os.O_CREATE != 0 {
++		// O_CREATE may have opened an existing file, in which case syncing the
++		// parent is conservative but preserves one deterministic durability rule.
++		syncErr = errors.Join(syncErr, syncParent(f.chroot, filename))
++	}
++	if syncErr != nil {
++		return nil, errors.Join(syncErr, result.Close())
++	}
++
++	return maybeWrap(result), nil
+ }
+ 
+ func (f *wrappedFS) Stat(filename string) (os.FileInfo, error) {
+@@ -37,11 +64,27 @@ func (f *wrappedFS) Stat(filename string) (os.FileInfo, error) {
+ }
+ 
+ func (f *wrappedFS) Rename(oldpath, newpath string) error {
+-	return f.chroot.Rename(oldpath, newpath)
++	if err := f.chroot.Rename(oldpath, newpath); err != nil {
++		return err
++	}
++
++	oldParent := path.Dir(oldpath)
++	newParent := path.Dir(newpath)
++	if oldParent == newParent {
++		return syncPath(f.chroot, oldParent)
++	}
++
++	// Both directories participate in a cross-directory rename. Flush both
++	// before acknowledging it so a crash cannot resurrect either old name.
++	return errors.Join(syncPath(f.chroot, newParent), syncPath(f.chroot, oldParent))
+ }
+ 
+ func (f *wrappedFS) Remove(filename string) error {
+-	return f.chroot.Remove(filename)
++	if err := f.chroot.Remove(filename); err != nil {
++		return err
++	}
++
++	return syncParent(f.chroot, filename)
+ }
+ 
+ func (f *wrappedFS) Join(elem ...string) string {
+@@ -50,8 +93,15 @@ func (f *wrappedFS) Join(elem ...string) string {
+ 
+ func (f *wrappedFS) TempFile(dir, prefix string) (billy.File, error) {
+ 	result, err := f.chroot.TempFile(dir, prefix)
++	if err != nil {
++		return nil, err
++	}
+ 
+-	return maybeWrap(result), err
++	if err := errors.Join(result.Sync(), syncParent(f.chroot, result.Name())); err != nil {
++		return nil, errors.Join(err, result.Close())
++	}
++
++	return maybeWrap(result), nil
+ }
+ 
+ func (f *wrappedFS) ReadDir(path string) ([]os.FileInfo, error) {
+@@ -59,7 +109,14 @@ func (f *wrappedFS) ReadDir(path string) ([]os.FileInfo, error) {
+ }
+ 
+ func (f *wrappedFS) MkdirAll(filename string, perm os.FileMode) error {
+-	return f.chroot.MkdirAll(filename, perm)
++	if err := f.chroot.MkdirAll(filename, perm); err != nil {
++		return err
++	}
++
++	// MkdirAll can materialize more than one directory. Flush from the leaf
++	// through the root so every newly introduced parent/name relationship is
++	// stable before the metadata RPC succeeds.
++	return syncDirectoryTree(f.chroot, filename)
+ }
+ 
+ func (f *wrappedFS) Lstat(filename string) (os.FileInfo, error) {
+@@ -67,7 +124,11 @@ func (f *wrappedFS) Lstat(filename string) (os.FileInfo, error) {
+ }
+ 
+ func (f *wrappedFS) Symlink(target, link string) error {
+-	return f.chroot.Symlink(target, link)
++	if err := f.chroot.Symlink(target, link); err != nil {
++		return err
++	}
++
++	return syncParent(f.chroot, link)
+ }
+ 
+ func (f *wrappedFS) Readlink(link string) (string, error) {
+@@ -87,3 +148,33 @@ var _ billy.Filesystem = (*wrappedFS)(nil)
+ func wrapChrooted(chroot *chrooted.Chrooted) *wrappedFS {
+ 	return &wrappedFS{chroot: chroot}
+ }
++
++// syncPath flushes one regular file or directory through a confined
++// descriptor. The path reported in an error remains the guest-visible path;
++// the backing host path never crosses the NFS boundary.
++func syncPath(fs *chrooted.Chrooted, name string) error {
++	file, err := fs.Open(name)
++	if err != nil {
++		return err
++	}
++
++	return errors.Join(file.Sync(), file.Close())
++}
++
++func syncParent(fs *chrooted.Chrooted, name string) error {
++	return syncPath(fs, path.Dir(name))
++}
++
++func syncDirectoryTree(fs *chrooted.Chrooted, name string) error {
++	dir := path.Clean(name)
++	for {
++		if err := syncPath(fs, dir); err != nil {
++			return err
++		}
++		if dir == "/" || dir == "." {
++			return nil
++		}
++
++		dir = path.Dir(dir)
++	}
++}

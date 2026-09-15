@@ -307,6 +307,34 @@ performance claim. Upstream publication still requires a qualified hosted
 endpoint, credentials provisioned to the benchmark operator, an official
 provider package, and independent review.
 
+ComputeSDK's sandbox suites measure two different boundaries that must remain
+separate:
+
+- **Burst TTI** creates 100 sandboxes concurrently and measures from
+  `create()` through the first successful command. This exercises regional API
+  proximity, admission, placement, warm capacity, node caches, networking,
+  readiness, and the command path.
+- **DAX** first creates a fresh sandbox, then times one guest command that
+  installs system packages, downloads Bun, clones a pinned OpenCode revision,
+  installs dependencies, and type-checks it. Sandbox create and destroy are
+  outside DAX's reported `totalMs`; CPU quality and contention, writable-root
+  storage, package setup, and network egress dominate that number.
+
+The public DAX run dated 2026-09-11 used an advertised 8-vCPU/16-GiB shape but
+reported different physical CPU families between providers and only one
+iteration per provider in the retained result. It is useful comparative
+evidence, not a normalized hardware comparison. Brezel must therefore qualify
+a named 8-vCPU/16-GiB environment, retain the guest-reported CPU and memory,
+run the exact upstream script repeatedly, and profile phase-level host metrics
+before asking to join the public leaderboard.
+
+Do not special-case that script or preinstall its repository and dependencies.
+A competitive execution profile may legitimately use a production base image
+with common build tools, host-local immutable image artifacts, a fast local
+ephemeral writable root, and a separately mounted durable workspace. The
+ephemeral root is the package-manager and compiler hot path; a durable
+workspace is the acknowledged-data path and must retain its crash guarantees.
+
 ### Controller microbenchmarks
 
 `internal/store` contains narrow Go benchmarks for control-state engineering.
@@ -373,8 +401,11 @@ A result is publishable only when:
 6. the report says exactly which boundary was timed.
 
 Keep startup latency separate from workload throughput. The
-[ComputeSDK methodology](https://github.com/runloopai/computesdk-benchmarks/blob/master/METHODOLOGY.md)
-is a useful reference for create-through-first-command measurements. The
+[ComputeSDK methodology](https://www.computesdk.com/methodology/),
+[DAX implementation](https://github.com/computesdk/benchmarks/blob/master/benchmarks/sandbox/dax.bench.ts),
+and [DAX guest script](https://github.com/computesdk/benchmarks/blob/master/benchmarks/scripts/dax-benchmark.sh)
+are useful references for create-through-first-command and build-workload
+measurements. The
 [StarSling HPC suite](https://starsling.dev/hpc-sandbox-benchmarks) instead runs
 repository builds and versioned Phoronix profiles. Both are valuable, but their
 numbers answer different questions and must not be merged into one leaderboard.

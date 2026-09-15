@@ -14,6 +14,7 @@ ENGINE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0001-harden-volume-secre
 ENGINE_BUILD_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0002-pin-api-build-images.patch"
 ENGINE_ORCHESTRATOR_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0003-acknowledge-delete-after-sandbox-teardown.patch"
 ENGINE_CACHE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0004-bound-snapshot-diff-cache.patch"
+ENGINE_NFS_DURABILITY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0005-make-nfs-writes-crash-durable.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
@@ -82,7 +83,8 @@ ENGINE_PATCH_SHA256=$(read_lock api_patch_sha256)
 ENGINE_BUILD_PATCH_SHA256=$(read_lock api_build_patch_sha256)
 ENGINE_ORCHESTRATOR_PATCH_SHA256=$(read_lock orchestrator_lifecycle_patch_sha256)
 ENGINE_CACHE_PATCH_SHA256=$(read_lock orchestrator_cache_patch_sha256)
-if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ]; then
+ENGINE_NFS_DURABILITY_PATCH_SHA256=$(read_lock orchestrator_nfs_durability_patch_sha256)
+if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ]; then
   echo "invalid engine.lock" >&2
   exit 1
 fi
@@ -203,6 +205,10 @@ if [ "$(sha256sum "$ENGINE_CACHE_PATCH" | awk '{print $1}')" != "$ENGINE_CACHE_P
   echo "engine orchestrator cache patch verification failed" >&2
   exit 1
 fi
+if [ "$(sha256sum "$ENGINE_NFS_DURABILITY_PATCH" | awk '{print $1}')" != "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ]; then
+  echo "engine orchestrator NFS durability patch verification failed" >&2
+  exit 1
+fi
 "$ARTIFACT_SUPPLY_CHAIN" image-lock "$ENGINE_IMAGE_LOCK"
 
 read_image_lock() {
@@ -304,6 +310,7 @@ patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_BUILD_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ORCHESTRATOR_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CACHE_PATCH"
+patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NFS_DURABILITY_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 EXPECTED_MIGRATION_TIMESTAMP=$(find "$ENGINE_BUILD_DIR/packages/db/migrations" -maxdepth 1 -type f -printf '%f\n' | sed 's/_.*//' | sort | tail -n 1)
 if [ -z "$EXPECTED_MIGRATION_TIMESTAMP" ]; then
@@ -324,13 +331,13 @@ export BREZEL_ENGINE_API_IMAGE
 # The released upstream binary acknowledges deletion before Firecracker, NBD,
 # networking, and lazy-memory resources have been reclaimed. Brezel treats a
 # successful delete as a durable resource-reclamation boundary instead.
-BREZEL_ENGINE_ORCHESTRATOR_IMAGE="brezel/engine-orchestrator:${ENGINE_COMMIT}-cache-v1"
+BREZEL_ENGINE_ORCHESTRATOR_IMAGE="brezel/engine-orchestrator:${ENGINE_COMMIT}-durability-v1"
 docker build \
   --platform linux/amd64 \
   -t "$BREZEL_ENGINE_ORCHESTRATOR_IMAGE" \
   -f "$ENGINE_BUILD_DIR/packages/orchestrator/Dockerfile" \
-  --build-arg "COMMIT_SHA=${ENGINE_COMMIT}-cache-v1" \
-  --build-arg "VERSION=${ENGINE_COMMIT}-cache-v1" \
+  --build-arg "COMMIT_SHA=${ENGINE_COMMIT}-durability-v1" \
+  --build-arg "VERSION=${ENGINE_COMMIT}-durability-v1" \
   "$ENGINE_BUILD_DIR/packages"
 mkdir -p "$INSTALL_DIR/artifacts"
 chmod 700 "$INSTALL_DIR/artifacts"
@@ -406,7 +413,8 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 # tools image, then write the exact installed distribution record.
 "$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" / "$BREZEL_ENGINE_ORCHESTRATOR_SHA256"
 "$ARTIFACT_SUPPLY_CHAIN" manifest "$INSTALL_DIR/distribution.manifest" "$LOCK_FILE" "$ENGINE_IMAGE_LOCK" "$ENGINE_ARTIFACT_LOCK" / \
-  "$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$ENGINE_ORCHESTRATOR_PATCH_SHA256" "$ENGINE_CACHE_PATCH_SHA256"
+  "$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$ENGINE_ORCHESTRATOR_PATCH_SHA256" "$ENGINE_CACHE_PATCH_SHA256" \
+  "$ENGINE_NFS_DURABILITY_PATCH_SHA256"
 
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
   exec -T ready sh -c 'cat /run/e2b/team-api-key' > "$SECRETS_DIR/engine.token"

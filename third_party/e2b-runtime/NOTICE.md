@@ -15,6 +15,11 @@ successful sandbox-delete acknowledgement until Firecracker, NBD, network,
 and lazy-memory resources have been reclaimed. The fourth patch makes the
 recoverable snapshot-diff cache retention configurable, adds physical-byte
 and local disk high-water eviction, and emits content-free cache pressure
-metrics. Cache pressure never evicts an active or unsealed diff.
+metrics. Cache pressure never evicts an active or unsealed diff. The fifth
+patch makes the NFSv3 server's advertised `FILE_SYNC` write stability true:
+data and inode changes are synced before success, while create, rename,
+remove, and directory operations sync the affected parent directories before
+acknowledgement. A sync failure is returned to the guest instead of becoming
+a false durability promise.
 
 Upstream source: <https://github.com/e2b-dev/runtime>

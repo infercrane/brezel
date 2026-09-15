@@ -28,10 +28,11 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		t.Fatalf("engine.lock commit %q differs from audited adapter revision %q", values["commit"], e2b.AuditedRevision)
 	}
 	patches := map[string]string{
-		"api_patch_sha256":                    "0001-harden-volume-secrets-and-cleanup.patch",
-		"api_build_patch_sha256":              "0002-pin-api-build-images.patch",
-		"orchestrator_lifecycle_patch_sha256": "0003-acknowledge-delete-after-sandbox-teardown.patch",
-		"orchestrator_cache_patch_sha256":     "0004-bound-snapshot-diff-cache.patch",
+		"api_patch_sha256":                         "0001-harden-volume-secrets-and-cleanup.patch",
+		"api_build_patch_sha256":                   "0002-pin-api-build-images.patch",
+		"orchestrator_lifecycle_patch_sha256":      "0003-acknowledge-delete-after-sandbox-teardown.patch",
+		"orchestrator_cache_patch_sha256":          "0004-bound-snapshot-diff-cache.patch",
+		"orchestrator_nfs_durability_patch_sha256": "0005-make-nfs-writes-crash-durable.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -611,6 +612,8 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
 		"packages/orchestrator/pkg/sandbox/build/cache.go":                    "func allocatedBytes(path string)\ncachePressureObservationFailed\ncachePressureAllocatedBytes\norchestrator.build.cache.pressure_evictions\n",
 		"packages/orchestrator/pkg/sandbox/template/cache.go":                 "config.BuildCacheTTL\n",
+		"packages/orchestrator/pkg/nfsproxy/chroot/file.go":                   "syncing NFS write\nsyncing NFS truncate\n",
+		"packages/orchestrator/pkg/nfsproxy/chroot/fs.go":                     "syncDirectoryTree\nerrors.Join(syncPath(f.chroot, newParent), syncPath(f.chroot, oldParent))\n",
 		"embed/compose/compose.yaml":                                          "TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates\nNBD_POOL_SIZE: \"64\"\nNETWORK_VERSION: \"1\"\n",
 	}
 	for name, content := range files {
@@ -697,9 +700,48 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT",
 		"orchestrator.build.cache.pressure_evictions",
 		"observation_failure",
+		"syncing NFS write",
+		"syncing NFS truncate",
+		"syncDirectoryTree",
+		"fsync_before_success",
 	} {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("engine capability probe is missing %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsAndAttestsNFSDurabilityPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0005-make-nfs-writes-crash-durable.patch",
+		"orchestrator_nfs_durability_patch_sha256",
+		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NFS_DURABILITY_PATCH"`,
+		`"$ENGINE_NFS_DURABILITY_PATCH_SHA256"`,
+		"engine orchestrator NFS durability patch verification failed",
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing NFS durability invariant %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.nfs_durability_patch_sha256",
+		"artifact.orchestrator.nfs_write_stability=fsync-before-file-sync-acknowledgement",
+		"artifact.orchestrator.nfs_namespace_stability=parent-directory-fsync-before-acknowledgement",
+		"the NFS durability patch requires the cache patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("distribution manifest writer is missing NFS durability identity %q", required)
 		}
 	}
 }
@@ -790,10 +832,22 @@ func TestHostRebootDrillRequiresHonestStateAndWorkspaceRecovery(t *testing.T) {
 	for _, required := range []string{
 		"observed_state", "workspace_replacement", "host_reboot_workspace_recovery_conformant",
 		"durable workspace marker changed", "confirmed_cleanup", "--ttl 3600", "failed|deleted",
+		"/proc/sys/kernel/random/boot_id", "host boot identity did not change", "host_boot_identity_changed",
+		"--reset-method", "BREZEL_HOST_REBOOT_RESET_METHOD", "fault_injection", "reset_method",
+		"runtime-attestation.manifest", "runtime_identity_unchanged", "runtime_identity_changed",
+		"host_reboot_workspace_recovery_not_conformant", "durable_marker_changed",
+		"sandbox_cleanup_failed", "workspace_cleanup_failed", "schema_version:3",
+		"crash_consistency_manifest", "crash_consistency_corpus", "crash_consistency_corpus_missing",
+		"crash_consistency_corpus_changed", "atomic-rename.pending", "atomic-rename.txt", "nested/path.txt",
+		"overwrite.txt", "payload-1m.bin", "small.txt", "truncate.txt", "bs=1048576", "truncate -s 17",
+		"$before == $after",
 	} {
 		if !strings.Contains(drill, required) {
 			t.Fatalf("host reboot drill is missing %q", required)
 		}
+	}
+	if strings.Contains(drill, "*) cli sandbox delete") {
+		t.Fatal("host reboot drill must not delete a sandbox in an unknown lifecycle state")
 	}
 }
 

@@ -248,6 +248,16 @@ A durable workspace is a single-writer filesystem whose lifetime is independent
 from any sandbox. The public API uses project-scoped workspace IDs; substrate
 volume IDs, names, and content tokens never leave the runtime service.
 
+The sandbox writable root and a durable workspace are different storage
+classes. The writable root is local, ephemeral execution state optimized for
+package installs, compilers, caches, and many-small-file workloads. It may be
+captured as part of a full-state checkpoint, but it is not acknowledged as
+host-loss-durable storage. A mounted workspace is the explicit persistence
+boundary: acknowledged writes must survive the profile's declared crash model,
+even when that requires a slower write path. Users choose durability by writing
+important state below `/workspace`; Brezel must not make every temporary build
+file pay that cost or silently weaken the workspace contract to win a benchmark.
+
 The current single-host profile persists a creation or deletion intent before
 calling the pinned engine. A workspace must be `ready` before attachment. The
 service rejects a second attachment while any non-terminal sandbox owns it and
@@ -257,8 +267,12 @@ rejects deletion while attached. Unknown create or cleanup outcomes remain
 The installer enables the engine volume path explicitly, binds its backing
 directory from protected host state, reads its signing key from a protected
 file, and applies a pinned patch that confirms physical data removal before
-deleting engine metadata. This is local-host durability, not replicated storage,
-backup, secure erase, or host-loss recovery.
+deleting engine metadata. A second pinned engine patch flushes workspace file,
+truncate, and namespace mutations before the NFS server returns its advertised
+stable acknowledgement. The hard-reset qualification corpus verifies create,
+overwrite, truncate, atomic rename, nested creation, and a one-megabyte payload
+across an actual boot-identity change. This is local-host crash durability, not
+replicated storage, backup, secure erase, or host-loss recovery.
 
 ### Drive
 
