@@ -499,9 +499,33 @@ EOF
 [[ $# -eq 0 ]] || { usage; fail "unexpected arguments"; }
 [[ "${BREZEL_DUAL_EXECUTE:-}" = true ]] || { usage; fail "set BREZEL_DUAL_EXECUTE=true to acknowledge destructive remote qualification"; }
 
-for command_name in bash find git jq mktemp python3 sha256sum ssh stat; do
+for command_name in bash find git jq mktemp python3 ssh stat; do
   require_command "$command_name"
 done
+if command -v sha256sum >/dev/null 2>&1; then
+  COORDINATOR_SHA256=sha256sum
+elif command -v shasum >/dev/null 2>&1; then
+  COORDINATOR_SHA256=shasum
+else
+  fail "sha256sum or shasum is required on the coordinator"
+fi
+
+coordinator_sha256() {
+  if [[ "$COORDINATOR_SHA256" = sha256sum ]]; then
+    sha256sum "$@"
+  else
+    shasum -a 256 "$@"
+  fi
+}
+
+coordinator_verify_sha256() {
+  local manifest=$1
+  if [[ "$COORDINATOR_SHA256" = sha256sum ]]; then
+    sha256sum -c "$manifest"
+  else
+    shasum -a 256 -c "$manifest"
+  fi
+}
 
 HOST_A=${BREZEL_DUAL_HOST_A:-}
 HOST_B=${BREZEL_DUAL_HOST_B:-}
@@ -588,14 +612,14 @@ checksum_evidence() {
   if ! (
     cd "$RUN_DIR"
     find . -type f ! -name SHA256SUMS ! -name STATUS ! -name '.SHA256SUMS.*' -print | LC_ALL=C sort | while IFS= read -r evidence_file; do
-      sha256sum "$evidence_file"
+      coordinator_sha256 "$evidence_file"
     done
   ) > "$temporary"; then
     rm -f -- "$temporary"
     return 1
   fi
   chmod 600 "$temporary"
-  if ! (cd "$RUN_DIR" && sha256sum -c "$(basename -- "$temporary")" >/dev/null); then
+  if ! (cd "$RUN_DIR" && coordinator_verify_sha256 "$(basename -- "$temporary")" >/dev/null); then
     rm -f -- "$temporary"
     return 1
   fi

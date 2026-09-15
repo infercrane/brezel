@@ -118,6 +118,7 @@ func TestDualHostHarnessEncodesHonestClaimBoundary(t *testing.T) {
 		"runtime_attestation.verified_running == true",
 		"trap cleanup_partial_fixture EXIT", "remote_project_cleanliness",
 		"COORDINATOR_REVISION", "sample_remote_clock", "python3", "exec ssh",
+		"COORDINATOR_SHA256", "shasum -a 256",
 		"--config -", "checksum_evidence", "write_status passed",
 		"Checksummed evidence",
 	} {
