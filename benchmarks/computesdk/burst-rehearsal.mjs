@@ -78,7 +78,11 @@ memory_kib=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)
 free_root_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
 printf '{"cpus":%s,"memory_kib":%s,"free_root_kib":%s}\n' "$cpus" "$memory_kib" "$free_root_kib"
 test "$cpus" -ge 2
-test "$memory_kib" -ge 491520
+# A 512 MiB Firecracker allocation reports less in MemTotal because the guest
+# kernel reserves part of the address space. Verify a conservative usable-RAM
+# floor here; the engine qualification separately verifies the exact 512 MiB
+# template allocation before this benchmark is allowed to run.
+test "$memory_kib" -ge 460800
 test "$free_root_kib" -ge 524288
 command -v node >/dev/null`);
     if (result.exitCode !== 0) {
