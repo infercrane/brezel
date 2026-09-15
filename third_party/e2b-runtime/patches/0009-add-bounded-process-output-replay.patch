@@ -1,0 +1,1286 @@
+diff --git a/packages/envd/internal/services/process/connect.go b/packages/envd/internal/services/process/connect.go
+index b837349..a3dcbb7 100644
+--- a/packages/envd/internal/services/process/connect.go
++++ b/packages/envd/internal/services/process/connect.go
+@@ -9,6 +9,7 @@ import (
+ 
+ 	"github.com/e2b-dev/infra/packages/envd/internal/logs"
+ 	"github.com/e2b-dev/infra/packages/envd/internal/permissions"
++	"github.com/e2b-dev/infra/packages/envd/internal/services/process/handler"
+ 	rpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/process"
+ )
+ 
+@@ -19,6 +20,10 @@ func (s *Service) Connect(ctx context.Context, req *connect.Request[rpc.ConnectR
+ func (s *Service) handleConnect(ctx context.Context, req *connect.Request[rpc.ConnectRequest], stream *connect.ServerStream[rpc.ConnectResponse]) error {
+ 	ctx, cancel := context.WithCancelCause(ctx)
+ 	defer cancel(nil)
++	replay, err := parseReplayRequest(req.Header())
++	if err != nil {
++		return connect.NewError(connect.CodeInvalidArgument, err)
++	}
+ 
+ 	proc, err := s.getProcess(req.Msg.GetProcess())
+ 	if err != nil {
+@@ -27,11 +32,14 @@ func (s *Service) handleConnect(ctx context.Context, req *connect.Request[rpc.Co
+ 		// gap). Serve the retained terminal event if we still have it, so the
+ 		// caller still learns the exit code.
+ 		if ret, ok := s.lookupTerminated(req.Msg.GetProcess()); ok {
+-			return s.serveTerminated(stream, ret)
++			return s.serveTerminated(ctx, req, stream, ret, replay)
+ 		}
+ 
+ 		return err
+ 	}
++	if replay.enabled {
++		return s.serveJournal(ctx, req, stream, proc.Pid(), proc.Journal, replay)
++	}
+ 
+ 	exitChan := make(chan struct{})
+ 
+@@ -142,7 +150,36 @@ func (s *Service) handleConnect(ctx context.Context, req *connect.Request[rpc.Co
+ 	// Wait for the sender goroutine; returning early panics envd.
+ 	<-exitChan
+ 
+-	return ctx.Err()
++	return context.Cause(ctx)
++}
++
++func (s *Service) serveJournal(
++	ctx context.Context,
++	req *connect.Request[rpc.ConnectRequest],
++	stream *connect.ServerStream[rpc.ConnectResponse],
++	pid uint32,
++	journal *handler.EventJournal,
++	replay replayRequest,
++) error {
++	if err := validateReplayRequest(replay, journal); err != nil {
++		return err
++	}
++	if err := journal.ValidateCursor(replay.after); err != nil {
++		return journalConnectError(err)
++	}
++	advertiseReplay(stream.Conn().ResponseHeader(), journal)
++	if err := stream.Send(&rpc.ConnectResponse{Event: &rpc.ProcessEvent{
++		Event: &rpc.ProcessEvent_Start{Start: &rpc.ProcessEvent_StartEvent{Pid: pid}},
++	}}); err != nil {
++		return connect.NewError(connect.CodeUnknown, fmt.Errorf("error sending start event: %w", err))
++	}
++
++	keepaliveTicker, resetKeepalive := permissions.GetKeepAliveTicker(req)
++	defer keepaliveTicker.Stop()
++
++	return streamJournal(ctx, journal, replay.after, keepaliveTicker.C, resetKeepalive, func(event *rpc.ProcessEvent) error {
++		return stream.Send(&rpc.ConnectResponse{Event: event})
++	})
+ }
+ 
+ // lookupTerminated finds a retained terminal event by the same selector shape
+@@ -174,7 +211,20 @@ func (s *Service) lookupTerminated(selector *rpc.ProcessSelector) (*retainedExit
+ // serveTerminated streams the retained Start+End pair for an already-exited
+ // process and returns, so a client that (re)connects after the exit still
+ // observes the terminal event and exit code.
+-func (s *Service) serveTerminated(stream *connect.ServerStream[rpc.ConnectResponse], ret *retainedExit) error {
++func (s *Service) serveTerminated(
++	ctx context.Context,
++	req *connect.Request[rpc.ConnectRequest],
++	stream *connect.ServerStream[rpc.ConnectResponse],
++	ret *retainedExit,
++	replay replayRequest,
++) error {
++	if replay.enabled {
++		if ret.journal == nil {
++			return connect.NewError(connect.CodeFailedPrecondition, errors.New("retained process has no replay journal"))
++		}
++
++		return s.serveJournal(ctx, req, stream, ret.pid, ret.journal, replay)
++	}
+ 	if err := stream.Send(&rpc.ConnectResponse{
+ 		Event: &rpc.ProcessEvent{
+ 			Event: &rpc.ProcessEvent_Start{
+diff --git a/packages/envd/internal/services/process/connect_test.go b/packages/envd/internal/services/process/connect_test.go
+index c82b856..ac76933 100644
+--- a/packages/envd/internal/services/process/connect_test.go
++++ b/packages/envd/internal/services/process/connect_test.go
+@@ -187,3 +187,149 @@ func TestConnect_UnknownProcessNotFound(t *testing.T) {
+ 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(stream.Err()))
+ 	_ = stream.Close()
+ }
++
++func TestConnect_ReplaysExactSuffixInJournalOrder(t *testing.T) {
++	t.Parallel()
++
++	client, svc, cleanup := newRetentionTestService(t)
++	defer cleanup()
++
++	const pid = uint32(8101)
++	logger := zerolog.Nop()
++	journal := svc.journals.NewJournal()
++	h := handler.Readopt(handler.ReadoptArgs{Pid: pid, Journal: journal}, &logger)
++	svc.processes.Store(pid, h)
++	require.NoError(t, journal.Append(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{Data: &rpc.ProcessEvent_DataEvent{
++		Output: &rpc.ProcessEvent_DataEvent_Stdout{Stdout: []byte("already-seen")},
++	}}}))
++	require.NoError(t, journal.Append(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{Data: &rpc.ProcessEvent_DataEvent{
++		Output: &rpc.ProcessEvent_DataEvent_Stderr{Stderr: []byte("replay-me")},
++	}}}))
++	require.NoError(t, journal.Append(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_End{End: &rpc.ProcessEvent_EndEvent{
++		Exited: true, ExitCode: 3, Status: "exited",
++	}}}))
++
++	request := connect.NewRequest(&rpc.ConnectRequest{
++		Process: &rpc.ProcessSelector{Selector: &rpc.ProcessSelector_Pid{Pid: pid}},
++	})
++	request.Header().Set(afterSequenceHeader, "1")
++	request.Header().Set(journalIDHeader, journal.ID())
++	stream, err := client.Connect(t.Context(), request)
++	require.NoError(t, err)
++	events := drainConnect(t, stream)
++
++	require.Len(t, events, 3, "synthetic Start plus the two records after cursor 1")
++	assert.Equal(t, pid, events[0].GetStart().GetPid())
++	assert.Equal(t, "replay-me", string(events[1].GetData().GetStderr()))
++	assert.Equal(t, int32(3), events[2].GetEnd().GetExitCode())
++	assert.Equal(t, replayVersion, stream.ResponseHeader().Get(replayVersionHeader))
++	assert.Equal(t, journal.ID(), stream.ResponseHeader().Get(journalIDHeader))
++}
++
++func TestConnect_ReplayFailsClosedOnGenerationMismatch(t *testing.T) {
++	t.Parallel()
++
++	client, svc, cleanup := newRetentionTestService(t)
++	defer cleanup()
++
++	const pid = uint32(8102)
++	logger := zerolog.Nop()
++	h := handler.Readopt(handler.ReadoptArgs{Pid: pid, Journal: svc.journals.NewJournal()}, &logger)
++	svc.processes.Store(pid, h)
++
++	request := connect.NewRequest(&rpc.ConnectRequest{
++		Process: &rpc.ProcessSelector{Selector: &rpc.ProcessSelector_Pid{Pid: pid}},
++	})
++	request.Header().Set(afterSequenceHeader, "0")
++	request.Header().Set(journalIDHeader, "previous-envd-generation")
++	stream, err := client.Connect(t.Context(), request)
++	require.NoError(t, err)
++	for stream.Receive() {
++		t.Fatal("generation mismatch must fail before emitting Start or output")
++	}
++	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(stream.Err()))
++	_ = stream.Close()
++}
++
++func TestConnect_ReplayRequiresGenerationAtCursorZero(t *testing.T) {
++	t.Parallel()
++
++	client, svc, cleanup := newRetentionTestService(t)
++	defer cleanup()
++
++	const pid = uint32(8103)
++	logger := zerolog.Nop()
++	svc.processes.Store(pid, handler.Readopt(handler.ReadoptArgs{Pid: pid, Journal: svc.journals.NewJournal()}, &logger))
++
++	request := connect.NewRequest(&rpc.ConnectRequest{
++		Process: &rpc.ProcessSelector{Selector: &rpc.ProcessSelector_Pid{Pid: pid}},
++	})
++	request.Header().Set(afterSequenceHeader, "0")
++	stream, err := client.Connect(t.Context(), request)
++	require.NoError(t, err)
++	for stream.Receive() {
++		t.Fatal("missing generation must fail before emitting Start or output")
++	}
++	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(stream.Err()))
++	_ = stream.Close()
++}
++
++func TestConnect_ReplayFailsExplicitlyAfterEviction(t *testing.T) {
++	t.Parallel()
++
++	client, svc, cleanup := newRetentionTestService(t)
++	defer cleanup()
++
++	const pid = uint32(8104)
++	logger := zerolog.Nop()
++	journal := handler.NewJournalStoreWithLimits(handler.JournalLimits{ProcessEvents: 1, StoreEvents: 10}).NewJournal()
++	h := handler.Readopt(handler.ReadoptArgs{Pid: pid, Journal: journal}, &logger)
++	svc.processes.Store(pid, h)
++	require.NoError(t, journal.Append(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{Data: &rpc.ProcessEvent_DataEvent{
++		Output: &rpc.ProcessEvent_DataEvent_Stdout{Stdout: []byte("evicted")},
++	}}}))
++	require.NoError(t, journal.Append(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{Data: &rpc.ProcessEvent_DataEvent{
++		Output: &rpc.ProcessEvent_DataEvent_Stdout{Stdout: []byte("retained")},
++	}}}))
++
++	request := connect.NewRequest(&rpc.ConnectRequest{
++		Process: &rpc.ProcessSelector{Selector: &rpc.ProcessSelector_Pid{Pid: pid}},
++	})
++	request.Header().Set(afterSequenceHeader, "0")
++	request.Header().Set(journalIDHeader, journal.ID())
++	stream, err := client.Connect(t.Context(), request)
++	require.NoError(t, err)
++	for stream.Receive() {
++		t.Fatal("evicted cursor must fail before emitting a partial replay")
++	}
++	assert.Equal(t, connect.CodeOutOfRange, connect.CodeOf(stream.Err()))
++	_ = stream.Close()
++}
++
++func TestConnect_ReplaysRetainedCompletedProcess(t *testing.T) {
++	t.Parallel()
++
++	client, svc, cleanup := newRetentionTestService(t)
++	defer cleanup()
++
++	const pid = uint32(8105)
++	journal := svc.journals.NewJournal()
++	require.NoError(t, journal.Append(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{Data: &rpc.ProcessEvent_DataEvent{
++		Output: &rpc.ProcessEvent_DataEvent_Stdout{Stdout: []byte("final-output")},
++	}}}))
++	end := &rpc.ProcessEvent_EndEvent{Exited: true, ExitCode: 0, Status: "exited"}
++	require.NoError(t, journal.Append(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_End{End: end}}))
++	svc.terminated.Store(pid, &retainedExit{pid: pid, end: end, journal: journal, expiry: time.Now().Add(time.Minute)})
++
++	request := connect.NewRequest(&rpc.ConnectRequest{
++		Process: &rpc.ProcessSelector{Selector: &rpc.ProcessSelector_Pid{Pid: pid}},
++	})
++	request.Header().Set(afterSequenceHeader, "0")
++	request.Header().Set(journalIDHeader, journal.ID())
++	stream, err := client.Connect(t.Context(), request)
++	require.NoError(t, err)
++	events := drainConnect(t, stream)
++	require.Len(t, events, 3)
++	assert.Equal(t, "final-output", string(events[1].GetData().GetStdout()))
++	assert.NotNil(t, events[2].GetEnd())
++}
+diff --git a/packages/envd/internal/services/process/handler/handler.go b/packages/envd/internal/services/process/handler/handler.go
+index 4dcc7b1..e419ee8 100644
+--- a/packages/envd/internal/services/process/handler/handler.go
++++ b/packages/envd/internal/services/process/handler/handler.go
+@@ -67,6 +67,7 @@ type Handler struct {
+ 
+ 	DataEvent *MultiplexedChannel[rpc.ProcessEvent_Data]
+ 	EndEvent  *MultiplexedChannel[rpc.ProcessEvent_End]
++	Journal   *EventJournal
+ 
+ 	// --- live-upgrade handover ---
+ 	// pid is stored at Start so it survives an envd self-upgrade where cmd is
+@@ -190,6 +191,7 @@ func New(
+ 	defaults *execcontext.Defaults,
+ 	cgroupManager cgroups.Manager,
+ 	cancel context.CancelFunc,
++	journal *EventJournal,
+ ) (*Handler, error) {
+ 	// User command string for logging (without the internal wrapper details).
+ 	userCmd := strings.Join(append([]string{req.GetProcess().GetCmd()}, req.GetProcess().GetArgs()...), " ")
+@@ -281,6 +283,7 @@ func New(
+ 		outCtx:    outCtx,
+ 		outCancel: outCancel,
+ 		EndEvent:  NewMultiplexedChannel[rpc.ProcessEvent_End](0),
++		Journal:   journal,
+ 		logger:    logger,
+ 	}
+ 	h.cgType = getProcType(req)
+@@ -313,16 +316,15 @@ func New(
+ 				if n > 0 {
+ 					h.ptyBytes.Add(int64(n))
+ 
++					data := slices.Clone(readBuf[:n])
++					event := &rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{
++						Data: &rpc.ProcessEvent_DataEvent{Output: &rpc.ProcessEvent_DataEvent_Pty{Pty: data}},
++					}}
++					if err := h.Journal.Append(event); err != nil {
++						logger.Error().Err(err).Msg("error journaling pty output")
++					}
+ 					if outMultiplex.HasSubscribers() {
+-						data := slices.Clone(readBuf[:n])
+-
+-						outMultiplex.Source <- rpc.ProcessEvent_Data{
+-							Data: &rpc.ProcessEvent_DataEvent{
+-								Output: &rpc.ProcessEvent_DataEvent_Pty{
+-									Pty: data,
+-								},
+-							},
+-						}
++						outMultiplex.Source <- rpc.ProcessEvent_Data{Data: event.GetData()}
+ 					}
+ 				}
+ 
+@@ -357,16 +359,15 @@ func New(
+ 				if n > 0 {
+ 					h.stdoutBytes.Add(int64(n))
+ 
++					data := slices.Clone(readBuf[:n])
++					event := &rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{
++						Data: &rpc.ProcessEvent_DataEvent{Output: &rpc.ProcessEvent_DataEvent_Stdout{Stdout: data}},
++					}}
++					if err := h.Journal.Append(event); err != nil {
++						logger.Error().Err(err).Msg("error journaling stdout")
++					}
+ 					if outMultiplex.HasSubscribers() {
+-						data := slices.Clone(readBuf[:n])
+-
+-						outMultiplex.Source <- rpc.ProcessEvent_Data{
+-							Data: &rpc.ProcessEvent_DataEvent{
+-								Output: &rpc.ProcessEvent_DataEvent_Stdout{
+-									Stdout: data,
+-								},
+-							},
+-						}
++						outMultiplex.Source <- rpc.ProcessEvent_Data{Data: event.GetData()}
+ 					}
+ 				}
+ 
+@@ -399,16 +400,15 @@ func New(
+ 				if n > 0 {
+ 					h.stderrBytes.Add(int64(n))
+ 
++					data := slices.Clone(readBuf[:n])
++					event := &rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{
++						Data: &rpc.ProcessEvent_DataEvent{Output: &rpc.ProcessEvent_DataEvent_Stderr{Stderr: data}},
++					}}
++					if err := h.Journal.Append(event); err != nil {
++						logger.Error().Err(err).Msg("error journaling stderr")
++					}
+ 					if outMultiplex.HasSubscribers() {
+-						data := slices.Clone(readBuf[:n])
+-
+-						outMultiplex.Source <- rpc.ProcessEvent_Data{
+-							Data: &rpc.ProcessEvent_DataEvent{
+-								Output: &rpc.ProcessEvent_DataEvent_Stderr{
+-									Stderr: data,
+-								},
+-							},
+-						}
++						outMultiplex.Source <- rpc.ProcessEvent_Data{Data: event.GetData()}
+ 					}
+ 				}
+ 
+@@ -593,6 +593,9 @@ func (p *Handler) Wait() {
+ 	event := rpc.ProcessEvent_End{
+ 		End: endEvent,
+ 	}
++	if err := p.Journal.Append(&rpc.ProcessEvent{Event: &event}); err != nil {
++		p.logger.Error().Err(err).Msg("error journaling process end")
++	}
+ 
+ 	p.EndEvent.Source <- event
+ 	// Retain the terminal event synchronously — BEFORE closing the source — so a
+diff --git a/packages/envd/internal/services/process/handler/journal.go b/packages/envd/internal/services/process/handler/journal.go
+new file mode 100644
+index 0000000..6659180
+--- /dev/null
++++ b/packages/envd/internal/services/process/handler/journal.go
+@@ -0,0 +1,274 @@
++package handler
++
++import (
++	"container/list"
++	"errors"
++	"fmt"
++	"sync"
++
++	"github.com/google/uuid"
++	"google.golang.org/protobuf/proto"
++
++	rpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/process"
++)
++
++const (
++	defaultJournalBytes       = 8 << 20
++	defaultJournalEvents      = 8192
++	defaultJournalStoreBytes  = 32 << 20
++	defaultJournalStoreEvents = 32768
++	journalRecordOverhead     = 256
++)
++
++var (
++	ErrJournalClosed        = errors.New("process output journal is closed")
++	ErrJournalReleased      = errors.New("process output journal was released")
++	ErrJournalCursorEvicted = errors.New("process output cursor was evicted")
++	ErrJournalCursorAhead   = errors.New("process output cursor is ahead of the journal")
++)
++
++type JournalLimits struct {
++	ProcessBytes  int
++	ProcessEvents int
++	StoreBytes    int
++	StoreEvents   int
++}
++
++func DefaultJournalLimits() JournalLimits {
++	return JournalLimits{
++		ProcessBytes:  defaultJournalBytes,
++		ProcessEvents: defaultJournalEvents,
++		StoreBytes:    defaultJournalStoreBytes,
++		StoreEvents:   defaultJournalStoreEvents,
++	}
++}
++
++type journalRecord struct {
++	journal  *EventJournal
++	sequence uint64
++	event    *rpc.ProcessEvent
++	cost     int
++	evicted  bool
++	global   *list.Element
++}
++
++// JournalStore applies both per-process and envd-wide memory bounds. All
++// record insertion, eviction and cursor inspection uses one mutex; this is the
++// serialization point that makes the replay-to-live handoff gap-free.
++type JournalStore struct {
++	mu sync.Mutex
++
++	limits JournalLimits
++	global list.List
++	bytes  int
++	events int
++}
++
++func NewJournalStore() *JournalStore {
++	return NewJournalStoreWithLimits(DefaultJournalLimits())
++}
++
++func NewJournalStoreWithLimits(limits JournalLimits) *JournalStore {
++	return &JournalStore{limits: limits}
++}
++
++func (s *JournalStore) NewJournal() *EventJournal {
++	return &EventJournal{
++		store:  s,
++		id:     uuid.NewString(),
++		notify: make(chan struct{}),
++	}
++}
++
++// EventJournal stores Data and End events only. Start is synthetic and
++// KeepAlive is transport-level, so neither advances the durable cursor.
++type EventJournal struct {
++	store *JournalStore
++	id    string
++
++	records        []*journalRecord
++	head           int
++	bytes          int
++	lastSequence   uint64
++	evictedThrough uint64
++	terminal       bool
++	released       bool
++	notify         chan struct{}
++}
++
++func (j *EventJournal) ID() string { return j.id }
++
++func (j *EventJournal) LastSequence() uint64 {
++	j.store.mu.Lock()
++	defer j.store.mu.Unlock()
++
++	return j.lastSequence
++}
++
++func (j *EventJournal) ValidateCursor(after uint64) error {
++	j.store.mu.Lock()
++	defer j.store.mu.Unlock()
++
++	return j.validateCursorLocked(after)
++}
++
++func (j *EventJournal) Append(event *rpc.ProcessEvent) error {
++	if event == nil || (event.GetData() == nil && event.GetEnd() == nil) {
++		return errors.New("process output journal only accepts data or end events")
++	}
++
++	cloned := proto.Clone(event).(*rpc.ProcessEvent)
++	record := &journalRecord{
++		journal: j,
++		event:   cloned,
++		cost:    proto.Size(cloned) + journalRecordOverhead,
++	}
++
++	s := j.store
++	s.mu.Lock()
++	defer s.mu.Unlock()
++
++	if j.released {
++		return ErrJournalReleased
++	}
++	if j.terminal {
++		return ErrJournalClosed
++	}
++
++	j.lastSequence++
++	record.sequence = j.lastSequence
++	j.records = append(j.records, record)
++	j.bytes += record.cost
++	record.global = s.global.PushBack(record)
++	s.bytes += record.cost
++	s.events++
++	if cloned.GetEnd() != nil {
++		j.terminal = true
++	}
++
++	s.wakeLocked(j)
++	for s.overProcessLimitLocked(j) {
++		s.evictOldestFromJournalLocked(j)
++	}
++	for s.overStoreLimitLocked() {
++		s.evictOldestGlobalLocked()
++	}
++	s.compactLocked(j)
++
++	return nil
++}
++
++// Next returns the first retained record after the acknowledged sequence. If
++// no record exists yet, wait is closed by the next append, eviction or release.
++// The caller must advance its cursor only after successfully delivering event.
++func (j *EventJournal) Next(after uint64) (sequence uint64, event *rpc.ProcessEvent, wait <-chan struct{}, err error) {
++	s := j.store
++	s.mu.Lock()
++	defer s.mu.Unlock()
++
++	if err := j.validateCursorLocked(after); err != nil {
++		return 0, nil, nil, err
++	}
++
++	offset := after - j.evictedThrough
++	idx := j.head + int(offset)
++	if idx < len(j.records) {
++		r := j.records[idx]
++		return r.sequence, proto.Clone(r.event).(*rpc.ProcessEvent), nil, nil
++	}
++	if j.terminal {
++		return 0, nil, nil, nil
++	}
++
++	return 0, nil, j.notify, nil
++}
++
++func (j *EventJournal) validateCursorLocked(after uint64) error {
++	if j.released {
++		return ErrJournalReleased
++	}
++	if after > j.lastSequence {
++		return fmt.Errorf("%w: requested %d, latest %d", ErrJournalCursorAhead, after, j.lastSequence)
++	}
++	if after < j.evictedThrough {
++		return fmt.Errorf("%w: requested %d, oldest available %d", ErrJournalCursorEvicted, after, j.evictedThrough)
++	}
++
++	return nil
++}
++
++// Release removes all retained data immediately and wakes every waiter. A
++// released generation can never be mistaken for an empty journal.
++func (j *EventJournal) Release() {
++	s := j.store
++	s.mu.Lock()
++	defer s.mu.Unlock()
++
++	if j.released {
++		return
++	}
++	j.released = true
++	for j.head < len(j.records) {
++		s.evictRecordLocked(j.records[j.head])
++	}
++	s.wakeLocked(j)
++	j.records = nil
++	j.head = 0
++}
++
++func (s *JournalStore) overProcessLimitLocked(j *EventJournal) bool {
++	return (s.limits.ProcessBytes > 0 && j.bytes > s.limits.ProcessBytes) ||
++		(s.limits.ProcessEvents > 0 && len(j.records)-j.head > s.limits.ProcessEvents)
++}
++
++func (s *JournalStore) overStoreLimitLocked() bool {
++	return (s.limits.StoreBytes > 0 && s.bytes > s.limits.StoreBytes) ||
++		(s.limits.StoreEvents > 0 && s.events > s.limits.StoreEvents)
++}
++
++func (s *JournalStore) evictOldestFromJournalLocked(j *EventJournal) {
++	for j.head < len(j.records) && j.records[j.head].evicted {
++		j.head++
++	}
++	if j.head < len(j.records) {
++		s.evictRecordLocked(j.records[j.head])
++	}
++}
++
++func (s *JournalStore) evictOldestGlobalLocked() {
++	if oldest := s.global.Front(); oldest != nil {
++		s.evictRecordLocked(oldest.Value.(*journalRecord))
++	}
++}
++
++func (s *JournalStore) evictRecordLocked(r *journalRecord) {
++	if r.evicted {
++		return
++	}
++	r.evicted = true
++	if r.global != nil {
++		s.global.Remove(r.global)
++		r.global = nil
++	}
++	r.journal.bytes -= r.cost
++	r.journal.evictedThrough = r.sequence
++	s.bytes -= r.cost
++	s.events--
++	r.event = nil
++	for r.journal.head < len(r.journal.records) && r.journal.records[r.journal.head].evicted {
++		r.journal.head++
++	}
++	s.wakeLocked(r.journal)
++}
++
++func (s *JournalStore) wakeLocked(j *EventJournal) {
++	close(j.notify)
++	j.notify = make(chan struct{})
++}
++
++func (s *JournalStore) compactLocked(j *EventJournal) {
++	if j.head > 1024 && j.head*2 >= len(j.records) {
++		j.records = append([]*journalRecord(nil), j.records[j.head:]...)
++		j.head = 0
++	}
++}
+diff --git a/packages/envd/internal/services/process/handler/journal_test.go b/packages/envd/internal/services/process/handler/journal_test.go
+new file mode 100644
+index 0000000..27d4c93
+--- /dev/null
++++ b/packages/envd/internal/services/process/handler/journal_test.go
+@@ -0,0 +1,177 @@
++package handler
++
++import (
++	"errors"
++	"fmt"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	rpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/process"
++)
++
++func stdoutEvent(value string) *rpc.ProcessEvent {
++	return &rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{Data: &rpc.ProcessEvent_DataEvent{
++		Output: &rpc.ProcessEvent_DataEvent_Stdout{Stdout: []byte(value)},
++	}}}
++}
++
++func stderrEvent(value string) *rpc.ProcessEvent {
++	return &rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{Data: &rpc.ProcessEvent_DataEvent{
++		Output: &rpc.ProcessEvent_DataEvent_Stderr{Stderr: []byte(value)},
++	}}}
++}
++
++func endEvent(code int32) *rpc.ProcessEvent {
++	return &rpc.ProcessEvent{Event: &rpc.ProcessEvent_End{End: &rpc.ProcessEvent_EndEvent{
++		Exited: true, ExitCode: code, Status: "exited",
++	}}}
++}
++
++func TestEventJournalPreservesMixedOrderingAndClones(t *testing.T) {
++	t.Parallel()
++
++	j := NewJournalStore().NewJournal()
++	first := stdoutEvent("one")
++	require.NoError(t, j.Append(first))
++	first.GetData().GetStdout()[0] = 'X'
++	require.NoError(t, j.Append(stderrEvent("two")))
++	require.NoError(t, j.Append(endEvent(7)))
++
++	seq, event, wait, err := j.Next(0)
++	require.NoError(t, err)
++	assert.Equal(t, uint64(1), seq)
++	assert.Equal(t, "one", string(event.GetData().GetStdout()))
++	assert.Nil(t, wait)
++
++	seq, event, _, err = j.Next(seq)
++	require.NoError(t, err)
++	assert.Equal(t, uint64(2), seq)
++	assert.Equal(t, "two", string(event.GetData().GetStderr()))
++
++	seq, event, _, err = j.Next(seq)
++	require.NoError(t, err)
++	assert.Equal(t, uint64(3), seq)
++	assert.Equal(t, int32(7), event.GetEnd().GetExitCode())
++
++	_, event, wait, err = j.Next(seq)
++	require.NoError(t, err)
++	assert.Nil(t, event)
++	assert.Nil(t, wait, "caught-up terminal journals return EOF without waiting")
++}
++
++func TestEventJournalAtomicReplayToWaitHandoff(t *testing.T) {
++	t.Parallel()
++
++	j := NewJournalStore().NewJournal()
++	_, event, wait, err := j.Next(0)
++	require.NoError(t, err)
++	require.Nil(t, event)
++	require.NotNil(t, wait)
++
++	require.NoError(t, j.Append(stdoutEvent("arrived")))
++	select {
++	case <-wait:
++	case <-time.After(time.Second):
++		t.Fatal("append did not wake a cursor that atomically entered wait")
++	}
++
++	seq, event, _, err := j.Next(0)
++	require.NoError(t, err)
++	assert.Equal(t, uint64(1), seq)
++	assert.Equal(t, "arrived", string(event.GetData().GetStdout()))
++}
++
++func TestEventJournalPerProcessEvictionIsExplicit(t *testing.T) {
++	t.Parallel()
++
++	store := NewJournalStoreWithLimits(JournalLimits{ProcessEvents: 2, StoreEvents: 10})
++	j := store.NewJournal()
++	require.NoError(t, j.Append(stdoutEvent("one")))
++	evictedRecord := j.records[0]
++	require.NoError(t, j.Append(stdoutEvent("two")))
++	require.NoError(t, j.Append(stdoutEvent("three")))
++
++	_, _, _, err := j.Next(0)
++	assert.ErrorIs(t, err, ErrJournalCursorEvicted)
++	assert.Nil(t, evictedRecord.event, "eviction must release the retained protobuf payload")
++
++	seq, event, _, err := j.Next(1)
++	require.NoError(t, err)
++	assert.Equal(t, uint64(2), seq)
++	assert.Equal(t, "two", string(event.GetData().GetStdout()))
++}
++
++func TestJournalStoreGlobalEvictionIsExplicitPerAffectedProcess(t *testing.T) {
++	t.Parallel()
++
++	store := NewJournalStoreWithLimits(JournalLimits{ProcessEvents: 10, StoreEvents: 2})
++	a := store.NewJournal()
++	b := store.NewJournal()
++	require.NoError(t, a.Append(stdoutEvent("a1")))
++	require.NoError(t, b.Append(stdoutEvent("b1")))
++	require.NoError(t, a.Append(stdoutEvent("a2")))
++
++	_, _, _, err := a.Next(0)
++	assert.ErrorIs(t, err, ErrJournalCursorEvicted)
++	seq, event, _, err := b.Next(0)
++	require.NoError(t, err)
++	assert.Equal(t, uint64(1), seq)
++	assert.Equal(t, "b1", string(event.GetData().GetStdout()))
++	assert.Equal(t, 2, store.events)
++}
++
++func TestEventJournalRejectsInvalidCursorsAndRelease(t *testing.T) {
++	t.Parallel()
++
++	j := NewJournalStore().NewJournal()
++	require.NoError(t, j.Append(stdoutEvent("one")))
++	_, _, _, err := j.Next(2)
++	assert.ErrorIs(t, err, ErrJournalCursorAhead)
++
++	j.Release()
++	_, _, _, err = j.Next(0)
++	assert.ErrorIs(t, err, ErrJournalReleased)
++	assert.ErrorIs(t, j.Append(stdoutEvent("late")), ErrJournalReleased)
++}
++
++func TestEventJournalConcurrentAppendHasContiguousUniqueSequence(t *testing.T) {
++	t.Parallel()
++
++	const count = 512
++	store := NewJournalStoreWithLimits(JournalLimits{ProcessEvents: count, StoreEvents: count})
++	j := store.NewJournal()
++
++	var wg sync.WaitGroup
++	errs := make(chan error, count)
++	for i := range count {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			errs <- j.Append(stdoutEvent(fmt.Sprintf("%d", i)))
++		}()
++	}
++	wg.Wait()
++	close(errs)
++	for err := range errs {
++		require.NoError(t, err)
++	}
++
++	seen := make(map[string]bool, count)
++	var cursor uint64
++	for range count {
++		sequence, event, _, err := j.Next(cursor)
++		require.NoError(t, err)
++		require.Equal(t, cursor+1, sequence)
++		value := string(event.GetData().GetStdout())
++		require.False(t, seen[value], "duplicate output record %q", value)
++		seen[value] = true
++		cursor = sequence
++	}
++	assert.Len(t, seen, count)
++	assert.Equal(t, uint64(count), j.LastSequence())
++	assert.False(t, errors.Is(j.ValidateCursor(cursor), ErrJournalCursorAhead))
++}
+diff --git a/packages/envd/internal/services/process/handler/readopt.go b/packages/envd/internal/services/process/handler/readopt.go
+index 30adb30..ff7b666 100644
+--- a/packages/envd/internal/services/process/handler/readopt.go
++++ b/packages/envd/internal/services/process/handler/readopt.go
+@@ -38,7 +38,8 @@ type ReadoptArgs struct {
+ 	// carried kill-timer waits on it before starting, so the remaining timeout
+ 	// measures the process's running time and is not burned down while it is
+ 	// still frozen (until the post-upgrade /init thaws it).
+-	Thawed <-chan struct{}
++	Thawed  <-chan struct{}
++	Journal *EventJournal
+ }
+ 
+ // Readopt reconstructs a Handler for a process that survived an envd
+@@ -48,6 +49,10 @@ type ReadoptArgs struct {
+ // using a pid-specific wait4 so os/exec's reaping of post-upgrade processes is
+ // never disturbed.
+ func Readopt(args ReadoptArgs, logger *zerolog.Logger) *Handler {
++	journal := args.Journal
++	if journal == nil {
++		journal = NewJournalStore().NewJournal()
++	}
+ 	outMultiplex := NewMultiplexedChannel[rpc.ProcessEvent_Data](outputBufferSize)
+ 	outCtx, outCancel := context.WithCancel(context.Background())
+ 	_, cancel := context.WithCancel(context.Background())
+@@ -61,6 +66,7 @@ func Readopt(args ReadoptArgs, logger *zerolog.Logger) *Handler {
+ 		outCancel: outCancel,
+ 		DataEvent: outMultiplex,
+ 		EndEvent:  NewMultiplexedChannel[rpc.ProcessEvent_End](0),
++		Journal:   journal,
+ 		pid:       args.Pid,
+ 		cgType:    args.CgType,
+ 		readopted: true,
+@@ -166,8 +172,12 @@ func (p *Handler) pump(r io.Reader, chunk int, counter *atomic.Int64, mk func([]
+ 		n, readErr := r.Read(buf)
+ 		if n > 0 {
+ 			counter.Add(int64(n))
++			data := mk(slices.Clone(buf[:n]))
++			if err := p.Journal.Append(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_Data{Data: data}}); err != nil {
++				p.logger.Error().Err(err).Msg("readopt: error journaling process output")
++			}
+ 			if p.DataEvent.HasSubscribers() {
+-				p.DataEvent.Source <- rpc.ProcessEvent_Data{Data: mk(slices.Clone(buf[:n]))}
++				p.DataEvent.Source <- rpc.ProcessEvent_Data{Data: data}
+ 			}
+ 		}
+ 		if errors.Is(readErr, io.EOF) || errors.Is(readErr, syscall.EIO) {
+@@ -224,7 +234,11 @@ func (p *Handler) reapByPidfd() {
+ 		end.Status = ws.Signal().String()
+ 	}
+ 
+-	p.EndEvent.Source <- rpc.ProcessEvent_End{End: end}
++	event := rpc.ProcessEvent_End{End: end}
++	if err := p.Journal.Append(&rpc.ProcessEvent{Event: &event}); err != nil {
++		p.logger.Error().Err(err).Msg("readopt: error journaling process end")
++	}
++	p.EndEvent.Source <- event
+ 	// Retain the terminal event synchronously — before closing the source — so a
+ 	// Connect that forks after the close and falls back to the retention cache is
+ 	// guaranteed to find this exit rather than race an asynchronous retain.
+diff --git a/packages/envd/internal/services/process/replay.go b/packages/envd/internal/services/process/replay.go
+new file mode 100644
+index 0000000..dce84d8
+--- /dev/null
++++ b/packages/envd/internal/services/process/replay.go
+@@ -0,0 +1,116 @@
++package process
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net/http"
++	"strconv"
++	"time"
++
++	"connectrpc.com/connect"
++
++	"github.com/e2b-dev/infra/packages/envd/internal/services/process/handler"
++	rpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/process"
++)
++
++const (
++	replayVersionHeader = "E2b-Process-Replay-Version"
++	journalIDHeader     = "E2b-Process-Journal-Id"
++	afterSequenceHeader = "E2b-Process-After-Sequence"
++	replayVersion       = "1"
++)
++
++type replayRequest struct {
++	enabled   bool
++	journalID string
++	after     uint64
++}
++
++func parseReplayRequest(header http.Header) (replayRequest, error) {
++	raw := header.Get(afterSequenceHeader)
++	if raw == "" {
++		return replayRequest{}, nil
++	}
++
++	after, err := strconv.ParseUint(raw, 10, 64)
++	if err != nil {
++		return replayRequest{}, fmt.Errorf("invalid %s: %w", afterSequenceHeader, err)
++	}
++	id := header.Get(journalIDHeader)
++	if id == "" {
++		return replayRequest{}, fmt.Errorf("%s is required with %s", journalIDHeader, afterSequenceHeader)
++	}
++
++	return replayRequest{enabled: true, journalID: id, after: after}, nil
++}
++
++func journalConnectError(err error) error {
++	switch {
++	case errors.Is(err, handler.ErrJournalCursorEvicted), errors.Is(err, handler.ErrJournalCursorAhead):
++		return connect.NewError(connect.CodeOutOfRange, err)
++	case errors.Is(err, handler.ErrJournalReleased):
++		return connect.NewError(connect.CodeFailedPrecondition, err)
++	default:
++		return connect.NewError(connect.CodeInternal, err)
++	}
++}
++
++func validateReplayRequest(request replayRequest, journal *handler.EventJournal) error {
++	if !request.enabled {
++		return nil
++	}
++	if request.journalID != "" && request.journalID != journal.ID() {
++		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("process output generation changed: requested %q, current %q", request.journalID, journal.ID()))
++	}
++
++	return nil
++}
++
++func advertiseReplay(header http.Header, journal *handler.EventJournal) {
++	header.Set(replayVersionHeader, replayVersion)
++	header.Set(journalIDHeader, journal.ID())
++}
++
++// streamJournal serializes all Data and End delivery through the journal's
++// sequence order. The cursor advances only after Send succeeds. Poll and
++// append share the JournalStore mutex, so transitioning from retained records
++// to the wait channel cannot miss an append.
++func streamJournal(
++	ctx context.Context,
++	journal *handler.EventJournal,
++	after uint64,
++	keepalive <-chan time.Time,
++	resetKeepalive func(),
++	send func(*rpc.ProcessEvent) error,
++) error {
++	cursor := after
++	for {
++		sequence, event, wait, err := journal.Next(cursor)
++		if err != nil {
++			return journalConnectError(err)
++		}
++		if event != nil {
++			if err := send(event); err != nil {
++				return connect.NewError(connect.CodeUnknown, fmt.Errorf("error sending process event: %w", err))
++			}
++			cursor = sequence
++			resetKeepalive()
++
++			continue
++		}
++		if wait == nil {
++			return nil
++		}
++
++		select {
++		case <-ctx.Done():
++			return context.Cause(ctx)
++		case <-wait:
++		case <-keepalive:
++			if err := send(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_Keepalive{Keepalive: &rpc.ProcessEvent_KeepAlive{}}}); err != nil {
++				return connect.NewError(connect.CodeUnknown, fmt.Errorf("error sending keepalive: %w", err))
++			}
++		}
++	}
++}
+diff --git a/packages/envd/internal/services/process/service.go b/packages/envd/internal/services/process/service.go
+index 5abad16..0c7492a 100644
+--- a/packages/envd/internal/services/process/service.go
++++ b/packages/envd/internal/services/process/service.go
+@@ -24,18 +24,18 @@ import (
+ // exits while no client is subscribed, its EndEvent is dropped by the
+ // multiplex, and a reconnecting client would otherwise never learn the exit
+ // code. The cache keeps only the terminal event (the exit code), which is
+-// enough for a reconnecting client to learn how the process ended; buffering
+-// the full missed output stream for replay is a possible later enhancement, not
+-// done here.
++// enough for legacy callers to learn how the process ended. Replay-capable
++// callers can also consume the retained bounded journal.
+ const terminatedRetentionTTL = 30 * time.Second
+ 
+ // retainedExit is a process's terminal event, kept in the retention cache for
+ // terminatedRetentionTTL after the process exits.
+ type retainedExit struct {
+-	pid    uint32
+-	tag    *string
+-	end    *rpc.ProcessEvent_EndEvent
+-	expiry time.Time // when this entry is evicted; carried across a live-upgrade
++	pid     uint32
++	tag     *string
++	end     *rpc.ProcessEvent_EndEvent
++	journal *handler.EventJournal
++	expiry  time.Time // when this entry is evicted; carried across a live-upgrade
+ }
+ 
+ type Service struct {
+@@ -43,6 +43,7 @@ type Service struct {
+ 	terminated *utils.Map[uint32, *retainedExit]
+ 	logger     *zerolog.Logger
+ 	defaults   *execcontext.Defaults
++	journals   *handler.JournalStore
+ 	// snapshotMu serializes a live-upgrade's process-table snapshot against
+ 	// concurrent Start registration. handleStart holds it RLocked across
+ 	// fork+Store so a child is never spawned-but-unregistered when Upgrade takes
+@@ -68,6 +69,7 @@ func newService(l *zerolog.Logger, defaults *execcontext.Defaults, workloadFreez
+ 		processes:       utils.NewMap[uint32, *handler.Handler](),
+ 		terminated:      utils.NewMap[uint32, *retainedExit](),
+ 		defaults:        defaults,
++		journals:        handler.NewJournalStore(),
+ 		cgroupManager:   workloadFreezer.Manager(),
+ 		workloadFreezer: workloadFreezer,
+ 		handoverMaxWait: cgroups.HandoverMaxWait,
+@@ -111,11 +113,14 @@ func (s *Service) finalizeTermination(pid uint32, proc *handler.Handler, end *rp
+ 	}
+ 	if end != nil {
+ 		s.retain(pid, &retainedExit{
+-			pid:    pid,
+-			tag:    proc.Tag,
+-			end:    end,
+-			expiry: time.Now().Add(terminatedRetentionTTL),
++			pid:     pid,
++			tag:     proc.Tag,
++			end:     end,
++			journal: proc.Journal,
++			expiry:  time.Now().Add(terminatedRetentionTTL),
+ 		})
++	} else {
++		proc.Journal.Release()
+ 	}
+ 
+ 	s.processes.CompareAndDelete(pid, proc)
+diff --git a/packages/envd/internal/services/process/start.go b/packages/envd/internal/services/process/start.go
+index bad18ce..5b4f741 100644
+--- a/packages/envd/internal/services/process/start.go
++++ b/packages/envd/internal/services/process/start.go
+@@ -2,7 +2,6 @@ package process
+ 
+ import (
+ 	"context"
+-	"errors"
+ 	"fmt"
+ 	"net/http"
+ 	"strconv"
+@@ -52,6 +51,7 @@ func (s *Service) handleStart(ctx context.Context, req *connect.Request[rpc.Star
+ 	// don't serialize with each other, only against the (rare) upgrade.
+ 	s.snapshotMu.RLock()
+ 
++	journal := s.journals.NewJournal()
+ 	proc, err := handler.New( //nolint:contextcheck // TODO: fix this later
+ 		procCtx,
+ 		u,
+@@ -60,119 +60,21 @@ func (s *Service) handleStart(ctx context.Context, req *connect.Request[rpc.Star
+ 		s.defaults,
+ 		s.cgroupManager,
+ 		cancelProc,
++		journal,
+ 	)
+ 	if err != nil {
+ 		s.snapshotMu.RUnlock()
++		journal.Release()
+ 		// Ensure the process cancel is called to cleanup resources.
+ 		cancelProc()
+ 
+ 		return err
+ 	}
+ 
+-	exitChan := make(chan struct{})
+-
+-	// Buffered so the send below never blocks when the receiver
+-	// goroutine has already exited on a cancelled context.
+-	start := make(chan rpc.ProcessEvent_Start, 1)
+-
+-	data, dataCancel := proc.DataEvent.Fork()
+-	defer dataCancel()
+-
+-	end, endCancel := proc.EndEvent.Fork()
+-	defer endCancel()
+-
+-	go func() {
+-		defer close(exitChan)
+-
+-		select {
+-		case <-ctx.Done():
+-			cancel(ctx.Err())
+-
+-			return
+-		case event := <-start:
+-			streamErr := stream.Send(&rpc.StartResponse{
+-				Event: &rpc.ProcessEvent{
+-					Event: &event,
+-				},
+-			})
+-			if streamErr != nil {
+-				cancel(connect.NewError(connect.CodeUnknown, fmt.Errorf("error sending start event: %w", streamErr)))
+-
+-				return
+-			}
+-		}
+-
+-		keepaliveTicker, resetKeepalive := permissions.GetKeepAliveTicker(req)
+-		defer keepaliveTicker.Stop()
+-
+-	dataLoop:
+-		for {
+-			select {
+-			case <-keepaliveTicker.C:
+-				streamErr := stream.Send(&rpc.StartResponse{
+-					Event: &rpc.ProcessEvent{
+-						Event: &rpc.ProcessEvent_Keepalive{
+-							Keepalive: &rpc.ProcessEvent_KeepAlive{},
+-						},
+-					},
+-				})
+-				if streamErr != nil {
+-					cancel(connect.NewError(connect.CodeUnknown, fmt.Errorf("error sending keepalive: %w", streamErr)))
+-
+-					return
+-				}
+-			case <-ctx.Done():
+-				cancel(ctx.Err())
+-
+-				return
+-			case event, ok := <-data:
+-				if !ok {
+-					break dataLoop
+-				}
+-
+-				streamErr := stream.Send(&rpc.StartResponse{
+-					Event: &rpc.ProcessEvent{
+-						Event: &event,
+-					},
+-				})
+-				if streamErr != nil {
+-					cancel(connect.NewError(connect.CodeUnknown, fmt.Errorf("error sending data event: %w", streamErr)))
+-
+-					return
+-				}
+-
+-				resetKeepalive()
+-			}
+-		}
+-
+-		select {
+-		case <-ctx.Done():
+-			cancel(ctx.Err())
+-
+-			return
+-		case event, ok := <-end:
+-			if !ok {
+-				cancel(connect.NewError(connect.CodeUnknown, errors.New("end event channel closed before sending end event")))
+-
+-				return
+-			}
+-
+-			streamErr := stream.Send(&rpc.StartResponse{
+-				Event: &rpc.ProcessEvent{
+-					Event: &event,
+-				},
+-			})
+-			if streamErr != nil {
+-				cancel(connect.NewError(connect.CodeUnknown, fmt.Errorf("error sending end event: %w", streamErr)))
+-
+-				return
+-			}
+-		}
+-	}()
+-
+ 	pid, err := proc.Start(requestTimeout)
+ 	if err != nil {
+ 		s.snapshotMu.RUnlock()
++		journal.Release()
+ 
+ 		return connect.NewError(handler.StartErrorCode(err), err)
+ 	}
+@@ -198,12 +100,6 @@ func (s *Service) handleStart(ctx context.Context, req *connect.Request[rpc.Star
+ 		s.finalizeTermination(pid, proc, end)
+ 	}
+ 
+-	start <- rpc.ProcessEvent_Start{
+-		Start: &rpc.ProcessEvent_StartEvent{
+-			Pid: pid,
+-		},
+-	}
+-
+ 	go func() {
+ 		// Reap the process. Removal from s.processes is owned solely by
+ 		// finalizeTermination (invoked via proc.OnExit above), which retains the
+@@ -213,10 +109,19 @@ func (s *Service) handleStart(ctx context.Context, req *connect.Request[rpc.Star
+ 		proc.Wait()
+ 	}()
+ 
+-	// Wait for the sender goroutine; returning early panics envd.
+-	<-exitChan
++	advertiseReplay(stream.Conn().ResponseHeader(), journal)
++	if err := stream.Send(&rpc.StartResponse{Event: &rpc.ProcessEvent{
++		Event: &rpc.ProcessEvent_Start{Start: &rpc.ProcessEvent_StartEvent{Pid: pid}},
++	}}); err != nil {
++		return connect.NewError(connect.CodeUnknown, fmt.Errorf("error sending start event: %w", err))
++	}
++
++	keepaliveTicker, resetKeepalive := permissions.GetKeepAliveTicker(req)
++	defer keepaliveTicker.Stop()
+ 
+-	return ctx.Err()
++	return streamJournal(ctx, journal, 0, keepaliveTicker.C, resetKeepalive, func(event *rpc.ProcessEvent) error {
++		return stream.Send(&rpc.StartResponse{Event: event})
++	})
+ }
+ 
+ func determineTimeoutFromHeader(header http.Header) (time.Duration, error) {
+diff --git a/packages/envd/internal/services/process/upgrade.go b/packages/envd/internal/services/process/upgrade.go
+index 60ef88b..1caa805 100644
+--- a/packages/envd/internal/services/process/upgrade.go
++++ b/packages/envd/internal/services/process/upgrade.go
+@@ -442,6 +442,7 @@ func (s *Service) ResumeFromHandover(reArmWatchers func([]*upgrade.HandoverWatch
+ 			Tty:     fileOrNil(int(hp.GetTtyFd()), fmt.Sprintf("p%d-tty", hp.GetPid())),
+ 			Timeout: timeout,
+ 			Thawed:  thawed,
++			Journal: s.journals.NewJournal(),
+ 		}, s.logger)
+ 
+ 		pid := hp.GetPid()
+@@ -546,11 +547,14 @@ func (s *Service) restoreTerminated(entries []*upgrade.HandoverExit) (failed int
+ 			tag = &t
+ 		}
+ 
++		journal := s.journals.NewJournal()
++		_ = journal.Append(&rpc.ProcessEvent{Event: &rpc.ProcessEvent_End{End: end}})
+ 		s.retain(he.GetPid(), &retainedExit{
+-			pid:    he.GetPid(),
+-			tag:    tag,
+-			end:    end,
+-			expiry: time.Now().Add(time.Duration(he.GetRemainingMs()) * time.Millisecond),
++			pid:     he.GetPid(),
++			tag:     tag,
++			end:     end,
++			journal: journal,
++			expiry:  time.Now().Add(time.Duration(he.GetRemainingMs()) * time.Millisecond),
+ 		})
+ 	}
+ 

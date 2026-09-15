@@ -136,7 +136,20 @@ check_source() {
   require_literal "$source_root/packages/envd/internal/services/process/service_test.go" \
     "require.Same(t, target, got)" "the live tag lookup target-identity assertion"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"network_version":1}'
+  require_literal "$source_root/packages/envd/internal/services/process/replay.go" \
+    'replayVersionHeader = "E2b-Process-Replay-Version"' "the process replay protocol version"
+  require_literal "$source_root/packages/envd/internal/services/process/replay.go" \
+    'return replayRequest{}, fmt.Errorf("%s is required with %s", journalIDHeader, afterSequenceHeader)' "generation binding for every replay cursor"
+  require_literal "$source_root/packages/envd/internal/services/process/handler/journal.go" \
+    'defaultJournalBytes       = 8 << 20' "the per-process replay byte bound"
+  require_literal "$source_root/packages/envd/internal/services/process/handler/journal.go" \
+    'defaultJournalStoreBytes  = 32 << 20' "the envd-wide replay byte bound"
+  require_literal "$source_root/packages/envd/internal/services/process/connect_test.go" \
+    'TestConnect_ReplayFailsExplicitlyAfterEviction' "the fail-closed replay eviction regression test"
+  require_literal "$source_root/packages/envd/internal/services/process/handler/journal_test.go" \
+    'TestEventJournalAtomicReplayToWaitHandoff' "the gap-free replay-to-live handoff regression test"
+
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
 }
 
 find_orchestrator_pid() {

@@ -18,6 +18,7 @@ ENGINE_NFS_DURABILITY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0005-make
 ENGINE_START_ADMISSION_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0006-bound-start-admission-retries.patch"
 ENGINE_LOCAL_CAPACITY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0007-scale-local-resource-pools-and-template-shape.patch"
 ENGINE_ENVD_PROCESS_TAG_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0008-fix-envd-process-tag-resolution.patch"
+ENGINE_ENVD_PROCESS_REPLAY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0009-add-bounded-process-output-replay.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
@@ -102,7 +103,8 @@ ENGINE_NFS_DURABILITY_PATCH_SHA256=$(read_lock orchestrator_nfs_durability_patch
 ENGINE_START_ADMISSION_PATCH_SHA256=$(read_lock engine_start_admission_patch_sha256)
 ENGINE_LOCAL_CAPACITY_PATCH_SHA256=$(read_lock engine_local_capacity_patch_sha256)
 ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256=$(read_lock envd_process_tag_patch_sha256)
-if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ]; then
+ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256=$(read_lock envd_process_replay_patch_sha256)
+if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
   echo "invalid engine.lock" >&2
   exit 1
 fi
@@ -239,6 +241,10 @@ if [ "$(sha256sum "$ENGINE_ENVD_PROCESS_TAG_PATCH" | awk '{print $1}')" != "$ENG
   echo "engine envd process-tag patch verification failed" >&2
   exit 1
 fi
+if [ "$(sha256sum "$ENGINE_ENVD_PROCESS_REPLAY_PATCH" | awk '{print $1}')" != "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
+  echo "engine envd process-replay patch verification failed" >&2
+  exit 1
+fi
 "$ARTIFACT_SUPPLY_CHAIN" image-lock "$ENGINE_IMAGE_LOCK"
 
 read_image_lock() {
@@ -354,6 +360,7 @@ patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NFS_DURABILITY_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_START_ADMISSION_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_LOCAL_CAPACITY_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_TAG_PATCH"
+patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_REPLAY_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 
 # The upstream base-template service executes a JavaScript helper embedded in
@@ -412,11 +419,11 @@ BREZEL_ENGINE_ORCHESTRATOR_SHA256=$(sha256sum "$BREZEL_ENGINE_ORCHESTRATOR_BINAR
 export BREZEL_ENGINE_ORCHESTRATOR_BINARY BREZEL_ENGINE_ORCHESTRATOR_SHA256
 
 # Build envd from the same pinned and patched source tree. The released envd
-# binary contains an inverted sync.Map Range callback for live tag lookup;
-# installing only the source patch would leave every Firecracker guest on the
-# vulnerable upstream artifact. The protected binary below replaces that
-# fetched artifact before any new guest can start.
-BREZEL_ENGINE_ENVD_IMAGE="brezel/engine-envd:${ENGINE_COMMIT}-process-tag-v1"
+# binary needs both corrected live tag lookup and generation-bound, cursorized
+# output recovery. Installing only the source patches would leave every
+# Firecracker guest on the upstream artifact. The protected binary below
+# replaces that fetched artifact before any new guest can start.
+BREZEL_ENGINE_ENVD_IMAGE="brezel/engine-envd:${ENGINE_COMMIT}-process-replay-v1"
 ENVD_VERSION=$(sed -n 's/.*Version = "\([^"]*\)".*/\1/p' "$ENGINE_BUILD_DIR/packages/envd/pkg/version.go")
 [ -n "$ENVD_VERSION" ] || { echo "could not resolve the pinned envd version" >&2; exit 1; }
 docker build \
@@ -506,7 +513,7 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 "$ARTIFACT_SUPPLY_CHAIN" manifest "$INSTALL_DIR/distribution.manifest" "$LOCK_FILE" "$ENGINE_IMAGE_LOCK" "$ENGINE_ARTIFACT_LOCK" / \
   "$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$ENGINE_ORCHESTRATOR_PATCH_SHA256" "$ENGINE_CACHE_PATCH_SHA256" \
   "$ENGINE_NFS_DURABILITY_PATCH_SHA256" "$ENGINE_START_ADMISSION_PATCH_SHA256" "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" \
-  "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256"
+  "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256"
 
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
   exec -T ready sh -c 'cat /run/e2b/team-api-key' > "$SECRETS_DIR/engine.token"

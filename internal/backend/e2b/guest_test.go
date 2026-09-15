@@ -43,6 +43,97 @@ type reconnectingProcessService struct {
 	connectCalls  int
 }
 
+type journalReplayProcessService struct {
+	wireconnect.UnimplementedProcessHandler
+
+	t            *testing.T
+	journalID    string
+	startCalls   int
+	connectCalls int
+}
+
+type lostStartJournalProcessService struct {
+	wireconnect.UnimplementedProcessHandler
+
+	t            *testing.T
+	journalID    string
+	tag          string
+	startCalls   int
+	connectCalls int
+}
+
+func (s *lostStartJournalProcessService) Start(_ context.Context, request *connect.Request[wire.StartRequest], stream *connect.ServerStream[wire.StartResponse]) error {
+	s.startCalls++
+	s.tag = request.Msg.GetTag()
+	stream.ResponseHeader().Set(processReplayVersionHeader, processReplayVersion)
+	stream.ResponseHeader().Set(processJournalIDHeader, s.journalID)
+	return connect.NewError(connect.CodeUnavailable, errors.New("injected loss before start event"))
+}
+
+func (s *lostStartJournalProcessService) Connect(_ context.Context, request *connect.Request[wire.ConnectRequest], stream *connect.ServerStream[wire.ConnectResponse]) error {
+	s.connectCalls++
+	if request.Msg.GetProcess().GetTag() != s.tag {
+		s.t.Fatalf("connect tag = %q, want %q", request.Msg.GetProcess().GetTag(), s.tag)
+	}
+	if request.Header().Get(processAfterSequenceHeader) != "0" || request.Header().Get(processJournalIDHeader) != s.journalID {
+		s.t.Fatalf("replay headers = %#v", request.Header())
+	}
+	stream.ResponseHeader().Set(processReplayVersionHeader, processReplayVersion)
+	stream.ResponseHeader().Set(processJournalIDHeader, s.journalID)
+	if err := stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Start{Start: &wire.ProcessEvent_StartEvent{Pid: 92}}}}); err != nil {
+		return err
+	}
+	if err := stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Data{Data: &wire.ProcessEvent_DataEvent{Output: &wire.ProcessEvent_DataEvent_Stdout{Stdout: []byte("recovered")}}}}}); err != nil {
+		return err
+	}
+	return stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_End{End: &wire.ProcessEvent_EndEvent{Exited: true, ExitCode: 0, Status: "exited"}}}})
+}
+
+func (s *journalReplayProcessService) Start(_ context.Context, request *connect.Request[wire.StartRequest], stream *connect.ServerStream[wire.StartResponse]) error {
+	s.startCalls++
+	if request.Msg.GetTag() == "" {
+		s.t.Fatal("start request omitted execution tag")
+	}
+	stream.ResponseHeader().Set(processReplayVersionHeader, processReplayVersion)
+	stream.ResponseHeader().Set(processJournalIDHeader, s.journalID)
+	if err := stream.Send(&wire.StartResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Start{Start: &wire.ProcessEvent_StartEvent{Pid: 91}}}}); err != nil {
+		return err
+	}
+	if err := stream.Send(&wire.StartResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Data{Data: &wire.ProcessEvent_DataEvent{Output: &wire.ProcessEvent_DataEvent_Stdout{Stdout: []byte("one")}}}}}); err != nil {
+		return err
+	}
+	return connect.NewError(connect.CodeUnavailable, errors.New("injected start stream loss"))
+}
+
+func (s *journalReplayProcessService) Connect(_ context.Context, request *connect.Request[wire.ConnectRequest], stream *connect.ServerStream[wire.ConnectResponse]) error {
+	s.connectCalls++
+	if got := request.Header().Get(processJournalIDHeader); got != s.journalID {
+		s.t.Fatalf("journal id = %q, want %q", got, s.journalID)
+	}
+	wantAfter := "1"
+	if s.connectCalls > 1 {
+		wantAfter = "2"
+	}
+	if got := request.Header().Get(processAfterSequenceHeader); got != wantAfter {
+		s.t.Fatalf("after sequence = %q, want %q", got, wantAfter)
+	}
+	stream.ResponseHeader().Set(processReplayVersionHeader, processReplayVersion)
+	stream.ResponseHeader().Set(processJournalIDHeader, s.journalID)
+	if err := stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Start{Start: &wire.ProcessEvent_StartEvent{Pid: 91}}}}); err != nil {
+		return err
+	}
+	if s.connectCalls == 1 {
+		if err := stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Data{Data: &wire.ProcessEvent_DataEvent{Output: &wire.ProcessEvent_DataEvent_Stderr{Stderr: []byte("two")}}}}}); err != nil {
+			return err
+		}
+		return connect.NewError(connect.CodeUnavailable, errors.New("injected reconnect stream loss"))
+	}
+	if err := stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Data{Data: &wire.ProcessEvent_DataEvent{Output: &wire.ProcessEvent_DataEvent_Stdout{Stdout: []byte("three")}}}}}); err != nil {
+		return err
+	}
+	return stream.Send(&wire.ConnectResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_End{End: &wire.ProcessEvent_EndEvent{Exited: true, ExitCode: 0, Status: "exited"}}}})
+}
+
 func (s *reconnectingProcessService) Start(_ context.Context, request *connect.Request[wire.StartRequest], stream *connect.ServerStream[wire.StartResponse]) error {
 	s.startCalls++
 	s.reconnectTag = request.Msg.GetTag()
@@ -207,6 +298,66 @@ func TestGuestRunReconnectsByPIDWithoutReplayingCommand(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Type != backend.CommandStarted || events[0].PID != 73 {
 		t.Fatalf("reconnected data escaped as trusted command output: %#v", events)
+	}
+}
+
+func TestGuestRunReplaysOnlyMissingJournalSuffixAcrossRepeatedFailures(t *testing.T) {
+	processService := &journalReplayProcessService{t: t, journalID: "generation-4"}
+	_, handler := wireconnect.NewProcessHandler(processService)
+	guest := httptest.NewServer(handler)
+	defer guest.Close()
+	api := sandboxDetailServer(t, `{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-secret"}`)
+	defer api.Close()
+	client, _ := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL))
+	var events []backend.CommandEvent
+	err := client.Run(context.Background(), "upstream-1", backend.CommandRequest{Argv: []string{"side-effect-once"}}, func(event backend.CommandEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processService.startCalls != 1 || processService.connectCalls != 2 {
+		t.Fatalf("calls: start=%d connect=%d, want 1 and 2", processService.startCalls, processService.connectCalls)
+	}
+	wantTypes := []backend.CommandEventType{backend.CommandStarted, backend.CommandStdout, backend.CommandStderr, backend.CommandStdout, backend.CommandExited}
+	var gotTypes []backend.CommandEventType
+	var output bytes.Buffer
+	for _, event := range events {
+		gotTypes = append(gotTypes, event.Type)
+		output.Write(event.Data)
+	}
+	if !reflect.DeepEqual(gotTypes, wantTypes) || output.String() != "onetwothree" {
+		t.Fatalf("events = %#v, output = %q", events, output.String())
+	}
+}
+
+func TestGuestRunRecoversByTagWhenJournalStartEventWasLost(t *testing.T) {
+	processService := &lostStartJournalProcessService{t: t, journalID: "generation-5"}
+	_, handler := wireconnect.NewProcessHandler(processService)
+	guest := httptest.NewServer(handler)
+	defer guest.Close()
+	api := sandboxDetailServer(t, `{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-secret"}`)
+	defer api.Close()
+	client, _ := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL))
+	var events []backend.CommandEvent
+	err := client.Run(context.Background(), "upstream-1", backend.CommandRequest{Argv: []string{"side-effect-once"}}, func(event backend.CommandEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processService.startCalls != 1 || processService.connectCalls != 1 {
+		t.Fatalf("calls: start=%d connect=%d, want 1 each", processService.startCalls, processService.connectCalls)
+	}
+	wantTypes := []backend.CommandEventType{backend.CommandStarted, backend.CommandStdout, backend.CommandExited}
+	var gotTypes []backend.CommandEventType
+	for _, event := range events {
+		gotTypes = append(gotTypes, event.Type)
+	}
+	if !reflect.DeepEqual(gotTypes, wantTypes) || string(events[1].Data) != "recovered" {
+		t.Fatalf("events = %#v", events)
 	}
 }
 

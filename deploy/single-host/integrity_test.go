@@ -37,6 +37,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"engine_start_admission_patch_sha256":      "0006-bound-start-admission-retries.patch",
 		"engine_local_capacity_patch_sha256":       "0007-scale-local-resource-pools-and-template-shape.patch",
 		"envd_process_tag_patch_sha256":            "0008-fix-envd-process-tag-resolution.patch",
+		"envd_process_replay_patch_sha256":         "0009-add-bounded-process-output-replay.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -718,6 +719,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		hex.EncodeToString(orchestratorDigest[:]),
 		patchDigest, patchDigest, patchDigest, patchDigest, patchDigest,
 		hex.EncodeToString(envdDigest[:]), patchDigest,
+		patchDigest,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("distribution manifest rejected source-built envd: %v: %s", err, output)
@@ -731,6 +733,8 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.envd.sha256=" + hex.EncodeToString(envdDigest[:]),
 		"artifact.envd.process_tag_patch_sha256=" + patchDigest,
 		"artifact.envd.live_tag_resolution=complete-map-scan",
+		"artifact.envd.process_replay_patch_sha256=" + patchDigest,
+		"artifact.envd.process_output_recovery=generation-bound-cursor-journal",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -914,6 +918,10 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"embed/compose/scripts/node/build-base-template.mjs":                  "BASE_TEMPLATE_MIN_FREE_DISK_MB\nminFreeDiskMb\n",
 		"packages/envd/internal/services/process/service.go":                  "if value.Tag == nil || *value.Tag != tag {\n",
 		"packages/envd/internal/services/process/service_test.go":             "TestGetProcessByTagScansPastNonMatches\nrequire.Same(t, target, got)\n",
+		"packages/envd/internal/services/process/replay.go":                   "replayVersionHeader = \"E2b-Process-Replay-Version\"\nreturn replayRequest{}, fmt.Errorf(\"%s is required with %s\", journalIDHeader, afterSequenceHeader)\n",
+		"packages/envd/internal/services/process/handler/journal.go":          "defaultJournalBytes       = 8 << 20\ndefaultJournalStoreBytes  = 32 << 20\n",
+		"packages/envd/internal/services/process/connect_test.go":             "TestConnect_ReplayFailsExplicitlyAfterEviction\n",
+		"packages/envd/internal/services/process/handler/journal_test.go":     "TestEventJournalAtomicReplayToWaitHandoff\n",
 	}
 	for name, content := range files {
 		path := filepath.Join(root, name)
@@ -1195,15 +1203,19 @@ func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 	installer := string(installerData)
 	for _, required := range []string{
 		"0008-fix-envd-process-tag-resolution.patch",
+		"0009-add-bounded-process-output-replay.patch",
 		"envd_process_tag_patch_sha256",
+		"envd_process_replay_patch_sha256",
 		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_TAG_PATCH"`,
+		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_REPLAY_PATCH"`,
 		`BREZEL_ENGINE_ENVD_IMAGE="brezel/engine-envd:`,
 		`-f "$SCRIPT_DIR/envd.Dockerfile"`,
 		`BREZEL_ENGINE_ENVD_BINARY="$INSTALL_DIR/artifacts/envd"`,
 		`BREZEL_ENGINE_ENVD_SHA256=$(sha256sum "$BREZEL_ENGINE_ENVD_BINARY"`,
 		`run --rm --no-deps brezel-envd-install`,
-		`"$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256"`,
+		`"$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256"`,
 		"engine envd process-tag patch verification failed",
+		"engine envd process-replay patch verification failed",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing envd process-tag invariant %q", required)
@@ -1251,8 +1263,12 @@ func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 		"artifact.envd.upstream_sha256",
 		"artifact.envd.process_tag_patch_sha256",
 		"artifact.envd.live_tag_resolution=complete-map-scan",
+		"artifact.envd.process_replay_patch_sha256",
+		"artifact.envd.process_output_recovery=generation-bound-cursor-journal",
 		"the envd override requires the process-tag patch identity",
+		"the envd override requires the process-replay patch identity",
 		"the process-tag patch requires the envd override identity",
+		"the process-replay patch requires the process-tag patch identity",
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("distribution manifest writer is missing envd identity %q", required)
@@ -1269,6 +1285,10 @@ func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 		"TestGetProcessByTagScansPastNonMatches",
 		"require.Same(t, target, got)",
 		`"live_tag_resolution":"complete-map-scan"`,
+		`replayVersionHeader = "E2b-Process-Replay-Version"`,
+		"TestConnect_ReplayFailsExplicitlyAfterEviction",
+		"TestEventJournalAtomicReplayToWaitHandoff",
+		`"protocol":"generation-bound-cursor-journal"`,
 	} {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("engine capability probe is missing envd process-tag contract %q", required)

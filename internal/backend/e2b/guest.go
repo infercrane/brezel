@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +24,16 @@ import (
 
 const envdPort = 49983
 
+const (
+	processReplayVersionHeader  = "E2b-Process-Replay-Version"
+	processJournalIDHeader      = "E2b-Process-Journal-Id"
+	processAfterSequenceHeader  = "E2b-Process-After-Sequence"
+	processReplayVersion        = "1"
+	processReconnectMaxAttempts = 3
+)
+
 var safeSandboxID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{0,127}$`)
+var safeProcessJournalID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$`)
 
 var errGuestProcessOutputIncomplete = errors.New("guest process output continuity was lost")
 
@@ -84,6 +94,8 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 
 	ended := false
 	var processPID uint32
+	var journalID string
+	var committedSequence uint64
 	firstEventStarted := time.Now()
 	firstEventObserved := false
 	defer func() {
@@ -92,6 +104,9 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 		}
 	}()
 	for stream.Receive() {
+		if journalID == "" {
+			journalID = processJournalID(stream.ResponseHeader())
+		}
 		message := stream.Msg()
 		if message == nil || message.GetEvent() == nil {
 			return errors.New("guest process returned an empty event")
@@ -121,6 +136,7 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 			case len(data.GetPty()) > 0:
 				return errors.New("guest returned PTY data for a non-PTY process")
 			default:
+				committedSequence++
 				continue
 			}
 		case event.GetEnd() != nil:
@@ -133,8 +149,17 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 		if err := emit(output); err != nil {
 			return err
 		}
+		if event.GetData() != nil || event.GetEnd() != nil {
+			committedSequence++
+		}
+	}
+	if journalID == "" {
+		journalID = processJournalID(stream.ResponseHeader())
 	}
 	streamErr := stream.Err()
+	if ended {
+		return nil
+	}
 	if streamErr == nil && !ended {
 		streamErr = errors.New("guest process stream closed without an exit event")
 	}
@@ -143,17 +168,28 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 			return fmt.Errorf("guest process stream: %w", streamErr)
 		}
 		// Start deliberately detaches the guest process from the request
-		// context. Once its PID has been observed, replaying Start could execute
-		// a side effect twice. Connect to that exact PID instead and wait for its
-		// terminal event so lifecycle cleanup does not race a still-running
-		// process. Envd does not replay stdout/stderr, therefore this path can
-		// recover terminal state but must still reject the command result as
-		// output-incomplete.
+		// context. Once the RPC has been accepted, replaying Start could execute
+		// a side effect twice. A patched envd advertises a generation-scoped,
+		// cursorized output journal. Reconnect to the exact process and consume
+		// only the suffix after the last event accepted by emit. Unsupported or
+		// incomplete journals fail closed.
 		selector := &wire.ProcessSelector{Selector: &wire.ProcessSelector_Tag{Tag: executionTag}}
 		identity := executionTag
 		if processPID != 0 {
 			selector.Selector = &wire.ProcessSelector_Pid{Pid: processPID}
 			identity = fmt.Sprint(processPID)
+		}
+		if journalID != "" {
+			recoverErr := c.recoverGuestProcess(ctx, client, connection, selector, &processRecoveryState{
+				journalID:         journalID,
+				committedSequence: committedSequence,
+				pid:               processPID,
+				started:           processPID != 0,
+			}, emit)
+			if recoverErr == nil {
+				return nil
+			}
+			return errors.Join(errGuestProcessOutputIncomplete, fmt.Errorf("guest process stream: %w", streamErr), fmt.Errorf("recover guest process %s: %w", identity, recoverErr))
 		}
 		if recoverErr := c.awaitGuestProcessTerminal(ctx, client, connection, selector, processPID); recoverErr != nil {
 			return errors.Join(fmt.Errorf("guest process stream: %w", streamErr), fmt.Errorf("recover guest process %s: %w", identity, recoverErr))
@@ -161,6 +197,162 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 		return errors.Join(errGuestProcessOutputIncomplete, fmt.Errorf("guest process stream: %w", streamErr))
 	}
 	return nil
+}
+
+type processRecoveryState struct {
+	journalID         string
+	committedSequence uint64
+	pid               uint32
+	started           bool
+	ended             bool
+}
+
+func processJournalID(header http.Header) string {
+	if header.Get(processReplayVersionHeader) != processReplayVersion {
+		return ""
+	}
+	id := strings.TrimSpace(header.Get(processJournalIDHeader))
+	if !safeProcessJournalID.MatchString(id) {
+		return ""
+	}
+	return id
+}
+
+func (c *Client) recoverGuestProcess(ctx context.Context, client wireconnect.ProcessClient, connection guestConnection, selector *wire.ProcessSelector, state *processRecoveryState, emit func(backend.CommandEvent) error) error {
+	var lastErr error
+	for attempt := 0; attempt < processReconnectMaxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		request := connect.NewRequest(&wire.ConnectRequest{Process: selector})
+		connection.setHeaders(request.Header())
+		request.Header().Set(processJournalIDHeader, state.journalID)
+		request.Header().Set(processAfterSequenceHeader, strconv.FormatUint(state.committedSequence, 10))
+		stream, err := client.Connect(ctx, request)
+		if err != nil {
+			lastErr = err
+			if !retryableGuestStreamError(err) {
+				return err
+			}
+			continue
+		}
+
+		headerChecked := false
+		for stream.Receive() {
+			if !headerChecked {
+				headerChecked = true
+				if got := processJournalID(stream.ResponseHeader()); got != state.journalID {
+					_ = stream.Close()
+					return fmt.Errorf("guest process reconnect journal %q does not match %q", got, state.journalID)
+				}
+			}
+			message := stream.Msg()
+			if message == nil || message.GetEvent() == nil {
+				_ = stream.Close()
+				return errors.New("guest process reconnect returned an empty event")
+			}
+			if err := acceptRecoveredProcessEvent(message.GetEvent(), state, emit); err != nil {
+				_ = stream.Close()
+				return err
+			}
+			if state.ended {
+				_ = stream.Close()
+				return nil
+			}
+		}
+		if !headerChecked {
+			lastErr = stream.Err()
+			if lastErr != nil {
+				_ = stream.Close()
+				if !retryableGuestStreamError(lastErr) {
+					return lastErr
+				}
+				continue
+			}
+			if got := processJournalID(stream.ResponseHeader()); got != state.journalID {
+				_ = stream.Close()
+				return fmt.Errorf("guest process reconnect journal %q does not match %q", got, state.journalID)
+			}
+		}
+		lastErr = stream.Err()
+		_ = stream.Close()
+		if lastErr == nil {
+			lastErr = errors.New("guest process reconnect closed without an exit event")
+		}
+		if !retryableGuestStreamError(lastErr) {
+			return lastErr
+		}
+	}
+	return fmt.Errorf("guest process reconnect exhausted after %d attempts: %w", processReconnectMaxAttempts, lastErr)
+}
+
+func acceptRecoveredProcessEvent(event *wire.ProcessEvent, state *processRecoveryState, emit func(backend.CommandEvent) error) error {
+	switch {
+	case event.GetStart() != nil:
+		pid := event.GetStart().GetPid()
+		if pid == 0 {
+			return errors.New("guest process reconnect returned an invalid pid")
+		}
+		if state.pid != 0 && pid != state.pid {
+			return fmt.Errorf("guest process reconnect returned pid %d, want %d", pid, state.pid)
+		}
+		if state.started {
+			return nil
+		}
+		if err := emit(backend.CommandEvent{Type: backend.CommandStarted, PID: pid}); err != nil {
+			return err
+		}
+		state.pid = pid
+		state.started = true
+		return nil
+	case event.GetData() != nil:
+		if !state.started {
+			return errors.New("guest process reconnect returned data before start")
+		}
+		data := event.GetData()
+		var output backend.CommandEvent
+		switch {
+		case len(data.GetStdout()) > 0:
+			output = backend.CommandEvent{Type: backend.CommandStdout, Data: append([]byte(nil), data.GetStdout()...)}
+		case len(data.GetStderr()) > 0:
+			output = backend.CommandEvent{Type: backend.CommandStderr, Data: append([]byte(nil), data.GetStderr()...)}
+		case len(data.GetPty()) > 0:
+			return errors.New("guest returned PTY data for a non-PTY process")
+		default:
+			state.committedSequence++
+			return nil
+		}
+		if err := emit(output); err != nil {
+			return err
+		}
+		state.committedSequence++
+		return nil
+	case event.GetEnd() != nil:
+		if !state.started {
+			return errors.New("guest process reconnect returned an exit before start")
+		}
+		end := event.GetEnd()
+		if err := emit(backend.CommandEvent{Type: backend.CommandExited, ExitCode: end.GetExitCode(), Exited: end.GetExited(), Status: end.GetStatus(), Error: end.GetError()}); err != nil {
+			return err
+		}
+		state.committedSequence++
+		state.ended = true
+		return nil
+	default:
+		return nil
+	}
+}
+
+func retryableGuestStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch connect.CodeOf(err) {
+	case connect.CodeInvalidArgument, connect.CodeNotFound, connect.CodeOutOfRange, connect.CodeFailedPrecondition, connect.CodeUnimplemented, connect.CodePermissionDenied, connect.CodeUnauthenticated:
+		return false
+	default:
+		return true
+	}
 }
 
 func (c *Client) awaitGuestProcessTerminal(ctx context.Context, client wireconnect.ProcessClient, connection guestConnection, selector *wire.ProcessSelector, expectedPID uint32) error {

@@ -135,6 +135,7 @@ write_manifest() {
   engine_local_capacity_patch_sha256=${11:-}
   envd_override_sha256=${12:-}
   envd_process_tag_patch_sha256=${13:-}
+  envd_process_replay_patch_sha256=${14:-}
   verify_host_artifacts "$artifact_lock" "$host_root" "$orchestrator_override_sha256" "$envd_override_sha256"
   if [ -n "$orchestrator_patch_sha256" ]; then
     require_sha256 "$orchestrator_patch_sha256" "orchestrator patch SHA-256"
@@ -157,11 +158,17 @@ write_manifest() {
   fi
   if [ -n "$envd_override_sha256" ]; then
     [ -n "$envd_process_tag_patch_sha256" ] || fail "the envd override requires the process-tag patch identity"
+    [ -n "$envd_process_replay_patch_sha256" ] || fail "the envd override requires the process-replay patch identity"
     require_sha256 "$envd_override_sha256" "envd override SHA-256"
   fi
   if [ -n "$envd_process_tag_patch_sha256" ]; then
     [ -n "$envd_override_sha256" ] || fail "the process-tag patch requires the envd override identity"
     require_sha256 "$envd_process_tag_patch_sha256" "envd process-tag patch SHA-256"
+  fi
+  if [ -n "$envd_process_replay_patch_sha256" ]; then
+    [ -n "$envd_process_tag_patch_sha256" ] || fail "the process-replay patch requires the process-tag patch identity"
+    [ -n "$envd_override_sha256" ] || fail "the process-replay patch requires the envd override identity"
+    require_sha256 "$envd_process_replay_patch_sha256" "envd process-replay patch SHA-256"
   fi
   output_dir=$(dirname "$output")
   mkdir -p "$output_dir"
@@ -216,6 +223,10 @@ write_manifest() {
       printf 'artifact.envd.process_tag_patch_sha256=%s\n' "$envd_process_tag_patch_sha256"
       printf 'artifact.envd.live_tag_resolution=complete-map-scan\n'
     fi
+    if [ -n "$envd_process_replay_patch_sha256" ]; then
+      printf 'artifact.envd.process_replay_patch_sha256=%s\n' "$envd_process_replay_patch_sha256"
+      printf 'artifact.envd.process_output_recovery=generation-bound-cursor-journal\n'
+    fi
   } > "$temporary"
   chmod 600 "$temporary"
   mv -f -- "$temporary" "$output"
@@ -223,7 +234,7 @@ write_manifest() {
 }
 
 usage() {
-  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256]" >&2
+  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256 ENVD_PROCESS_REPLAY_PATCH_SHA256]" >&2
   exit 2
 }
 
@@ -246,8 +257,8 @@ case "$command" in
     verify_host_artifacts "$2" "$3" "${4:-}" "${5:-}"
     ;;
   manifest)
-    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 14 ]; } || usage
-    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}"
+    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 15 ]; } || usage
+    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}" "${15:-}"
     ;;
   *) usage ;;
 esac
