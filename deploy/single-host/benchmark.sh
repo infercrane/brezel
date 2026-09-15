@@ -52,6 +52,18 @@ fail() {
   exit 1
 }
 
+write_status() {
+  value=$1
+  case "$value" in
+    running|passed|failed) ;;
+    *) fail "invalid benchmark status" ;;
+  esac
+  temporary=$(mktemp "$run_dir/.STATUS.XXXXXX")
+  printf '%s\n' "$value" > "$temporary"
+  chmod 600 "$temporary"
+  mv -f -- "$temporary" "$run_dir/STATUS"
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
@@ -161,7 +173,7 @@ run_dir="$OUTPUT_ROOT/$TARGET-$started_compact"
 umask 077
 mkdir -p "$run_dir/raw" "$run_dir/stderr"
 chmod 700 "$run_dir" "$run_dir/raw" "$run_dir/stderr"
-printf '%s\n' running > "$run_dir/STATUS"
+write_status running
 cases_file="$run_dir/cases.ndjson"
 : > "$cases_file"
 
@@ -191,12 +203,13 @@ else
 fi
 if [ "$project_preflight_status" -ne 0 ] || [ ! -f "$project_preflight_file" ] || \
    [ "$(jq -r '.empty' "$project_preflight_file" 2>/dev/null || printf false)" != true ]; then
-  printf '%s\n' failed > "$run_dir/STATUS"
   (
     cd "$run_dir"
-    find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+    find . -type f ! -name SHA256SUMS ! -name STATUS ! -name '.STATUS.*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
     chmod 600 SHA256SUMS
+    sha256sum -c SHA256SUMS >/dev/null
   )
+  write_status failed
   echo "Benchmark project preflight failed before any environment or VM was created. Evidence was retained at $run_dir" >&2
   exit 1
 fi
@@ -413,19 +426,17 @@ jq -s \
   "$cases_file" > "$run_dir/summary.json"
 chmod 600 "$run_dir/summary.json" "$cases_file"
 
-if [ "$matrix_failed" = true ]; then
-  printf '%s\n' failed > "$run_dir/STATUS"
-else
-  printf '%s\n' passed > "$run_dir/STATUS"
-fi
 (
   cd "$run_dir"
-  find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+  find . -type f ! -name SHA256SUMS ! -name STATUS ! -name '.STATUS.*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
   chmod 600 SHA256SUMS
+  sha256sum -c SHA256SUMS >/dev/null
 )
 
 if [ "$matrix_failed" = true ]; then
+  write_status failed
   echo "Benchmark matrix failed or stopped early. Evidence was retained at $run_dir" >&2
   exit 1
 fi
+write_status passed
 echo "Benchmark matrix passed. Evidence: $run_dir"
