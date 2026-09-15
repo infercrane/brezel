@@ -17,6 +17,7 @@ ENGINE_CACHE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0004-bound-snapsho
 ENGINE_NFS_DURABILITY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0005-make-nfs-writes-crash-durable.patch"
 ENGINE_START_ADMISSION_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0006-bound-start-admission-retries.patch"
 ENGINE_LOCAL_CAPACITY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0007-scale-local-resource-pools-and-template-shape.patch"
+ENGINE_ENVD_PROCESS_TAG_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0008-fix-envd-process-tag-resolution.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
@@ -100,7 +101,8 @@ ENGINE_CACHE_PATCH_SHA256=$(read_lock orchestrator_cache_patch_sha256)
 ENGINE_NFS_DURABILITY_PATCH_SHA256=$(read_lock orchestrator_nfs_durability_patch_sha256)
 ENGINE_START_ADMISSION_PATCH_SHA256=$(read_lock engine_start_admission_patch_sha256)
 ENGINE_LOCAL_CAPACITY_PATCH_SHA256=$(read_lock engine_local_capacity_patch_sha256)
-if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ]; then
+ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256=$(read_lock envd_process_tag_patch_sha256)
+if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ]; then
   echo "invalid engine.lock" >&2
   exit 1
 fi
@@ -233,6 +235,10 @@ if [ "$(sha256sum "$ENGINE_LOCAL_CAPACITY_PATCH" | awk '{print $1}')" != "$ENGIN
   echo "engine local-capacity patch verification failed" >&2
   exit 1
 fi
+if [ "$(sha256sum "$ENGINE_ENVD_PROCESS_TAG_PATCH" | awk '{print $1}')" != "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ]; then
+  echo "engine envd process-tag patch verification failed" >&2
+  exit 1
+fi
 "$ARTIFACT_SUPPLY_CHAIN" image-lock "$ENGINE_IMAGE_LOCK"
 
 read_image_lock() {
@@ -295,6 +301,8 @@ fi
 ENGINE_BUILD_DIR=$(mktemp -d "$INSTALL_DIR/engine-build.XXXXXX")
 ORCHESTRATOR_BUILD_CONTAINER=
 ORCHESTRATOR_ARTIFACT_TMP=
+ENVD_BUILD_CONTAINER=
+ENVD_ARTIFACT_TMP=
 NODE_TLS_DIR=
 PUBLIC_DRAIN_STARTED=false
 INSTALL_SUCCEEDED=false
@@ -305,6 +313,14 @@ cleanup_build_dir() {
   if [ -n "$ORCHESTRATOR_ARTIFACT_TMP" ]; then
     case "$ORCHESTRATOR_ARTIFACT_TMP" in
       "$INSTALL_DIR"/orchestrator-artifact.*) rm -rf -- "$ORCHESTRATOR_ARTIFACT_TMP" ;;
+    esac
+  fi
+  if [ -n "$ENVD_BUILD_CONTAINER" ]; then
+    docker rm -f "$ENVD_BUILD_CONTAINER" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$ENVD_ARTIFACT_TMP" ]; then
+    case "$ENVD_ARTIFACT_TMP" in
+      "$INSTALL_DIR"/envd-artifact.*) rm -rf -- "$ENVD_ARTIFACT_TMP" ;;
     esac
   fi
   case "$ENGINE_BUILD_DIR" in
@@ -337,6 +353,7 @@ patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CACHE_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NFS_DURABILITY_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_START_ADMISSION_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_LOCAL_CAPACITY_PATCH"
+patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_TAG_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 
 # The upstream base-template service executes a JavaScript helper embedded in
@@ -394,13 +411,41 @@ ORCHESTRATOR_ARTIFACT_TMP=
 BREZEL_ENGINE_ORCHESTRATOR_SHA256=$(sha256sum "$BREZEL_ENGINE_ORCHESTRATOR_BINARY" | awk '{print $1}')
 export BREZEL_ENGINE_ORCHESTRATOR_BINARY BREZEL_ENGINE_ORCHESTRATOR_SHA256
 
+# Build envd from the same pinned and patched source tree. The released envd
+# binary contains an inverted sync.Map Range callback for live tag lookup;
+# installing only the source patch would leave every Firecracker guest on the
+# vulnerable upstream artifact. The protected binary below replaces that
+# fetched artifact before any new guest can start.
+BREZEL_ENGINE_ENVD_IMAGE="brezel/engine-envd:${ENGINE_COMMIT}-process-tag-v1"
+ENVD_VERSION=$(sed -n 's/.*Version = "\([^"]*\)".*/\1/p' "$ENGINE_BUILD_DIR/packages/envd/pkg/version.go")
+[ -n "$ENVD_VERSION" ] || { echo "could not resolve the pinned envd version" >&2; exit 1; }
+docker build \
+  --platform linux/amd64 \
+  -t "$BREZEL_ENGINE_ENVD_IMAGE" \
+  -f "$SCRIPT_DIR/envd.Dockerfile" \
+  --build-arg "COMMIT_SHA=${ENGINE_COMMIT}" \
+  --build-arg "VERSION=${ENVD_VERSION}" \
+  "$ENGINE_BUILD_DIR/packages"
+ENVD_ARTIFACT_TMP=$(mktemp -d "$INSTALL_DIR/envd-artifact.XXXXXX")
+ENVD_BUILD_CONTAINER=$(docker create --entrypoint /envd "$BREZEL_ENGINE_ENVD_IMAGE")
+docker cp "$ENVD_BUILD_CONTAINER:/envd" "$ENVD_ARTIFACT_TMP/envd"
+docker rm "$ENVD_BUILD_CONTAINER" >/dev/null
+ENVD_BUILD_CONTAINER=
+chmod 755 "$ENVD_ARTIFACT_TMP/envd"
+BREZEL_ENGINE_ENVD_BINARY="$INSTALL_DIR/artifacts/envd"
+mv -f -- "$ENVD_ARTIFACT_TMP/envd" "$BREZEL_ENGINE_ENVD_BINARY"
+rmdir "$ENVD_ARTIFACT_TMP"
+ENVD_ARTIFACT_TMP=
+BREZEL_ENGINE_ENVD_SHA256=$(sha256sum "$BREZEL_ENGINE_ENVD_BINARY" | awk '{print $1}')
+export BREZEL_ENGINE_ENVD_BINARY BREZEL_ENGINE_ENVD_SHA256
+
 ENGINE_COMPOSE="$ENGINE_DIR/embed/compose/compose.yaml"
 ENGINE_ENV="$ENGINE_DIR/embed/compose/.env"
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" config >/dev/null
 
-# Restore and verify the exact released artifact set before replacing only the
-# orchestrator with the source-built Brezel binary. The one-shot installer is
-# deterministic on upgrades even when Compose retains completed containers.
+# Restore and verify the exact released artifact set before replacing envd and
+# the orchestrator with source-built Brezel binaries. The one-shot installers
+# are deterministic on upgrades even when Compose retains completed containers.
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps preflight
 
 # Stop public admission before host tuning or replacing any live engine
@@ -433,11 +478,12 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps fetch-artifacts
 "$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" /
 
-# Install the verified executable only after its old process and every public
-# admission path are stopped. This prevents an orchestrator crash in the
-# replacement window from restarting a new binary beneath the old API.
+# Install the verified executables only after the old orchestrator and every
+# public admission path are stopped. This prevents a restart in the replacement
+# window from creating a guest with mixed engine artifacts.
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps brezel-envd-install
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps brezel-orchestrator-install
-"$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" / "$BREZEL_ENGINE_ORCHESTRATOR_SHA256"
+"$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" / "$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"
 
 # Compose does not hash bind-mounted script contents and may otherwise reuse a
 # completed one-shot container. Force both derived-state gates to run on every
@@ -456,10 +502,11 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 # The upstream fetcher also verifies these downloads. Verify them again using
 # product-owned lock data rather than trusting checksums embedded only in the
 # tools image, then write the exact installed distribution record.
-"$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" / "$BREZEL_ENGINE_ORCHESTRATOR_SHA256"
+"$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" / "$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"
 "$ARTIFACT_SUPPLY_CHAIN" manifest "$INSTALL_DIR/distribution.manifest" "$LOCK_FILE" "$ENGINE_IMAGE_LOCK" "$ENGINE_ARTIFACT_LOCK" / \
   "$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$ENGINE_ORCHESTRATOR_PATCH_SHA256" "$ENGINE_CACHE_PATCH_SHA256" \
-  "$ENGINE_NFS_DURABILITY_PATCH_SHA256" "$ENGINE_START_ADMISSION_PATCH_SHA256" "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256"
+  "$ENGINE_NFS_DURABILITY_PATCH_SHA256" "$ENGINE_START_ADMISSION_PATCH_SHA256" "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" \
+  "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256"
 
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
   exec -T ready sh -c 'cat /run/e2b/team-api-key' > "$SECRETS_DIR/engine.token"

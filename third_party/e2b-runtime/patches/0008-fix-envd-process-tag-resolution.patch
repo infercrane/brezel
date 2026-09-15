@@ -1,0 +1,75 @@
+diff --git a/packages/envd/internal/services/process/service.go b/packages/envd/internal/services/process/service.go
+index a8ae9d611..dc65de13d 100644
+--- a/packages/envd/internal/services/process/service.go
++++ b/packages/envd/internal/services/process/service.go
+@@ -181,20 +181,16 @@ func (s *Service) getProcess(selector *rpc.ProcessSelector) (*handler.Handler, er
+ 	case *rpc.ProcessSelector_Tag:
+ 		tag := selector.GetTag()
+ 
+ 		s.processes.Range(func(_ uint32, value *handler.Handler) bool {
+-			if value.Tag == nil {
++			if value.Tag == nil || *value.Tag != tag {
+ 				return true
+ 			}
+ 
+-			if *value.Tag == tag {
+-				proc = value
+-
+-				return true
+-			}
++			proc = value
+ 
+ 			return false
+ 		})
+ 
+ 		if proc == nil {
+ 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("process with tag %s not found", tag))
+ 		}
+diff --git a/packages/envd/internal/services/process/service_test.go b/packages/envd/internal/services/process/service_test.go
+new file mode 100644
+index 000000000..b919a472e
+--- /dev/null
++++ b/packages/envd/internal/services/process/service_test.go
+@@ -0,0 +1,42 @@
++package process
++
++import (
++	"fmt"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/envd/internal/services/process/handler"
++	rpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/process"
++	"github.com/e2b-dev/infra/packages/envd/internal/utils"
++)
++
++// TestGetProcessByTagScansPastNonMatches guards the sync.Map Range callback
++// contract. Returning false stops iteration, so non-matching live processes
++// must return true and only the matching process may stop the scan.
++func TestGetProcessByTagScansPastNonMatches(t *testing.T) {
++	t.Parallel()
++
++	const (
++		attempts       = 64
++		nonMatchCount = 64
++	)
++	for attempt := range attempts {
++		service := &Service{processes: utils.NewMap[uint32, *handler.Handler]()}
++		for index := range nonMatchCount {
++			tag := fmt.Sprintf("other-%d-%d", attempt, index)
++			service.processes.Store(uint32(index+1), &handler.Handler{Tag: &tag})
++		}
++		service.processes.Store(10_000, &handler.Handler{})
++
++		targetTag := fmt.Sprintf("target-%d", attempt)
++		target := &handler.Handler{Tag: &targetTag}
++		service.processes.Store(20_000, target)
++
++		got, err := service.getProcess(&rpc.ProcessSelector{
++			Selector: &rpc.ProcessSelector_Tag{Tag: targetTag},
++		})
++		require.NoError(t, err)
++		require.Same(t, target, got)
++	}
++}

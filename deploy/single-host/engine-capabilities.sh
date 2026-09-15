@@ -129,7 +129,14 @@ check_source() {
   require_literal "$source_root/embed/compose/scripts/node/build-base-template.mjs" \
     "minFreeDiskMb" "the base-template free disk request"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"network_version":1}'
+  require_literal "$source_root/packages/envd/internal/services/process/service.go" \
+    'if value.Tag == nil || *value.Tag != tag {' "live process-tag lookup continuing past non-matches"
+  require_literal "$source_root/packages/envd/internal/services/process/service_test.go" \
+    "TestGetProcessByTagScansPastNonMatches" "the multi-process live tag lookup regression test"
+  require_literal "$source_root/packages/envd/internal/services/process/service_test.go" \
+    "require.Same(t, target, got)" "the live tag lookup target-identity assertion"
+
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"network_version":1}'
 }
 
 find_orchestrator_pid() {

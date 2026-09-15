@@ -36,6 +36,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"orchestrator_nfs_durability_patch_sha256": "0005-make-nfs-writes-crash-durable.patch",
 		"engine_start_admission_patch_sha256":      "0006-bound-start-admission-retries.patch",
 		"engine_local_capacity_patch_sha256":       "0007-scale-local-resource-pools-and-template-shape.patch",
+		"envd_process_tag_patch_sha256":            "0008-fix-envd-process-tag-resolution.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -163,6 +164,7 @@ func TestUpgradeStopsPublicAdmissionAndForcesDerivedStateGates(t *testing.T) {
 		`stop postgres`,
 		`run --rm --no-deps host-setup`,
 		`run --rm --no-deps fetch-artifacts`,
+		`run --rm --no-deps brezel-envd-install`,
 		`run --rm --no-deps brezel-orchestrator-install`,
 		`rm -sf brezel-engine-auth-cache brezel-engine-capacity`,
 		`up -d --wait`,
@@ -607,6 +609,135 @@ func TestArtifactSupplyChainVerifiesInstalledOrchestratorOverride(t *testing.T) 
 	}
 }
 
+func TestArtifactSupplyChainVerifiesInstalledEnvdOverride(t *testing.T) {
+	root := t.TempDir()
+	artifact := filepath.Join(root, "fc", "artifact")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	upstream := []byte("upstream bytes")
+	if err := os.WriteFile(artifact, upstream, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	upstreamDigest := sha256.Sum256(upstream)
+	lock := "architecture=linux/amd64\n"
+	for _, name := range []string{"orchestrator", "envd", "firecracker", "kernel", "busybox"} {
+		path := "/fc/artifact"
+		if name == "envd" {
+			path = "/fc/envd"
+		}
+		lock += name + "_path=" + path + "\n"
+		lock += name + "_sha256=" + hex.EncodeToString(upstreamDigest[:]) + "\n"
+	}
+	lockPath := filepath.Join(root, "artifacts.lock")
+	if err := os.WriteFile(lockPath, []byte(lock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	custom := []byte("source-built envd")
+	envd := filepath.Join(root, "fc", "envd")
+	if err := os.WriteFile(envd, custom, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	customDigest := sha256.Sum256(custom)
+	command := exec.Command("sh", "artifact-supply-chain.sh", "host", lockPath, root, "", hex.EncodeToString(customDigest[:]))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("host artifact gate rejected the expected custom envd: %v: %s", err, output)
+	}
+
+	badDigest := strings.Repeat("0", 64)
+	command = exec.Command("sh", "artifact-supply-chain.sh", "host", lockPath, root, "", badDigest)
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("host artifact gate accepted the wrong custom envd digest: %s", output)
+	}
+}
+
+func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
+	root := t.TempDir()
+	fcRoot := filepath.Join(root, "fc")
+	if err := os.MkdirAll(fcRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	upstream := []byte("upstream artifact")
+	upstreamDigest := sha256.Sum256(upstream)
+	upstreamPath := filepath.Join(fcRoot, "upstream")
+	if err := os.WriteFile(upstreamPath, upstream, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	orchestratorBytes := []byte("source-built orchestrator")
+	orchestratorDigest := sha256.Sum256(orchestratorBytes)
+	if err := os.WriteFile(filepath.Join(fcRoot, "orchestrator"), orchestratorBytes, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	envdBytes := []byte("source-built envd")
+	envdDigest := sha256.Sum256(envdBytes)
+	if err := os.WriteFile(filepath.Join(fcRoot, "envd"), envdBytes, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	artifactLock := "architecture=linux/amd64\n"
+	for _, name := range []string{"orchestrator", "envd", "firecracker", "kernel", "busybox"} {
+		path := "/fc/upstream"
+		if name == "orchestrator" {
+			path = "/fc/orchestrator"
+		} else if name == "envd" {
+			path = "/fc/envd"
+		}
+		artifactLock += name + "_path=" + path + "\n"
+		artifactLock += name + "_sha256=" + hex.EncodeToString(upstreamDigest[:]) + "\n"
+	}
+	artifactLockPath := filepath.Join(root, "artifacts.lock")
+	if err := os.WriteFile(artifactLockPath, []byte(artifactLock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engineLockPath := filepath.Join(root, "engine.lock")
+	if err := os.WriteFile(engineLockPath, []byte("commit=fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imageLockPath := filepath.Join(root, "images.lock")
+	imageLock := ""
+	for _, key := range []string{
+		"BREZEL_ENGINE_POSTGRES_IMAGE", "BREZEL_ENGINE_REDIS_IMAGE",
+		"BREZEL_ENGINE_CLICKHOUSE_IMAGE", "BREZEL_ENGINE_VECTOR_IMAGE",
+		"E2B_DB_MIGRATOR_IMAGE", "E2B_CLIENT_PROXY_IMAGE",
+		"E2B_CLICKHOUSE_MIGRATOR_IMAGE", "E2B_TOOLS_IMAGE",
+		"E2B_NODE_E2B_IMAGE", "E2B_SEED_IMAGE",
+	} {
+		imageLock += key + "=fixture\n"
+	}
+	if err := os.WriteFile(imageLockPath, []byte(imageLock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := filepath.Join(root, "distribution.manifest")
+	patchDigest := strings.Repeat("1", 64)
+	command := exec.Command(
+		"sh", "artifact-supply-chain.sh", "manifest", manifestPath,
+		engineLockPath, imageLockPath, artifactLockPath, root,
+		hex.EncodeToString(orchestratorDigest[:]),
+		patchDigest, patchDigest, patchDigest, patchDigest, patchDigest,
+		hex.EncodeToString(envdDigest[:]), patchDigest,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("distribution manifest rejected source-built envd: %v: %s", err, output)
+	}
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"artifact.envd.upstream_sha256=" + hex.EncodeToString(upstreamDigest[:]),
+		"artifact.envd.sha256=" + hex.EncodeToString(envdDigest[:]),
+		"artifact.envd.process_tag_patch_sha256=" + patchDigest,
+		"artifact.envd.live_tag_resolution=complete-map-scan",
+	} {
+		if !strings.Contains(string(manifest), expected) {
+			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
+		}
+	}
+}
+
 func TestArtifactSupplyChainRejectsChangedSourceFile(t *testing.T) {
 	root := t.TempDir()
 	files := map[string][]byte{
@@ -692,6 +823,11 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		"BREZEL_ENGINE_ORCHESTRATOR_SHA256",
 		"docker create --entrypoint /orchestrator",
 		"brezel-orchestrator-install",
+		"ENGINE_ENVD_PROCESS_TAG_PATCH",
+		"BREZEL_ENGINE_ENVD_IMAGE",
+		"BREZEL_ENGINE_ENVD_SHA256",
+		"docker create --entrypoint /envd",
+		"brezel-envd-install",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing artifact boundary %q", required)
@@ -725,6 +861,8 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		"BUILD_CACHE_TTL", "BUILD_CACHE_MAX_BYTES", "BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT",
 		"brezel-orchestrator-install", "BREZEL_ENGINE_ORCHESTRATOR_BINARY",
 		"BREZEL_ENGINE_ORCHESTRATOR_SHA256",
+		"brezel-envd-install", "BREZEL_ENGINE_ENVD_BINARY",
+		"BREZEL_ENGINE_ENVD_SHA256",
 		"fetch-artifacts:\n        condition: service_completed_successfully",
 	} {
 		if !strings.Contains(override, required) {
@@ -774,6 +912,8 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/nfsproxy/chroot/fs.go":                     "syncDirectoryTree\nerrors.Join(syncPath(f.chroot, newParent), syncPath(f.chroot, oldParent))\n",
 		"embed/compose/compose.yaml":                                          "TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates\nNBD_POOL_SIZE: \"64\"\nNETWORK_VERSION: \"1\"\n",
 		"embed/compose/scripts/node/build-base-template.mjs":                  "BASE_TEMPLATE_MIN_FREE_DISK_MB\nminFreeDiskMb\n",
+		"packages/envd/internal/services/process/service.go":                  "if value.Tag == nil || *value.Tag != tag {\n",
+		"packages/envd/internal/services/process/service_test.go":             "TestGetProcessByTagScansPastNonMatches\nrequire.Same(t, target, got)\n",
 	}
 	for name, content := range files {
 		path := filepath.Join(root, name)
@@ -869,6 +1009,8 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"resourceExhaustedRetryDelay",
 		"resourceExhaustedBackoffMax",
 		"max_starting_sandboxes",
+		"TestGetProcessByTagScansPastNonMatches",
+		"complete-map-scan",
 	} {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("engine capability probe is missing %q", required)
@@ -1041,6 +1183,95 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("distribution manifest writer is missing local-capacity identity %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0008-fix-envd-process-tag-resolution.patch",
+		"envd_process_tag_patch_sha256",
+		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_TAG_PATCH"`,
+		`BREZEL_ENGINE_ENVD_IMAGE="brezel/engine-envd:`,
+		`-f "$SCRIPT_DIR/envd.Dockerfile"`,
+		`BREZEL_ENGINE_ENVD_BINARY="$INSTALL_DIR/artifacts/envd"`,
+		`BREZEL_ENGINE_ENVD_SHA256=$(sha256sum "$BREZEL_ENGINE_ENVD_BINARY"`,
+		`run --rm --no-deps brezel-envd-install`,
+		`"$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256"`,
+		"engine envd process-tag patch verification failed",
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing envd process-tag invariant %q", required)
+		}
+	}
+
+	dockerfileData, err := os.ReadFile("envd.Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := string(dockerfileData)
+	for _, required := range []string{
+		"ARG GOLANG_VERSION=1.26.8",
+		"make build BUILD_ARCH=${TARGETARCH} BUILD=${COMMIT_SHA} LINK_VERSION=${VERSION}",
+		"COPY --from=builder /build/envd/bin/envd /envd",
+	} {
+		if !strings.Contains(dockerfile, required) {
+			t.Fatalf("envd build is missing pinned-source invariant %q", required)
+		}
+	}
+
+	overrideData, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := string(overrideData)
+	for _, required := range []string{
+		"brezel-envd-install:",
+		"BREZEL_ENGINE_ENVD_SHA256:",
+		"BREZEL_ENGINE_ENVD_BINARY:",
+		"target_dir=/host/fc-envd",
+		`mv -f -- "$$temporary" "$$target_dir/envd"`,
+	} {
+		if !strings.Contains(override, required) {
+			t.Fatalf("engine override is missing envd installation invariant %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.envd.upstream_sha256",
+		"artifact.envd.process_tag_patch_sha256",
+		"artifact.envd.live_tag_resolution=complete-map-scan",
+		"the envd override requires the process-tag patch identity",
+		"the process-tag patch requires the envd override identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("distribution manifest writer is missing envd identity %q", required)
+		}
+	}
+
+	probeData, err := os.ReadFile("engine-capabilities.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := string(probeData)
+	for _, required := range []string{
+		"if value.Tag == nil || *value.Tag != tag {",
+		"TestGetProcessByTagScansPastNonMatches",
+		"require.Same(t, target, got)",
+		`"live_tag_resolution":"complete-map-scan"`,
+	} {
+		if !strings.Contains(probe, required) {
+			t.Fatalf("engine capability probe is missing envd process-tag contract %q", required)
 		}
 	}
 }
