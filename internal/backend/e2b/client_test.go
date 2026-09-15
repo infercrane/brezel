@@ -5,11 +5,27 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/domain"
 )
+
+func newHealthyGuestServer(t *testing.T, next http.Handler) *httptest.Server {
+	t.Helper()
+	if next == nil {
+		next = http.NotFoundHandler()
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
 
 func TestReadyUsesAuthenticatedEngineHealth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +45,8 @@ func TestReadyUsesAuthenticatedEngineHealth(t *testing.T) {
 }
 
 func TestCreateMapsSecurityLifecycleAndTenantMetadata(t *testing.T) {
+	guest := newHealthyGuestServer(t, nil)
+	defer guest.Close()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-API-Key") != "test-key" {
 			t.Fatalf("missing API key")
@@ -67,7 +85,7 @@ func TestCreateMapsSecurityLifecycleAndTenantMetadata(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New(server.URL, "test-key", server.Client())
+	client, err := New(server.URL, "test-key", server.Client(), WithGuestURLTemplate(guest.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +101,8 @@ func TestCreateMapsSecurityLifecycleAndTenantMetadata(t *testing.T) {
 }
 
 func TestCreateIncludesNonEmptyNetworkRules(t *testing.T) {
+	guest := newHealthyGuestServer(t, nil)
+	defer guest.Close()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -106,7 +126,7 @@ func TestCreateIncludesNonEmptyNetworkRules(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New(server.URL, "test-key", server.Client())
+	client, err := New(server.URL, "test-key", server.Client(), WithGuestURLTemplate(guest.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +140,79 @@ func TestCreateIncludesNonEmptyNetworkRules(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCreateWaitsForGuestDataPlaneReadiness(t *testing.T) {
+	healthCalls := 0
+	guest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/health" {
+			t.Fatalf("guest request = %s %s", r.Method, r.URL.Path)
+		}
+		healthCalls++
+		if healthCalls < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer guest.Close()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/sandboxes" {
+			t.Fatalf("engine request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-token"}`))
+	}))
+	defer api.Close()
+	client, err := New(api.URL, "test-key", api.Client(), WithGuestURLTemplate(guest.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Create(context.Background(), backend.CreateRequest{
+		LocalSandboxID: "sbx-1", ProjectID: "project-a", TemplateID: "base",
+		Lifecycle: domain.Lifecycle{ExpiresAfterSeconds: 600},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if healthCalls != 3 {
+		t.Fatalf("health calls = %d, want 3", healthCalls)
+	}
+	if !client.recentlyLive("upstream-1") {
+		t.Fatal("successful readiness did not establish the bounded liveness lease")
+	}
+}
+
+func TestCreateDoesNotPublishGuestWhenReadinessTimesOut(t *testing.T) {
+	guest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer guest.Close()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-token"}`))
+	}))
+	defer api.Close()
+	client, err := New(api.URL, "test-key", api.Client(), WithGuestURLTemplate(guest.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	_, err = client.Create(ctx, backend.CreateRequest{
+		LocalSandboxID: "sbx-1", ProjectID: "project-a", TemplateID: "base",
+		Lifecycle: domain.Lifecycle{ExpiresAfterSeconds: 600},
+	})
+	if err == nil || !strings.Contains(err.Error(), "did not become ready") {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if client.recentlyLive("upstream-1") {
+		t.Fatal("failed readiness retained a liveness lease")
+	}
+	if _, ok := client.cachedGuestConnection("upstream-1"); ok {
+		t.Fatal("failed readiness retained a guest credential")
 	}
 }
 

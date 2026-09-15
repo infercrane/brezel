@@ -203,6 +203,16 @@ func (c *Client) Create(ctx context.Context, in backend.CreateRequest) (backend.
 	if err := requireSecureGuestAccess(out.EnvdAccessToken); err != nil {
 		return backend.Sandbox{}, err
 	}
+	// The engine create response means the microVM has been restored and
+	// registered, but it does not prove that envd's streaming endpoint can yet
+	// carry a command. Under burst load the reverse proxy can otherwise accept
+	// the first request while the guest endpoint is still settling, then close
+	// the body mid-stream. Do not publish a running sandbox until the same
+	// authenticated guest path used by commands has answered a health probe.
+	if err := c.awaitGuestHealth(ctx, out); err != nil {
+		c.forgetGuestState(out.SandboxID)
+		return backend.Sandbox{}, fmt.Errorf("microVM guest did not become ready after create: %w", err)
+	}
 	c.rememberLive(out.SandboxID)
 	c.rememberGuestCredential(out)
 	c.rememberPortCredential(out)
@@ -278,7 +288,11 @@ func (c *Client) observedSandbox(ctx context.Context, id string, out sandboxResp
 	return backend.Sandbox{ID: out.SandboxID, State: state}, nil
 }
 
-const guestHealthTimeout = 2 * time.Second
+const (
+	guestHealthTimeout      = 2 * time.Second
+	guestHealthRetryInitial = 5 * time.Millisecond
+	guestHealthRetryMax     = 50 * time.Millisecond
+)
 
 // guestLiveTTL is a short liveness lease, not a durable state. It removes
 // duplicate guest probes from bursts of control and guest operations. The map
@@ -352,6 +366,42 @@ func (c *Client) probeGuestHealth(ctx context.Context, detail sandboxResponse) (
 	return nil
 }
 
+// awaitGuestHealth closes the gap between the engine's control-plane create
+// acknowledgement and guest data-plane readiness. It is intentionally bounded
+// by the caller and by guestHealthTimeout. A command is never retried here:
+// once a process may have started, replaying it could duplicate user effects.
+func (c *Client) awaitGuestHealth(ctx context.Context, detail sandboxResponse) error {
+	readyCtx, cancel := context.WithTimeout(ctx, guestHealthTimeout)
+	defer cancel()
+
+	delay := guestHealthRetryInitial
+	var lastErr error
+	for {
+		if err := c.probeGuestHealth(readyCtx, detail); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if err := readyCtx.Err(); err != nil {
+			return fmt.Errorf("%w (last health probe: %v)", err, lastErr)
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-readyCtx.Done():
+			timer.Stop()
+			return fmt.Errorf("%w (last health probe: %v)", readyCtx.Err(), lastErr)
+		case <-timer.C:
+		}
+		if delay < guestHealthRetryMax {
+			delay *= 2
+			if delay > guestHealthRetryMax {
+				delay = guestHealthRetryMax
+			}
+		}
+	}
+}
+
 func (c *Client) Pause(ctx context.Context, id string, kind domain.CheckpointKind) error {
 	// Revoke every process-local proof and credential before a lifecycle
 	// mutation. A timeout makes the remote state unknown, so retaining a cache
@@ -383,6 +433,10 @@ func (c *Client) Resume(ctx context.Context, id string, kind domain.CheckpointKi
 	}
 	if err := requireSecureGuestAccess(out.EnvdAccessToken); err != nil {
 		return backend.Sandbox{}, err
+	}
+	if err := c.awaitGuestHealth(ctx, out); err != nil {
+		c.forgetGuestState(out.SandboxID)
+		return backend.Sandbox{}, fmt.Errorf("microVM guest did not become ready after resume: %w", err)
 	}
 	c.rememberLive(out.SandboxID)
 	c.rememberGuestCredential(out)

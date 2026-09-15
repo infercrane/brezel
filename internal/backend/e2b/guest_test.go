@@ -222,7 +222,7 @@ func TestApplicationPortUsesTrafficCredentialWithoutGuestCredential(t *testing.T
 }
 
 func TestApplicationPortReusesShortLivedCredentialFromCreate(t *testing.T) {
-	guest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	guest := newHealthyGuestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("E2B-Traffic-Access-Token") != "traffic-from-create" {
 			t.Fatalf("traffic credential = %q", r.Header.Get("E2B-Traffic-Access-Token"))
 		}
@@ -261,7 +261,7 @@ func TestApplicationPortReusesShortLivedCredentialFromCreate(t *testing.T) {
 func TestGuestRunReusesShortLivedCredentialFromCreate(t *testing.T) {
 	processService := &testProcessService{t: t, requiredToken: "guest-from-create"}
 	_, handler := wireconnect.NewProcessHandler(processService)
-	guest := httptest.NewServer(handler)
+	guest := newHealthyGuestServer(t, handler)
 	defer guest.Close()
 	apiCalls := 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -295,7 +295,7 @@ func TestGuestRunReusesShortLivedCredentialFromCreate(t *testing.T) {
 func TestGuestRunReusesShortLivedCredentialFromResume(t *testing.T) {
 	processService := &testProcessService{t: t, requiredToken: "guest-from-resume"}
 	_, handler := wireconnect.NewProcessHandler(processService)
-	guest := httptest.NewServer(handler)
+	guest := newHealthyGuestServer(t, handler)
 	defer guest.Close()
 	apiCalls := 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +326,7 @@ func TestGuestRunReusesShortLivedCredentialFromResume(t *testing.T) {
 func TestGuestCredentialExpiryFallsBackToEngineDetail(t *testing.T) {
 	processService := &testProcessService{t: t, requiredToken: "fresh-guest-secret"}
 	_, handler := wireconnect.NewProcessHandler(processService)
-	guest := httptest.NewServer(handler)
+	guest := newHealthyGuestServer(t, handler)
 	defer guest.Close()
 	detailCalls := 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -367,6 +367,8 @@ func TestGuestCredentialExpiryFallsBackToEngineDetail(t *testing.T) {
 }
 
 func TestGuestCredentialMismatchInvalidatesCachedState(t *testing.T) {
+	guest := newHealthyGuestServer(t, nil)
+	defer guest.Close()
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -380,7 +382,7 @@ func TestGuestCredentialMismatchInvalidatesCachedState(t *testing.T) {
 		}
 	}))
 	defer api.Close()
-	client, err := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate("http://127.0.0.1:1"))
+	client, err := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,6 +439,8 @@ func TestLifecycleMutationInvalidatesGuestCredentialBeforeEngineResult(t *testin
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			guest := newHealthyGuestServer(t, nil)
+			defer guest.Close()
 			mutationStarted := make(chan struct{})
 			releaseMutation := make(chan struct{})
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -459,7 +463,7 @@ func TestLifecycleMutationInvalidatesGuestCredentialBeforeEngineResult(t *testin
 				}
 			}))
 			defer api.Close()
-			client, err := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate("http://127.0.0.1:1"))
+			client, err := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL))
 			if err != nil {
 				t.Fatal(err)
 			}

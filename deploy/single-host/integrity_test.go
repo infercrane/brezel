@@ -268,7 +268,7 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 		t.Fatalf("default capacity plan failed: %v: %s", err, output)
 	} else if !strings.Contains(string(output), `"required_hugepages_2m":9216`) {
 		t.Fatalf("capacity plan did not bind quota to lifecycle headroom: %s", output)
-	} else if !strings.Contains(string(output), `"max_starting_sandboxes":8`) {
+	} else if !strings.Contains(string(output), `"max_starting_sandboxes":3`) {
 		t.Fatalf("capacity plan did not emit the local starting-sandbox limit: %s", output)
 	}
 	if output, err := run("live"); err != nil {
@@ -284,7 +284,7 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 	} else if !strings.Contains(string(output), "32-slot") {
 		t.Fatalf("network capacity failure was unclear: %s", output)
 	}
-	if output, err := run("plan", "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=4", "BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=4"); err == nil {
+	if output, err := run("plan", "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=4", "BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=4", "BREZEL_ENGINE_MAX_STARTING_SANDBOXES=5"); err == nil {
 		t.Fatalf("capacity contract accepted a starting limit above the active limit: %s", output)
 	} else if !strings.Contains(string(output), "starting-sandbox limit cannot exceed") {
 		t.Fatalf("starting-limit capacity failure was unclear: %s", output)
@@ -773,7 +773,7 @@ func TestInstallerPinsAndValidatesStartAdmissionPatch(t *testing.T) {
 	for _, required := range []string{
 		"0006-bound-start-admission-retries.patch",
 		"engine_start_admission_patch_sha256",
-		"BREZEL_ENGINE_MAX_STARTING_SANDBOXES:-8",
+		"BREZEL_ENGINE_MAX_STARTING_SANDBOXES:-3",
 		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_START_ADMISSION_PATCH"`,
 		`"$ENGINE_NFS_DURABILITY_PATCH_SHA256" "$ENGINE_START_ADMISSION_PATCH_SHA256"`,
 		"engine start-admission patch verification failed",
