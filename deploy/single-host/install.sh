@@ -20,6 +20,7 @@ ENGINE_AUTH_CACHE_PROBE="$SCRIPT_DIR/engine-auth-cache-contract.sh"
 ENGINE_IMAGE_LOCK="$SCRIPT_DIR/engine.images.lock"
 ENGINE_ARTIFACT_LOCK="$SCRIPT_DIR/engine.artifacts.lock"
 ARTIFACT_SUPPLY_CHAIN="$SCRIPT_DIR/artifact-supply-chain.sh"
+RUNTIME_ATTESTATION="$SCRIPT_DIR/runtime-attestation.sh"
 BREZEL_HOST_TUNING_SCRIPT="$SCRIPT_DIR/host-tuning.sh"
 BREZEL_ENGINE_CAPACITY_SCRIPT="$ENGINE_CAPACITY_PROBE"
 BREZEL_ENGINE_AUTH_CACHE_SCRIPT="$ENGINE_AUTH_CACHE_PROBE"
@@ -78,6 +79,20 @@ command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required" >&2; exit
 command -v tar >/dev/null 2>&1 || { echo "tar is required" >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required" >&2; exit 1; }
 docker buildx version >/dev/null 2>&1 || { echo "Docker Buildx is required" >&2; exit 1; }
+
+# The installed runtime identity is meaningful only when every input belongs to
+# one exact commit. Refuse local patches and untracked source before downloads,
+# builds, or service replacement, then check the same revision again when the
+# running containers are sealed into the install attestation.
+if [ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=normal)" ]; then
+  echo "the Brezel source checkout must be clean before installation" >&2
+  exit 1
+fi
+BREZEL_SOURCE_REVISION=$(git -C "$REPO_DIR" rev-parse HEAD)
+printf '%s\n' "$BREZEL_SOURCE_REVISION" | grep -Eq '^[0-9a-f]{40}$' || {
+  echo "the Brezel source checkout has no exact commit" >&2
+  exit 1
+}
 
 # Docker's Linux user parser accepts signed 32-bit IDs. Cloud OS Login and
 # directory-backed identities can legitimately allocate larger host IDs, but
@@ -482,6 +497,11 @@ chmod 600 "$SECRETS_DIR/engine.token" "$SECRETS_DIR/service.token" "$SECRETS_DIR
 BREZEL_STATE_DIR="$STATE_DIR" BREZEL_SECRETS_DIR="$SECRETS_DIR" \
 BREZEL_UID="$(id -u)" BREZEL_GID="$(id -g)" \
   docker compose -f "$SCRIPT_DIR/compose.yaml" up -d --build --wait
+
+"$RUNTIME_ATTESTATION" write "$INSTALL_DIR/runtime-attestation.manifest" \
+  "$REPO_DIR" "$SCRIPT_DIR/compose.yaml" "$BREZEL_SOURCE_REVISION"
+"$RUNTIME_ATTESTATION" verify "$INSTALL_DIR/runtime-attestation.manifest" \
+  "$REPO_DIR" "$SCRIPT_DIR/compose.yaml" "$BREZEL_SOURCE_REVISION" >/dev/null
 
 "$SCRIPT_DIR/qualify.sh"
 

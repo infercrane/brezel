@@ -59,7 +59,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 }
 
 func TestDeploymentScriptsParse(t *testing.T) {
-	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "engine-capacity-contract.sh", "engine-auth-cache-contract.sh", "artifact-supply-chain.sh", "benchmark.sh", "host-tuning.sh"} {
+	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "engine-capacity-contract.sh", "engine-auth-cache-contract.sh", "artifact-supply-chain.sh", "runtime-attestation.sh", "benchmark.sh", "host-tuning.sh"} {
 		command := exec.Command("sh", "-n", script)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("sh -n %s: %v: %s", script, err, output)
@@ -198,6 +198,26 @@ func TestBenchmarkEmptyProjectPreflightPrecedesEnvironmentCreation(t *testing.T)
 	failureEvidence := strings.Index(content[preflight:firstMutation], `find . -type f ! -name SHA256SUMS`)
 	if failureEvidence < 0 {
 		t.Fatal("benchmark does not retain checksummed evidence when the project preflight rejects a run")
+	}
+}
+
+func TestBenchmarkPublishesTerminalStatusAfterVerifiedChecksums(t *testing.T) {
+	data, err := os.ReadFile("benchmark.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	finalChecksums := strings.LastIndex(content, `sha256sum -c SHA256SUMS`)
+	failedStatus := strings.LastIndex(content, `write_status failed`)
+	passedStatus := strings.LastIndex(content, `write_status passed`)
+	if finalChecksums < 0 || failedStatus < 0 || passedStatus < 0 {
+		t.Fatal("benchmark is missing verified checksum or terminal status publication")
+	}
+	if finalChecksums >= failedStatus || finalChecksums >= passedStatus {
+		t.Fatal("benchmark publishes a terminal status before its evidence checksums are verified")
+	}
+	if strings.Contains(content, `find . -type f ! -name SHA256SUMS -print0`) {
+		t.Fatal("benchmark checksum manifest still includes mutable STATUS")
 	}
 }
 
@@ -507,6 +527,9 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		`source "$ENGINE_DIR" "$LOCK_FILE"`,
 		`host "$ENGINE_ARTIFACT_LOCK" /`,
 		`manifest "$INSTALL_DIR/distribution.manifest"`,
+		`RUNTIME_ATTESTATION`,
+		`write "$INSTALL_DIR/runtime-attestation.manifest"`,
+		`verify "$INSTALL_DIR/runtime-attestation.manifest"`,
 		"ENGINE_ORCHESTRATOR_PATCH",
 		"BREZEL_ENGINE_ORCHESTRATOR_IMAGE",
 		"BREZEL_ENGINE_ORCHESTRATOR_SHA256",
@@ -516,6 +539,16 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing artifact boundary %q", required)
 		}
+	}
+	cleanSource := strings.Index(installer, `status --porcelain --untracked-files=normal`)
+	drain := strings.Index(installer, `PUBLIC_DRAIN_STARTED=true`)
+	runtimeWrite := strings.Index(installer, `write "$INSTALL_DIR/runtime-attestation.manifest"`)
+	qualification := strings.LastIndex(installer, `"$SCRIPT_DIR/qualify.sh"`)
+	if cleanSource < 0 || drain <= cleanSource {
+		t.Fatal("installer does not reject a dirty product checkout before its service drain")
+	}
+	if runtimeWrite < 0 || qualification <= runtimeWrite {
+		t.Fatal("installer does not seal the running runtime identity before qualification")
 	}
 
 	overrideData, err := os.ReadFile("engine.override.yaml")

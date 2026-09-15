@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -54,7 +55,7 @@ func TestRunProjectPreflightRejectsExistingSandboxWithoutExecutionFlag(t *testin
 	defer server.Close()
 
 	var stdout strings.Builder
-	err := run([]string{"-preflight-empty-project", "-base-url", server.URL, "-project", "brezel-benchmark"}, &stdout, &strings.Builder{})
+	err := run(context.Background(), []string{"-preflight-empty-project", "-base-url", server.URL, "-project", "brezel-benchmark"}, &stdout, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "not empty") {
 		t.Fatalf("preflight error = %v", err)
 	}
@@ -68,7 +69,7 @@ func TestRunProjectPreflightRejectsExistingSandboxWithoutExecutionFlag(t *testin
 
 func TestRunRequiresExplicitExecutionBeforeCredentials(t *testing.T) {
 	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", "")
-	err := run(nil, &strings.Builder{}, &strings.Builder{})
+	err := run(context.Background(), nil, &strings.Builder{}, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "explicit") {
 		t.Fatalf("run() error = %v", err)
 	}
@@ -82,8 +83,23 @@ func TestRunRejectsOutOfRangeScenarioParametersBeforeCredentials(t *testing.T) {
 		{"-execute", "-preview-port", "0"},
 		{"-execute", "-preview-port", "65536"},
 	} {
-		if err := run(args, &strings.Builder{}, &strings.Builder{}); err == nil || (!strings.Contains(err.Error(), "io-bytes") && !strings.Contains(err.Error(), "preview-port")) {
+		if err := run(context.Background(), args, &strings.Builder{}, &strings.Builder{}); err == nil || (!strings.Contains(err.Error(), "io-bytes") && !strings.Contains(err.Error(), "preview-port")) {
 			t.Fatalf("run(%v) error = %v", args, err)
 		}
+	}
+}
+
+func TestRunProjectPreflightHonorsParentCancellation(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "service.token")
+	if err := os.WriteFile(tokenPath, []byte("0123456789abcdef0123456789abcdef"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", tokenPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := run(ctx, []string{"-preflight-empty-project"}, &strings.Builder{}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("run() error = %v, want context cancellation", err)
 	}
 }

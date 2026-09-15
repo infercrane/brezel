@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/infercrane/brezel/internal/perfbench"
@@ -15,7 +17,9 @@ import (
 )
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
@@ -24,7 +28,7 @@ func main() {
 	}
 }
 
-func run(args []string, stdout, stderr io.Writer) error {
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("brezel-bench", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	baseURL := flags.String("base-url", "http://127.0.0.1:8080", "runtime control API URL")
@@ -57,7 +61,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), *wholeTimeout)
+		ctx, cancel := context.WithTimeout(ctx, *wholeTimeout)
 		defer cancel()
 		report, preflightErr := perfbench.InspectEmptyProject(ctx, perfbench.ProjectPreflightConfig{
 			BaseURL: *baseURL, Token: token, ProjectID: *project,
@@ -108,7 +112,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		PreviewPort:     uint16(*previewPort),
 		Execute:         true,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), *wholeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, *wholeTimeout)
 	defer cancel()
 	report, benchmarkErr := perfbench.Run(ctx, config)
 	if report.SchemaVersion != 0 {

@@ -114,6 +114,12 @@ func TestDualHostHarnessEncodesHonestClaimBoundary(t *testing.T) {
 		"simultaneous_conformance", "namespace_isolation", "failure_containment",
 		"machine_id_sha256", "boot_id_sha256", "stop_active_jobs",
 		"-preflight-empty-project",
+		"runtime-attestation.sh", "runtime-attestation.manifest",
+		"runtime_attestation.verified_running == true",
+		"trap cleanup_partial_fixture EXIT", "remote_project_cleanliness",
+		"COORDINATOR_REVISION", "sample_remote_clock", "python3", "exec ssh",
+		"--config -", "checksum_evidence", "write_status passed",
+		"Checksummed evidence",
 	} {
 		if !strings.Contains(source, required) {
 			t.Errorf("harness missing invariant %q", required)
@@ -121,5 +127,30 @@ func TestDualHostHarnessEncodesHonestClaimBoundary(t *testing.T) {
 	}
 	if strings.Contains(source, "StrictHostKeyChecking=no") {
 		t.Fatal("harness disables SSH host verification")
+	}
+	for _, forbidden := range []string{
+		"trap cleanup_partial_fixture RETURN", ".dual-curl-config", "seal_evidence",
+		"Partial sealed evidence", "Sealed evidence",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("harness retains unsafe or inaccurate construct %q", forbidden)
+		}
+	}
+}
+
+func TestDualHostHarnessPublishesStatusAfterChecksums(t *testing.T) {
+	data, err := os.ReadFile(harnessPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	checksum := strings.LastIndex(source, "checksum_evidence")
+	passed := strings.LastIndex(source, "write_status passed")
+	finalized := strings.LastIndex(source, "FINALIZED=true")
+	if checksum < 0 || passed < 0 || finalized < 0 {
+		t.Fatal("harness is missing final evidence publication steps")
+	}
+	if !(checksum < passed && passed < finalized) {
+		t.Fatalf("final publication order is not checksum, passed status, finalized: checksum=%d status=%d finalized=%d", checksum, passed, finalized)
 	}
 }

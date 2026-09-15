@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/infercrane/brezel/internal/conformance"
@@ -14,13 +16,15 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(parent context.Context) error {
 	baseURL := flag.String("base-url", "http://127.0.0.1:8080", "runtime control API URL")
 	project := flag.String("project", "conformance", "isolated conformance project")
 	otherProject := flag.String("other-project", "", "second project used for isolation denial")
@@ -42,7 +46,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx, cancel := context.WithTimeout(parent, *timeout)
 	defer cancel()
 	report, runErr := runner.Run(ctx)
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {

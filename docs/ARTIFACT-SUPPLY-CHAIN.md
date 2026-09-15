@@ -10,7 +10,7 @@ reproducible yet.
 The installer accepts only the following engine inputs:
 
 - the exact upstream Git commit in `deploy/single-host/engine.lock`;
-- the two local patches whose SHA-256 digests are in that lock;
+- the three local patches whose SHA-256 digests are in that lock;
 - the upstream compose, environment, and host-artifact fetcher bytes whose
   independent SHA-256 digests are in that lock;
 - the exact linux/amd64 OCI manifests in
@@ -25,8 +25,8 @@ manifests. Go module downloads remain checksum-bound by `go.sum`, but they are
 still network dependencies unless the operator supplies a module proxy or
 pre-populated build cache.
 
-`artifact-supply-chain.sh` verifies the source files before applying either
-patch. It then pulls, or requires preloaded copies of, every engine image by
+`artifact-supply-chain.sh` verifies the source files before applying the
+patches. It then pulls, or requires preloaded copies of, every engine image by
 its exact manifest digest. Compose has `pull_policy: never`; it cannot silently
 replace the checked images while starting the engine. After the engine fetcher
 finishes, the installer independently hashes every privileged host artifact
@@ -37,6 +37,15 @@ On success, `.brezel/distribution.manifest` records the engine revision, lock
 digests, exact image references, and exact host-artifact identities. It
 contains no credentials and is mode `0600` because it belongs with operator
 qualification evidence.
+
+The installer also refuses a dirty Brezel checkout and writes
+`.brezel/runtime-attestation.manifest` after both product services are running.
+That protected manifest binds the exact clean Brezel Git revision to the
+content-addressed image identity and SHA-256 executable digest observed for
+`brezeld` and `brezel-node`. Qualification re-observes both running containers
+and fails if the checkout, image, executable, manifest ownership, or manifest
+permissions differ. This is an install provenance record, not a signature,
+hardware attestation, or reproducible-build claim.
 
 ## Operator mirrors
 
