@@ -12,6 +12,7 @@ LOCK_FILE="$SCRIPT_DIR/engine.lock"
 ENGINE_OVERRIDE="$SCRIPT_DIR/engine.override.yaml"
 ENGINE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0001-harden-volume-secrets-and-cleanup.patch"
 ENGINE_BUILD_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0002-pin-api-build-images.patch"
+ENGINE_ORCHESTRATOR_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0003-acknowledge-delete-after-sandbox-teardown.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 ENGINE_IMAGE_LOCK="$SCRIPT_DIR/engine.images.lock"
 ENGINE_ARTIFACT_LOCK="$SCRIPT_DIR/engine.artifacts.lock"
@@ -28,7 +29,8 @@ ENGINE_REPOSITORY=$(read_lock repository)
 ENGINE_COMMIT=$(read_lock commit)
 ENGINE_PATCH_SHA256=$(read_lock api_patch_sha256)
 ENGINE_BUILD_PATCH_SHA256=$(read_lock api_build_patch_sha256)
-if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ]; then
+ENGINE_ORCHESTRATOR_PATCH_SHA256=$(read_lock orchestrator_lifecycle_patch_sha256)
+if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ]; then
   echo "invalid engine.lock" >&2
   exit 1
 fi
@@ -125,6 +127,10 @@ if [ "$(sha256sum "$ENGINE_BUILD_PATCH" | awk '{print $1}')" != "$ENGINE_BUILD_P
   echo "engine API build patch verification failed" >&2
   exit 1
 fi
+if [ "$(sha256sum "$ENGINE_ORCHESTRATOR_PATCH" | awk '{print $1}')" != "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ]; then
+  echo "engine orchestrator lifecycle patch verification failed" >&2
+  exit 1
+fi
 "$ARTIFACT_SUPPLY_CHAIN" image-lock "$ENGINE_IMAGE_LOCK"
 
 read_image_lock() {
@@ -185,7 +191,17 @@ fi
 "$ARTIFACT_SUPPLY_CHAIN" images "$ENGINE_IMAGE_LOCK" "${BREZEL_ENGINE_IMAGE_MODE:-pull}"
 
 ENGINE_BUILD_DIR=$(mktemp -d "$INSTALL_DIR/engine-build.XXXXXX")
+ORCHESTRATOR_BUILD_CONTAINER=
+ORCHESTRATOR_ARTIFACT_TMP=
 cleanup_build_dir() {
+  if [ -n "$ORCHESTRATOR_BUILD_CONTAINER" ]; then
+    docker rm -f "$ORCHESTRATOR_BUILD_CONTAINER" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$ORCHESTRATOR_ARTIFACT_TMP" ]; then
+    case "$ORCHESTRATOR_ARTIFACT_TMP" in
+      "$INSTALL_DIR"/orchestrator-artifact.*) rm -rf -- "$ORCHESTRATOR_ARTIFACT_TMP" ;;
+    esac
+  fi
   case "$ENGINE_BUILD_DIR" in
     "$INSTALL_DIR"/engine-build.*) rm -rf -- "$ENGINE_BUILD_DIR" ;;
   esac
@@ -194,6 +210,7 @@ trap cleanup_build_dir EXIT HUP INT TERM
 git -C "$ENGINE_DIR" archive "$ENGINE_COMMIT" | tar -xf - -C "$ENGINE_BUILD_DIR"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_BUILD_PATCH"
+patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ORCHESTRATOR_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 EXPECTED_MIGRATION_TIMESTAMP=$(find "$ENGINE_BUILD_DIR/packages/db/migrations" -maxdepth 1 -type f -printf '%f\n' | sed 's/_.*//' | sort | tail -n 1)
 if [ -z "$EXPECTED_MIGRATION_TIMESTAMP" ]; then
@@ -210,16 +227,59 @@ docker build \
   "$ENGINE_BUILD_DIR/packages"
 export BREZEL_ENGINE_API_IMAGE
 
+# Build the lifecycle-critical orchestrator from the same pinned source tree.
+# The released upstream binary acknowledges deletion before Firecracker, NBD,
+# networking, and lazy-memory resources have been reclaimed. Brezel treats a
+# successful delete as a durable resource-reclamation boundary instead.
+BREZEL_ENGINE_ORCHESTRATOR_IMAGE="brezel/engine-orchestrator:${ENGINE_COMMIT}-lifecycle-v1"
+docker build \
+  --platform linux/amd64 \
+  -t "$BREZEL_ENGINE_ORCHESTRATOR_IMAGE" \
+  -f "$ENGINE_BUILD_DIR/packages/orchestrator/Dockerfile" \
+  --build-arg "COMMIT_SHA=${ENGINE_COMMIT}-lifecycle-v1" \
+  --build-arg "VERSION=${ENGINE_COMMIT}-lifecycle-v1" \
+  "$ENGINE_BUILD_DIR/packages"
+mkdir -p "$INSTALL_DIR/artifacts"
+chmod 700 "$INSTALL_DIR/artifacts"
+ORCHESTRATOR_ARTIFACT_TMP=$(mktemp -d "$INSTALL_DIR/orchestrator-artifact.XXXXXX")
+ORCHESTRATOR_BUILD_CONTAINER=$(docker create "$BREZEL_ENGINE_ORCHESTRATOR_IMAGE")
+docker cp "$ORCHESTRATOR_BUILD_CONTAINER:/orchestrator" "$ORCHESTRATOR_ARTIFACT_TMP/orchestrator"
+docker rm "$ORCHESTRATOR_BUILD_CONTAINER" >/dev/null
+ORCHESTRATOR_BUILD_CONTAINER=
+chmod 700 "$ORCHESTRATOR_ARTIFACT_TMP/orchestrator"
+BREZEL_ENGINE_ORCHESTRATOR_BINARY="$INSTALL_DIR/artifacts/orchestrator"
+mv -f -- "$ORCHESTRATOR_ARTIFACT_TMP/orchestrator" "$BREZEL_ENGINE_ORCHESTRATOR_BINARY"
+rmdir "$ORCHESTRATOR_ARTIFACT_TMP"
+ORCHESTRATOR_ARTIFACT_TMP=
+BREZEL_ENGINE_ORCHESTRATOR_SHA256=$(sha256sum "$BREZEL_ENGINE_ORCHESTRATOR_BINARY" | awk '{print $1}')
+export BREZEL_ENGINE_ORCHESTRATOR_BINARY BREZEL_ENGINE_ORCHESTRATOR_SHA256
+
 ENGINE_COMPOSE="$ENGINE_DIR/embed/compose/compose.yaml"
 ENGINE_ENV="$ENGINE_DIR/embed/compose/.env"
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" config >/dev/null
+
+# Restore and verify the exact released artifact set before replacing only the
+# orchestrator with the source-built Brezel binary. The one-shot installer is
+# deterministic on upgrades even when Compose retains completed containers.
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps preflight
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps host-setup
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps fetch-artifacts
+"$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" /
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps brezel-orchestrator-install
+"$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" / "$BREZEL_ENGINE_ORCHESTRATOR_SHA256"
+
+# Replacing an executable does not affect an already-running process. Stop the
+# old orchestrator explicitly so all subsequent qualification runs exercise
+# the verified Brezel binary and its synchronous teardown contract.
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop orchestrator >/dev/null 2>&1 || true
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" up -d --wait
 
 # The upstream fetcher also verifies these downloads. Verify them again using
 # product-owned lock data rather than trusting checksums embedded only in the
 # tools image, then write the exact installed distribution record.
-"$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" /
-"$ARTIFACT_SUPPLY_CHAIN" manifest "$INSTALL_DIR/distribution.manifest" "$LOCK_FILE" "$ENGINE_IMAGE_LOCK" "$ENGINE_ARTIFACT_LOCK" /
+"$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" / "$BREZEL_ENGINE_ORCHESTRATOR_SHA256"
+"$ARTIFACT_SUPPLY_CHAIN" manifest "$INSTALL_DIR/distribution.manifest" "$LOCK_FILE" "$ENGINE_IMAGE_LOCK" "$ENGINE_ARTIFACT_LOCK" / \
+  "$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$ENGINE_ORCHESTRATOR_PATCH_SHA256"
 
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
   exec -T ready sh -c 'cat /run/e2b/team-api-key' > "$SECRETS_DIR/engine.token"

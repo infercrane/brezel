@@ -64,6 +64,12 @@ check_source() {
     "ReusedSlotsPoolSize = 100" "the reused network-slot pool"
   require_literal "$source_root/packages/orchestrator/pkg/factories/run.go" \
     "network.NewPool(network.NewSlotsPoolSize, network.ReusedSlotsPoolSize" "network pool construction"
+  require_literal "$source_root/packages/orchestrator/pkg/server/sandboxes.go" \
+    "if err := sbx.Stop(ctx); err != nil" "delete acknowledgement after bounded sandbox teardown"
+  require_literal "$source_root/packages/orchestrator/pkg/server/sandboxes.go" \
+    "Sandboxes.WaitLifecycle(ctx" "delete acknowledgement after lifecycle resource reclamation"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/map.go" \
+    "func (m *Map) WaitLifecycle(ctx context.Context" "one-lifecycle cleanup completion tracking"
 
   require_literal "$source_root/embed/compose/compose.yaml" \
     'TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates' "local template artifact storage"
@@ -124,6 +130,13 @@ check_live() {
   done
   [ -n "$orchestrator_pid" ] || fail "the host orchestrator process is not running"
   [ "$uffd_fd_observed" = true ] || fail "the orchestrator has no live userfaultfd descriptor"
+  expected_orchestrator_sha256=$(tr '\000' '\n' < "/proc/$orchestrator_pid/environ" | \
+    sed -n 's/^BREZEL_ENGINE_ORCHESTRATOR_SHA256=//p')
+  printf '%s\n' "$expected_orchestrator_sha256" | grep -Eq '^[0-9a-f]{64}$' || \
+    fail "the live orchestrator is missing its verified binary digest"
+  actual_orchestrator_sha256=$(sha256sum "/proc/$orchestrator_pid/exe" | awk '{print $1}')
+  [ "$actual_orchestrator_sha256" = "$expected_orchestrator_sha256" ] || \
+    fail "the live orchestrator binary digest does not match the source-built artifact"
   tr '\000' '\n' < "/proc/$orchestrator_pid/environ" | grep -Fxq 'NBD_POOL_SIZE=64' || \
     fail "the live orchestrator is not using the qualified 64-device NBD pool"
   tr '\000' '\n' < "/proc/$orchestrator_pid/environ" | grep -Fxq 'NETWORK_VERSION=1' || \

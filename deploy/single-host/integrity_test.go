@@ -28,8 +28,9 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		t.Fatalf("engine.lock commit %q differs from audited adapter revision %q", values["commit"], e2b.AuditedRevision)
 	}
 	patches := map[string]string{
-		"api_patch_sha256":       "0001-harden-volume-secrets-and-cleanup.patch",
-		"api_build_patch_sha256": "0002-pin-api-build-images.patch",
+		"api_patch_sha256":                    "0001-harden-volume-secrets-and-cleanup.patch",
+		"api_build_patch_sha256":              "0002-pin-api-build-images.patch",
+		"orchestrator_lifecycle_patch_sha256": "0003-acknowledge-delete-after-sandbox-teardown.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -192,6 +193,49 @@ func TestArtifactSupplyChainRejectsChangedHostArtifact(t *testing.T) {
 	}
 }
 
+func TestArtifactSupplyChainVerifiesInstalledOrchestratorOverride(t *testing.T) {
+	root := t.TempDir()
+	artifact := filepath.Join(root, "fc", "artifact")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	upstream := []byte("upstream bytes")
+	if err := os.WriteFile(artifact, upstream, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	upstreamDigest := sha256.Sum256(upstream)
+	lock := "architecture=linux/amd64\n"
+	for _, name := range []string{"orchestrator", "envd", "firecracker", "kernel", "busybox"} {
+		path := "/fc/artifact"
+		if name == "orchestrator" {
+			path = "/fc/orchestrator"
+		}
+		lock += name + "_path=" + path + "\n"
+		lock += name + "_sha256=" + hex.EncodeToString(upstreamDigest[:]) + "\n"
+	}
+	lockPath := filepath.Join(root, "artifacts.lock")
+	if err := os.WriteFile(lockPath, []byte(lock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	custom := []byte("source-built orchestrator")
+	orchestrator := filepath.Join(root, "fc", "orchestrator")
+	if err := os.WriteFile(orchestrator, custom, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	customDigest := sha256.Sum256(custom)
+	command := exec.Command("sh", "artifact-supply-chain.sh", "host", lockPath, root, hex.EncodeToString(customDigest[:]))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("host artifact gate rejected the expected custom orchestrator: %v: %s", err, output)
+	}
+
+	badDigest := strings.Repeat("0", 64)
+	command = exec.Command("sh", "artifact-supply-chain.sh", "host", lockPath, root, badDigest)
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("host artifact gate accepted the wrong custom orchestrator digest: %s", output)
+	}
+}
+
 func TestArtifactSupplyChainRejectsChangedSourceFile(t *testing.T) {
 	root := t.TempDir()
 	files := map[string][]byte{
@@ -269,6 +313,10 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		`source "$ENGINE_DIR" "$LOCK_FILE"`,
 		`host "$ENGINE_ARTIFACT_LOCK" /`,
 		`manifest "$INSTALL_DIR/distribution.manifest"`,
+		"ENGINE_ORCHESTRATOR_PATCH",
+		"BREZEL_ENGINE_ORCHESTRATOR_IMAGE",
+		"BREZEL_ENGINE_ORCHESTRATOR_SHA256",
+		"brezel-orchestrator-install",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing artifact boundary %q", required)
@@ -288,6 +336,8 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		"BREZEL_ENGINE_CLICKHOUSE_IMAGE", "BREZEL_ENGINE_VECTOR_IMAGE",
 		"pull_policy: never", "BREZEL_ENGINE_ARTIFACT_BASE_URL",
 		"BREZEL_VM_OVERCOMMIT_MEMORY", "BREZEL_HOST_TUNING_SCRIPT",
+		"brezel-orchestrator-install", "BREZEL_ENGINE_ORCHESTRATOR_BINARY",
+		"BREZEL_ENGINE_ORCHESTRATOR_SHA256",
 	} {
 		if !strings.Contains(override, required) {
 			t.Fatalf("engine override is missing locked distribution setting %q", required)
@@ -324,6 +374,8 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/shared/pkg/storage/sandbox.go":                              "fmt.Sprintf(\"rootfs-%s-%s.cow\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/sandbox\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/template\"\n",
 		"packages/orchestrator/pkg/sandbox/network/pool.go":                   "NewSlotsPoolSize    = 32\nReusedSlotsPoolSize = 100\n",
 		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(network.NewSlotsPoolSize, network.ReusedSlotsPoolSize\n",
+		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
+		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
 		"embed/compose/compose.yaml":                                          "TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates\nNBD_POOL_SIZE: \"64\"\nNETWORK_VERSION: \"1\"\n",
 	}
 	for name, content := range files {

@@ -46,12 +46,50 @@ services:
       # because the upstream fetcher mounts the host root at /host.
       BUCKET: ${BREZEL_ENGINE_ARTIFACT_BASE_URL:-https://storage.googleapis.com/e2b-artifact-binaries}
 
+  brezel-orchestrator-install:
+    image: ${E2B_TOOLS_IMAGE:?set E2B_TOOLS_IMAGE from engine.images.lock}
+    pull_policy: never
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    user: "0:0"
+    environment:
+      BREZEL_ENGINE_ORCHESTRATOR_SHA256: ${BREZEL_ENGINE_ORCHESTRATOR_SHA256:?set the verified source-built orchestrator digest}
+    volumes:
+      - /:/host
+      - ${BREZEL_ENGINE_ORCHESTRATOR_BINARY:?set the protected source-built orchestrator path}:/brezel/orchestrator:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1m
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        expected="$$BREZEL_ENGINE_ORCHESTRATOR_SHA256"
+        printf '%s\n' "$$expected" | grep -Eq '^[0-9a-f]{64}$$'
+        actual=$$(sha256sum /brezel/orchestrator | awk '{print $$1}')
+        [ "$$actual" = "$$expected" ]
+        target_dir=/host/var/lib/e2b/bin
+        [ -d "$$target_dir" ] && [ ! -L "$$target_dir" ]
+        temporary="$$target_dir/.brezel-orchestrator.$$"
+        trap 'rm -f -- "$$temporary"' EXIT HUP INT TERM
+        cp /brezel/orchestrator "$$temporary"
+        [ "$$(sha256sum "$$temporary" | awk '{print $$1}')" = "$$expected" ]
+        chmod 0755 "$$temporary"
+        mv -f -- "$$temporary" "$$target_dir/orchestrator"
+        trap - EXIT HUP INT TERM
+
   api-secrets:
     pull_policy: never
 
   orchestrator:
     pull_policy: never
+    depends_on:
+      brezel-orchestrator-install:
+        condition: service_completed_successfully
     environment:
+      BREZEL_ENGINE_ORCHESTRATOR_SHA256: ${BREZEL_ENGINE_ORCHESTRATOR_SHA256:?set the verified source-built orchestrator digest}
       # The upstream launcher enters the host mount namespace before starting
       # the orchestrator. Pass the protected absolute host path rather than a
       # container mount target. The engine exposes workspace contents only

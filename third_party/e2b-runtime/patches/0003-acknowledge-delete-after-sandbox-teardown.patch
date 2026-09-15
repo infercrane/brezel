@@ -1,0 +1,75 @@
+diff --git a/packages/orchestrator/pkg/sandbox/map.go b/packages/orchestrator/pkg/sandbox/map.go
+index 8c5576c7..b9da22f7 100644
+--- a/packages/orchestrator/pkg/sandbox/map.go
++++ b/packages/orchestrator/pkg/sandbox/map.go
+@@ -130,6 +130,31 @@ func (m *Map) WaitLifecycles(ctx context.Context) error {
+ 	}
+ }
+ 
++// WaitLifecycle blocks until one exact sandbox lifecycle has completed its
++// resource cleanup. A sandbox can already be absent from live while its
++// Firecracker, NBD, network, and memory resources are still being reclaimed.
++func (m *Map) WaitLifecycle(ctx context.Context, sandboxID, lifecycleID string) error {
++	key := sandboxLifecycleKey(sandboxID, lifecycleID)
++	for {
++		m.lifecycleMu.Lock()
++		_, exists := m.lifecycles.Get(key)
++		if !exists {
++			m.lifecycleMu.Unlock()
++
++			return nil
++		}
++
++		changed := m.lifecycleChanged
++		m.lifecycleMu.Unlock()
++
++		select {
++		case <-ctx.Done():
++			return fmt.Errorf("waiting for sandbox lifecycle cleanup: %w", ctx.Err())
++		case <-changed:
++		}
++	}
++}
++
+ // GetByHostPort looks up a sandbox by its host IP address parsed from hostPort.
+ func (m *Map) GetByHostPort(hostPort string) (*Sandbox, error) {
+ 	reqIP, _, err := net.SplitHostPort(hostPort)
+diff --git a/packages/orchestrator/pkg/server/sandboxes.go b/packages/orchestrator/pkg/server/sandboxes.go
+index 8b60b649..85ef6f10 100644
+--- a/packages/orchestrator/pkg/server/sandboxes.go
++++ b/packages/orchestrator/pkg/server/sandboxes.go
+@@ -717,18 +717,22 @@ func (s *Server) Delete(ctxConn context.Context, in *orchestrator.SandboxDeleteR
+ 	// Check health metrics before stopping the sandbox
+ 	sbx.Checks.Healthcheck(ctx, true)
+ 
+-	// Start the cleanup in a goroutine—the initial kill request should be send as the first thing in stop, and at this point you cannot route to the sandbox anymore.
+-	// We don't wait for the whole cleanup to finish here.
+-	go func() {
+-		err := sbx.Stop(context.WithoutCancel(ctx))
+-		if err != nil {
+-			sbxlogger.I(sbx).Error(ctx, "error stopping sandbox",
+-				logger.WithSandboxID(in.GetSandboxId()),
+-				zap.String("kill_reason", killReason),
+-				zap.Error(err),
+-			)
+-		}
+-	}()
++	// A successful delete is a resource-reclamation boundary. Waiting here is
++	// intentional: acknowledging before Stop returns allows callers to replace
++	// a sandbox while its Firecracker process, NBD device, network slot, and
++	// lazy-memory mapping are still live. The request-scoped 60 second deadline
++	// bounds this work and makes an incomplete teardown visible to the caller.
++	if err := sbx.Stop(ctx); err != nil {
++		sbxlogger.I(sbx).Error(ctx, "error stopping sandbox",
++			logger.WithSandboxID(in.GetSandboxId()),
++			zap.String("kill_reason", killReason),
++			zap.Error(err),
++		)
++		return nil, status.Errorf(codes.Internal, "failed to stop sandbox '%s': %v", in.GetSandboxId(), err)
++	}
++	if err := s.sandboxFactory.Sandboxes.WaitLifecycle(ctx, sbx.Runtime.SandboxID, sbx.LifecycleID); err != nil {
++		return nil, status.Errorf(codes.DeadlineExceeded, "sandbox '%s' teardown did not complete: %v", in.GetSandboxId(), err)
++	}
+ 
+ 	s.emitSandboxKilled(ctx, sbx, killReason)
+ 
