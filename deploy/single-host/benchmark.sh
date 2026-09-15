@@ -165,6 +165,42 @@ printf '%s\n' running > "$run_dir/STATUS"
 cases_file="$run_dir/cases.ndjson"
 : > "$cases_file"
 
+# Establish project emptiness through the same authenticated public API used by
+# the measurements. The preflight mode is read-only and returns content-minimal
+# counts; it cannot create an environment or VM. Retain its report even when it
+# rejects the run so the failure is auditable.
+project_preflight_tmp="$run_dir/.project-preflight.temporary"
+project_preflight_file="$run_dir/project-preflight.json"
+project_preflight_stderr="$run_dir/stderr/project-preflight.log"
+set +e
+BREZEL_SERVICE_TOKEN_FILE="$TOKEN_FILE" "$BENCH_BINARY" \
+  -base-url "$BASE_URL" \
+  -project "$PROJECT" \
+  -timeout 30s \
+  -preflight-empty-project > "$project_preflight_tmp" 2> "$project_preflight_stderr"
+project_preflight_status=$?
+set -e
+chmod 600 "$project_preflight_tmp" "$project_preflight_stderr"
+if jq -e \
+  --arg project "$PROJECT" \
+  '.schema_version == 1 and .project_id == $project and (.active_sandboxes | type == "number") and (.active_workspaces | type == "number") and (.empty | type == "boolean")' \
+  "$project_preflight_tmp" >/dev/null 2>&1; then
+  mv "$project_preflight_tmp" "$project_preflight_file"
+else
+  mv "$project_preflight_tmp" "$run_dir/project-preflight.invalid"
+fi
+if [ "$project_preflight_status" -ne 0 ] || [ ! -f "$project_preflight_file" ] || \
+   [ "$(jq -r '.empty' "$project_preflight_file" 2>/dev/null || printf false)" != true ]; then
+  printf '%s\n' failed > "$run_dir/STATUS"
+  (
+    cd "$run_dir"
+    find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+    chmod 600 SHA256SUMS
+  )
+  echo "Benchmark project preflight failed before any environment or VM was created. Evidence was retained at $run_dir" >&2
+  exit 1
+fi
+
 read_os_release() {
   field=$1
   sed -n "s/^$field=//p" /etc/os-release 2>/dev/null | head -n 1 | sed 's/^"//;s/"$//'
@@ -373,7 +409,7 @@ jq -s \
   --argjson io_bytes "$IO_BYTES" \
   --argjson preview_port "$PREVIEW_PORT" \
   --argjson expected_cases "$EXPECTED_CASES" \
-  '{schema_version:3,started_at:$started_at,finished_at:$finished_at,target:$target,runtime_revision:$runtime_revision,evidence_class:$evidence_class,cache_state:$cache_state,backend_template:$backend_template,project:$project,configuration:{scenarios:($scenarios | split(" ")),sequential_runs:$sequential_runs,staggered_runs:$staggered_runs,burst_runs:$burst_runs,stagger_interval:$stagger_interval,cooldown_seconds:$cooldown_seconds,io_bytes:$io_bytes,preview_port:$preview_port},expected_cases:$expected_cases,completed_cases:length,passed_cases:([.[] | select(.outcome == "passed")] | length),failed_cases:([.[] | select(.outcome != "passed")] | length),planned_attempts:([.[].runs] | add // 0),requested_attempts:([.[].requested // 0] | add // 0),scheduled_attempts:([.[].scheduled // 0] | add // 0),started_attempts:([.[].started // 0] | add // 0),completed_attempts:([.[].completed // 0] | add // 0),successful_attempts:([.[].succeeded // 0] | add // 0),failed_attempts:([.[].failed // 0] | add // 0),successful_bytes:{written:([.[].successful_bytes.written // 0] | add // 0),read:([.[].successful_bytes.read // 0] | add // 0)},latency_censored:([.[].latency_censored // 0] | add // 0),cleanup:{attempts:{not_required:([.[].cleanup.attempts.not_required // 0] | add // 0),attempted:([.[].cleanup.attempts.attempted // 0] | add // 0),confirmed:([.[].cleanup.attempts.confirmed // 0] | add // 0),failed:([.[].cleanup.attempts.failed // 0] | add // 0)},resources:{expected:([.[].cleanup.resources.expected // 0] | add // 0),confirmed:([.[].cleanup.resources.confirmed // 0] | add // 0),failed:([.[].cleanup.resources.failed // 0] | add // 0)}},outcome:(if length == $expected_cases and all(.[]; .outcome == "passed") then "passed" else "failed" end),host_metadata:{before:"host-before.json",after:"host-after.json"},cases:.}' \
+  '{schema_version:3,started_at:$started_at,finished_at:$finished_at,target:$target,runtime_revision:$runtime_revision,evidence_class:$evidence_class,cache_state:$cache_state,backend_template:$backend_template,project:$project,configuration:{scenarios:($scenarios | split(" ")),sequential_runs:$sequential_runs,staggered_runs:$staggered_runs,burst_runs:$burst_runs,stagger_interval:$stagger_interval,cooldown_seconds:$cooldown_seconds,io_bytes:$io_bytes,preview_port:$preview_port},expected_cases:$expected_cases,completed_cases:length,passed_cases:([.[] | select(.outcome == "passed")] | length),failed_cases:([.[] | select(.outcome != "passed")] | length),planned_attempts:([.[].runs] | add // 0),requested_attempts:([.[].requested // 0] | add // 0),scheduled_attempts:([.[].scheduled // 0] | add // 0),started_attempts:([.[].started // 0] | add // 0),completed_attempts:([.[].completed // 0] | add // 0),successful_attempts:([.[].succeeded // 0] | add // 0),failed_attempts:([.[].failed // 0] | add // 0),successful_bytes:{written:([.[].successful_bytes.written // 0] | add // 0),read:([.[].successful_bytes.read // 0] | add // 0)},latency_censored:([.[].latency_censored // 0] | add // 0),cleanup:{attempts:{not_required:([.[].cleanup.attempts.not_required // 0] | add // 0),attempted:([.[].cleanup.attempts.attempted // 0] | add // 0),confirmed:([.[].cleanup.attempts.confirmed // 0] | add // 0),failed:([.[].cleanup.attempts.failed // 0] | add // 0)},resources:{expected:([.[].cleanup.resources.expected // 0] | add // 0),confirmed:([.[].cleanup.resources.confirmed // 0] | add // 0),failed:([.[].cleanup.resources.failed // 0] | add // 0)}},outcome:(if length == $expected_cases and all(.[]; .outcome == "passed") then "passed" else "failed" end),preflight:{project_inventory:"project-preflight.json"},host_metadata:{before:"host-before.json",after:"host-after.json"},cases:.}' \
   "$cases_file" > "$run_dir/summary.json"
 chmod 600 "$run_dir/summary.json" "$cases_file"
 

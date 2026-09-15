@@ -277,17 +277,7 @@ func (c Config) validate() (*url.URL, error) {
 	if c.PreviewPort == 0 {
 		c.PreviewPort = 8080
 	}
-	base, err := url.Parse(strings.TrimRight(c.BaseURL, "/"))
-	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") {
-		return nil, errors.New("base URL must be an absolute HTTP(S) URL")
-	}
-	if base.User != nil || base.RawQuery != "" || base.Fragment != "" {
-		return nil, errors.New("base URL must not contain credentials, query, or fragment")
-	}
-	if base.Scheme == "http" && !loopbackHost(base.Hostname()) {
-		return nil, errors.New("plaintext benchmark traffic is allowed only for a loopback control API")
-	}
-	return base, nil
+	return benchmarkBaseURL(c.BaseURL)
 }
 
 func validScenario(value Scenario) bool {

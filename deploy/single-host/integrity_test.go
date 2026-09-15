@@ -59,11 +59,145 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 }
 
 func TestDeploymentScriptsParse(t *testing.T) {
-	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "engine-capacity-contract.sh", "artifact-supply-chain.sh", "benchmark.sh", "host-tuning.sh"} {
+	for _, script := range []string{"install.sh", "qualify.sh", "host-reboot-drill.sh", "engine-capabilities.sh", "capacity-contract.sh", "engine-capacity-contract.sh", "engine-auth-cache-contract.sh", "artifact-supply-chain.sh", "benchmark.sh", "host-tuning.sh"} {
 		command := exec.Command("sh", "-n", script)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("sh -n %s: %v: %s", script, err, output)
 		}
+	}
+}
+
+func TestEngineCapacityUpdateVerifiesEffectiveLimitBeforeCommit(t *testing.T) {
+	data, err := os.ReadFile("engine-capacity-contract.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	begin := strings.Index(content, "BEGIN;")
+	commit := strings.Index(content, "COMMIT;")
+	if begin < 0 || commit <= begin {
+		t.Fatal("capacity reconciler does not contain one explicit transaction")
+	}
+	transaction := content[begin:commit]
+	update := strings.Index(transaction, "UPDATE public.tiers")
+	effective := strings.LastIndex(transaction, "FROM public.team_limits")
+	if update < 0 || effective <= update || !strings.Contains(transaction[effective:], "RAISE EXCEPTION") {
+		t.Fatal("effective team limit is not asserted after the tier update and before commit")
+	}
+}
+
+func TestEngineAuthCacheInvalidationIsPrefixBounded(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(fakeBin, "redis.log")
+	scanPath := filepath.Join(fakeBin, "scan-count")
+	fakeRedis := filepath.Join(fakeBin, "redis-cli")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$REDIS_LOG"
+case " $* " in
+  *" --scan "*)
+    if [ ! -e "$REDIS_SCAN_COUNT" ]; then
+      printf '%s\n' 'auth:team:team-one' 'auth:team:key-hash'
+      : > "$REDIS_SCAN_COUNT"
+    fi
+    ;;
+esac
+`
+	if err := os.WriteFile(fakeRedis, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", "engine-auth-cache-contract.sh", "invalidate")
+	command.Env = append(os.Environ(),
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REDIS_LOG="+logPath,
+		"REDIS_SCAN_COUNT="+scanPath,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("cache invalidation failed: %v: %s", err, output)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"UNLINK auth:team:team-one", "UNLINK auth:team:key-hash"} {
+		if !strings.Contains(string(log), key) {
+			t.Fatalf("cache invalidation log omitted %q: %s", key, log)
+		}
+	}
+	if strings.Contains(string(log), "FLUSH") {
+		t.Fatalf("cache invalidation used an unbounded Redis operation: %s", log)
+	}
+}
+
+func TestUpgradeStopsPublicAdmissionAndForcesDerivedStateGates(t *testing.T) {
+	data, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	boundary := strings.Index(content, `PUBLIC_DRAIN_STARTED=true`)
+	if boundary < 0 {
+		t.Fatal("installer does not declare the start of its fail-closed upgrade boundary")
+	}
+	upgrade := content[boundary:]
+	ordered := []string{
+		`stop brezeld`,
+		`stop brezel-node`,
+		`stop ready`,
+		`stop client-proxy`,
+		`stop api`,
+		`stop orchestrator`,
+		`run --rm --no-deps host-setup`,
+		`run --rm --no-deps fetch-artifacts`,
+		`run --rm --no-deps brezel-orchestrator-install`,
+		`rm -sf brezel-engine-auth-cache brezel-engine-capacity`,
+		`up -d --wait`,
+		`run --rm --no-deps brezel-engine-capacity`,
+		`"$SCRIPT_DIR/qualify.sh"`,
+		`INSTALL_SUCCEEDED=true`,
+	}
+	last := -1
+	for _, marker := range ordered {
+		index := strings.Index(upgrade, marker)
+		if index <= last {
+			t.Fatalf("installer marker %q is absent or out of order", marker)
+		}
+		last = index
+	}
+	if !strings.Contains(content, `"$INSTALL_SUCCEEDED" != true`) {
+		t.Fatal("installer has no fail-closed public service cleanup")
+	}
+}
+
+func TestQualificationCapacityPreflightPrecedesAnyCreate(t *testing.T) {
+	data, err := os.ReadFile("qualify.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	start := strings.LastIndex(content, `preflight_capacity_contract`)
+	conformance := strings.LastIndex(content, `run_conformance "$TARGET"`)
+	if start < 0 || conformance <= start {
+		t.Fatal("qualification does not run its capacity preflight before conformance")
+	}
+	if !strings.Contains(content, `MIN_READY_NETWORK_SLOTS" -lt "$MAX_ACTIVE_SANDBOXES_TOTAL`) {
+		t.Fatal("qualification can weaken network readiness below active capacity")
+	}
+}
+
+func TestBenchmarkEmptyProjectPreflightPrecedesEnvironmentCreation(t *testing.T) {
+	data, err := os.ReadFile("benchmark.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	preflight := strings.Index(content, `-preflight-empty-project`)
+	firstMutation := strings.Index(content, `-execute > "$raw_tmp"`)
+	if preflight < 0 || firstMutation < 0 || preflight >= firstMutation {
+		t.Fatal("benchmark does not complete its empty-project preflight before running the mutating matrix")
+	}
+	failureEvidence := strings.Index(content[preflight:firstMutation], `find . -type f ! -name SHA256SUMS`)
+	if failureEvidence < 0 {
+		t.Fatal("benchmark does not retain checksummed evidence when the project preflight rejects a run")
 	}
 }
 
@@ -75,8 +209,10 @@ func TestEngineCapacityReconcilerIsRequiredBeforeAPIStartup(t *testing.T) {
 	content := string(override)
 	for _, required := range []string{
 		"brezel-engine-capacity:",
+		"brezel-engine-auth-cache:",
 		"BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:",
 		"BREZEL_ENGINE_CAPACITY_SCRIPT",
+		"BREZEL_ENGINE_AUTH_CACHE_SCRIPT",
 		"condition: service_completed_successfully",
 	} {
 		if !strings.Contains(content, required) {

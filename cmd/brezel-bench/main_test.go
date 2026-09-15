@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +27,42 @@ func TestLoadServiceTokenRequiresPrivateRegularFile(t *testing.T) {
 	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", public)
 	if _, err := loadServiceToken(); err == nil {
 		t.Fatal("world-readable token was accepted")
+	}
+}
+
+func TestRunProjectPreflightRejectsExistingSandboxWithoutExecutionFlag(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "service.token")
+	if err := os.WriteFile(tokenPath, []byte("0123456789abcdef0123456789abcdef"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", tokenPath)
+	mutations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/sandboxes":
+			_, _ = w.Write([]byte(`{"sandboxes":[{"id":"existing"}]}`))
+		case "/v1/workspaces":
+			_, _ = w.Write([]byte(`{"workspaces":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var stdout strings.Builder
+	err := run([]string{"-preflight-empty-project", "-base-url", server.URL, "-project", "brezel-benchmark"}, &stdout, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("preflight error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"active_sandboxes": 1`) || !strings.Contains(stdout.String(), `"empty": false`) {
+		t.Fatalf("preflight report = %s", stdout.String())
+	}
+	if mutations != 0 {
+		t.Fatalf("preflight issued %d mutations", mutations)
 	}
 }
 

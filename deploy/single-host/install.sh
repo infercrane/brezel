@@ -16,13 +16,16 @@ ENGINE_ORCHESTRATOR_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0003-acknow
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
+ENGINE_AUTH_CACHE_PROBE="$SCRIPT_DIR/engine-auth-cache-contract.sh"
 ENGINE_IMAGE_LOCK="$SCRIPT_DIR/engine.images.lock"
 ENGINE_ARTIFACT_LOCK="$SCRIPT_DIR/engine.artifacts.lock"
 ARTIFACT_SUPPLY_CHAIN="$SCRIPT_DIR/artifact-supply-chain.sh"
 BREZEL_HOST_TUNING_SCRIPT="$SCRIPT_DIR/host-tuning.sh"
 BREZEL_ENGINE_CAPACITY_SCRIPT="$ENGINE_CAPACITY_PROBE"
+BREZEL_ENGINE_AUTH_CACHE_SCRIPT="$ENGINE_AUTH_CACHE_PROBE"
 export BREZEL_HOST_TUNING_SCRIPT
 export BREZEL_ENGINE_CAPACITY_SCRIPT
+export BREZEL_ENGINE_AUTH_CACHE_SCRIPT
 
 # Keep these defaults identical to the packaged Compose profile. The capacity
 # probe validates their physical feasibility before downloads or builds.
@@ -208,6 +211,9 @@ fi
 ENGINE_BUILD_DIR=$(mktemp -d "$INSTALL_DIR/engine-build.XXXXXX")
 ORCHESTRATOR_BUILD_CONTAINER=
 ORCHESTRATOR_ARTIFACT_TMP=
+NODE_TLS_DIR=
+PUBLIC_DRAIN_STARTED=false
+INSTALL_SUCCEEDED=false
 cleanup_build_dir() {
   if [ -n "$ORCHESTRATOR_BUILD_CONTAINER" ]; then
     docker rm -f "$ORCHESTRATOR_BUILD_CONTAINER" >/dev/null 2>&1 || true
@@ -221,7 +227,24 @@ cleanup_build_dir() {
     "$INSTALL_DIR"/engine-build.*) rm -rf -- "$ENGINE_BUILD_DIR" ;;
   esac
 }
-trap cleanup_build_dir EXIT HUP INT TERM
+cleanup_install() {
+  install_status=$?
+  trap - EXIT HUP INT TERM
+  set +e
+  case "$NODE_TLS_DIR" in
+    "$SECRETS_DIR"/.node-tls.*) rm -rf -- "$NODE_TLS_DIR" ;;
+  esac
+  cleanup_build_dir
+  if [ "$PUBLIC_DRAIN_STARTED" = true ] && [ "$INSTALL_SUCCEEDED" != true ]; then
+    docker compose -f "$SCRIPT_DIR/compose.yaml" stop brezeld >/dev/null 2>&1
+    docker compose -f "$SCRIPT_DIR/compose.yaml" stop brezel-node >/dev/null 2>&1
+  fi
+  exit "$install_status"
+}
+trap cleanup_install EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 git -C "$ENGINE_DIR" archive "$ENGINE_COMMIT" | tar -xf - -C "$ENGINE_BUILD_DIR"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_BUILD_PATCH"
@@ -277,17 +300,44 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 # orchestrator with the source-built Brezel binary. The one-shot installer is
 # deterministic on upgrades even when Compose retains completed containers.
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps preflight
+
+# Stop public admission before host tuning or replacing any live engine
+# artifact. Keep it stopped if any later step fails: an installer error must
+# not leave an old controller serving against a partially upgraded engine.
+# Stop the API before the node so no new data operation can be admitted while
+# the relay is taken out of service.
+export BREZEL_STATE_DIR="$STATE_DIR" BREZEL_SECRETS_DIR="$SECRETS_DIR"
+export BREZEL_UID="$(id -u)" BREZEL_GID="$(id -g)"
+PUBLIC_DRAIN_STARTED=true
+docker compose -f "$SCRIPT_DIR/compose.yaml" stop brezeld
+docker compose -f "$SCRIPT_DIR/compose.yaml" stop brezel-node
+
+# Replacing an executable does not affect an already-running process. Stop the
+# engine explicitly in reverse request-flow order. Do not suppress a failed
+# stop: continuing would permit concurrent cache writers or mixed revisions.
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop ready
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop client-proxy
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop api
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop orchestrator
+
+# Host and engine mutations begin only inside the stopped-service boundary.
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps host-setup
 "$CAPACITY_PROBE" live >/dev/null
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps fetch-artifacts
 "$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" /
+
+# Install the verified executable only after its old process and every public
+# admission path are stopped. This prevents an orchestrator crash in the
+# replacement window from restarting a new binary beneath the old API.
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" run --rm --no-deps brezel-orchestrator-install
 "$ARTIFACT_SUPPLY_CHAIN" host "$ENGINE_ARTIFACT_LOCK" / "$BREZEL_ENGINE_ORCHESTRATOR_SHA256"
 
-# Replacing an executable does not affect an already-running process. Stop the
-# old orchestrator explicitly so all subsequent qualification runs exercise
-# the verified Brezel binary and its synchronous teardown contract.
-docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" stop ready client-proxy api orchestrator >/dev/null 2>&1 || true
+# Compose does not hash bind-mounted script contents and may otherwise reuse a
+# completed one-shot container. Force both derived-state gates to run on every
+# installation while the API is stopped. The auth-cache gate deletes only the
+# engine's `auth:team:*` entries; other Redis state remains intact.
+docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
+  rm -sf brezel-engine-auth-cache brezel-engine-capacity
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" up -d --wait
 
 # Re-read the effective engine admission gate after startup. The one-shot
@@ -389,7 +439,6 @@ if [ "$NODE_TLS_RENEW" = true ]; then
       "$SECRETS_DIR"/.node-tls.*) rm -rf -- "$NODE_TLS_DIR" ;;
     esac
   }
-  trap 'cleanup_node_tls; cleanup_build_dir' EXIT HUP INT TERM
   openssl ecparam -name prime256v1 -genkey -noout -out "$NODE_TLS_DIR/node-ca.key"
   openssl req -x509 -new -sha256 -key "$NODE_TLS_DIR/node-ca.key" -days 365 \
     -subj '/CN=Brezel node CA' \
@@ -423,7 +472,6 @@ if [ "$NODE_TLS_RENEW" = true ]; then
     mv -f -- "$NODE_TLS_DIR/$tls_file" "$SECRETS_DIR/$tls_file"
   done
   cleanup_node_tls
-  trap cleanup_build_dir EXIT HUP INT TERM
 fi
 
 chmod 600 "$SECRETS_DIR/engine.token" "$SECRETS_DIR/service.token" "$SECRETS_DIR/access-policy.json" \
@@ -437,5 +485,6 @@ BREZEL_UID="$(id -u)" BREZEL_GID="$(id -g)" \
 
 "$SCRIPT_DIR/qualify.sh"
 
+INSTALL_SUCCEEDED=true
 echo "Brezel API is listening on http://127.0.0.1:8080"
 echo "Read the local CLI token from $SECRETS_DIR/service.token"

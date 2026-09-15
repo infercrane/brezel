@@ -70,8 +70,11 @@ gate to that same value, and both qualification and benchmarking verify the
 match before creating a VM. The runner also rejects a concurrency whose
 two-sandbox restore peak exceeds either the host or project limit.
 `workspace-io` holds one sandbox and one workspace
-per attempt. The benchmark project must be dedicated and empty before a matrix;
-operators must lower concurrent runs to fit stricter configured limits. A
+per attempt. The benchmark project must be dedicated and have no non-terminal
+sandboxes or workspaces before a matrix. The runner verifies that condition
+through authenticated, read-only API calls before it creates an environment or
+VM and retains content-minimal counts in `project-preflight.json`. Operators
+must lower concurrent runs to fit stricter configured limits. A
 published comparison must use
 identical counts, arrival intervals, image, resources, payload size, preview
 port, cache declaration, and success definition for every release under
@@ -138,6 +141,7 @@ Each invocation creates a new timestamped directory under
 ```text
 TARGET-TIMESTAMP/
   STATUS
+  project-preflight.json
   host-before.json
   host-after.json
   cases.ndjson
@@ -150,6 +154,10 @@ TARGET-TIMESTAMP/
     tti-sequential.log
     ...
 ```
+
+The project preflight records only the project name, non-terminal resource
+counts, request IDs, timestamp, and pass/fail result. It omits resource IDs and
+fails the matrix before environment creation when either count is nonzero.
 
 The host records intentionally omit hostname, IP addresses, machine serials,
 environment variables, tokens, command output, and customer content. They bind

@@ -105,6 +105,13 @@ PostgreSQL/Redis multi-writer design shown above. `/readyz` verifies that state
 boundary, the authenticated engine and node data paths, and the separate node
 control listener when routed execution is configured.
 
+The packaged installer reconciles the embedded engine's effective tenant
+admission limit transactionally before API startup. Because the engine caches
+the complete authenticated team in Redis, the same stopped-API upgrade boundary
+removes only `auth:team:*` derived entries before restarting admission; sandbox
+and routing state in Redis is never flushed. Public API and node services remain
+stopped when an upgrade or post-start qualification fails.
+
 ### Guest API
 
 The bundled guest agent remains the authority for operations inside a sandbox.

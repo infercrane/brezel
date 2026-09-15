@@ -45,11 +45,29 @@ func run(args []string, stdout, stderr io.Writer) error {
 	cleanupTimeout := flags.Duration("cleanup-timeout", 2*time.Minute, "per-resource cleanup timeout")
 	wholeTimeout := flags.Duration("timeout", 45*time.Minute, "whole benchmark timeout")
 	execute := flags.Bool("execute", false, "create and delete real runtime resources")
+	preflightEmptyProject := flags.Bool("preflight-empty-project", false, "inspect the project and fail unless it has no active sandboxes or workspaces")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return errors.New("brezel-bench does not accept positional arguments")
+	}
+	if *preflightEmptyProject {
+		token, err := loadServiceToken()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), *wholeTimeout)
+		defer cancel()
+		report, preflightErr := perfbench.InspectEmptyProject(ctx, perfbench.ProjectPreflightConfig{
+			BaseURL: *baseURL, Token: token, ProjectID: *project,
+		})
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(report); err != nil {
+			return fmt.Errorf("encode project preflight report: %w", err)
+		}
+		return preflightErr
 	}
 	if !*execute {
 		return errors.New("benchmark requires explicit -execute because it creates and deletes real runtime resources")

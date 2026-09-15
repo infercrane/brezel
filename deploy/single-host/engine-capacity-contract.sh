@@ -29,11 +29,14 @@ export PGDATABASE=${PGDATABASE:-${POSTGRES_DB:-postgres}}
 if [ "$MODE" = apply ]; then
   psql -X -v ON_ERROR_STOP=1 -v expected="$EXPECTED" <<'SQL' >/dev/null
 BEGIN;
+SELECT set_config('brezel.expected_capacity', :'expected', true);
 DO $brezel$
 DECLARE
   team_count bigint;
   non_base_team_count bigint;
   base_tier_count bigint;
+  effective_mismatch_count bigint;
+  expected_capacity bigint := current_setting('brezel.expected_capacity')::bigint;
 BEGIN
   SELECT count(*) INTO team_count FROM public.teams;
   IF team_count < 1 THEN
@@ -49,23 +52,26 @@ BEGIN
   IF base_tier_count <> 1 THEN
     RAISE EXCEPTION 'Brezel embedded engine base tier is missing or ambiguous';
   END IF;
+
+  UPDATE public.tiers
+  SET concurrent_instances = expected_capacity
+  WHERE id = 'base_v1';
+
+  SELECT count(*), count(*) FILTER (WHERE concurrent_sandboxes <> expected_capacity)
+  INTO team_count, effective_mismatch_count
+  FROM public.team_limits;
+  IF team_count < 1 OR effective_mismatch_count <> 0 THEN
+    RAISE EXCEPTION 'Brezel embedded engine effective sandbox limits do not equal %', expected_capacity;
+  END IF;
 END
 $brezel$;
-
-UPDATE public.tiers
-SET concurrent_instances = :'expected'::bigint
-WHERE id = 'base_v1';
 COMMIT;
 SQL
 fi
 
-observed=$(psql -X -v ON_ERROR_STOP=1 -Atc \
-  "SELECT CASE WHEN count(*) > 0 AND count(*) FILTER (WHERE concurrent_sandboxes <> $EXPECTED) = 0 THEN $EXPECTED ELSE -1 END FROM public.team_limits")
-case "$observed" in
-  ""|*[!0-9]*) fail "the embedded engine returned an invalid sandbox limit" ;;
-esac
-[ "$observed" -eq "$EXPECTED" ] || \
-  fail "embedded engine admits $observed sandboxes but Brezel admits $EXPECTED"
+conformant=$(psql -X -v ON_ERROR_STOP=1 -Atc \
+  "SELECT count(*) > 0 AND count(*) FILTER (WHERE concurrent_sandboxes <> $EXPECTED) = 0 FROM public.team_limits")
+[ "$conformant" = t ] || fail "embedded engine effective sandbox limits do not equal $EXPECTED"
 
 printf '%s\n' \
-  "{\"engine_capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"max_active_sandboxes\":$observed}"
+  "{\"engine_capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"max_active_sandboxes\":$EXPECTED}"

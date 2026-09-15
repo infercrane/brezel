@@ -57,6 +57,23 @@ services:
     entrypoint: ["/bin/sh"]
     command: ["/opt/brezel/engine-capacity-contract.sh", "apply"]
 
+  brezel-engine-auth-cache:
+    image: ${BREZEL_ENGINE_REDIS_IMAGE:?set BREZEL_ENGINE_REDIS_IMAGE from engine.images.lock}
+    pull_policy: never
+    restart: "no"
+    depends_on:
+      redis:
+        condition: service_healthy
+      brezel-engine-capacity:
+        condition: service_completed_successfully
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    volumes:
+      - ${BREZEL_ENGINE_AUTH_CACHE_SCRIPT:?set BREZEL_ENGINE_AUTH_CACHE_SCRIPT to the audited auth cache script}:/opt/brezel/engine-auth-cache-contract.sh:ro
+    entrypoint: ["/bin/sh"]
+    command: ["/opt/brezel/engine-auth-cache-contract.sh", "invalidate"]
+
   preflight:
     pull_policy: never
 
@@ -142,6 +159,8 @@ services:
         read_only: true
     depends_on:
       brezel-engine-capacity:
+        condition: service_completed_successfully
+      brezel-engine-auth-cache:
         condition: service_completed_successfully
 
   client-proxy:

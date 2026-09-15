@@ -12,6 +12,7 @@ ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
 MAX_ACTIVE_SANDBOXES_TOTAL=${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
+MIN_READY_NETWORK_SLOTS=${BREZEL_MIN_READY_NETWORK_SLOTS:-32}
 
 if [ ! -s "$TOKEN_FILE" ]; then
   echo "runtime service token is missing; run install.sh first" >&2
@@ -49,6 +50,30 @@ cli() {
       -url http://127.0.0.1:8080 \
       -token-file /run/brezel-secrets/service.token \
       -project brezel-conformance "$@"
+}
+
+preflight_capacity_contract() {
+  # This also validates the configured active limit before it is used in shell
+  # arithmetic below.
+  PREFLIGHT_CAPACITY_JSON=$("$CAPACITY_PROBE" live)
+  case "$MIN_READY_NETWORK_SLOTS" in
+    ""|*[!0-9]*)
+      echo "BREZEL_MIN_READY_NETWORK_SLOTS must be a positive integer" >&2
+      return 1
+      ;;
+  esac
+  if [ "$MIN_READY_NETWORK_SLOTS" -lt "$MAX_ACTIVE_SANDBOXES_TOTAL" ]; then
+    echo "BREZEL_MIN_READY_NETWORK_SLOTS cannot be lower than BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL" >&2
+    return 1
+  fi
+  if [ "$MIN_READY_NETWORK_SLOTS" -gt 32 ]; then
+    echo "BREZEL_MIN_READY_NETWORK_SLOTS cannot exceed the qualified 32-slot new-sandbox network pool" >&2
+    return 1
+  fi
+
+  PREFLIGHT_ENGINE_CAPACITY_JSON=$(engine_compose exec -T \
+    -e "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=$MAX_ACTIVE_SANDBOXES_TOTAL" \
+    postgres sh -s -- verify < "$ENGINE_CAPACITY_PROBE")
 }
 
 ACTIVE_SANDBOX_ID=
@@ -253,7 +278,7 @@ run_engine_fast_path_qualification() {
   fi
   cli exec "$ACTIVE_SANDBOX_ID" /bin/true >/dev/null
   engine_sandbox_id=$(resolve_engine_sandbox_id "$ACTIVE_SANDBOX_ID")
-  min_network_slots=${BREZEL_MIN_READY_NETWORK_SLOTS:-32}
+  min_network_slots=$MIN_READY_NETWORK_SLOTS
 
   capacity_json=$("$CAPACITY_PROBE" live)
   engine_capacity_json=$(engine_compose exec -T \
@@ -280,6 +305,10 @@ run_engine_fast_path_qualification() {
   mv -- "$report_tmp" "$QUALIFICATION_DIR/$fast_path_target.json"
 }
 
+# Capacity is an admission prerequisite, not a property to discover after the
+# destructive suite has already created a VM. Keep this before every CLI call
+# that can create a sandbox or workspace.
+preflight_capacity_contract
 run_conformance "$TARGET"
 
 # A valid credential must not be able to manufacture a new tenant identity by
