@@ -11,14 +11,20 @@
    failed are different conditions with durable transitions.
 4. **Storage is explicit.** Root filesystem snapshots, single-writer volumes,
    shared drives, and immutable artifacts have different guarantees.
-5. **Private by default.** No public ingress, unrestricted egress, ambient cloud
-   identity, or long-lived sandbox credentials.
+5. **Private by default.** No public ingress, ambient cloud identity, long-lived
+   sandbox credentials, or egress unless the caller explicitly opts into the
+   developer-preview unrestricted-internet mode or attaches an approved route.
 6. **Inference is local infrastructure.** A model route is a typed resource that
    can be placed near the sandbox without making this project a model server.
 7. **Measure before claiming.** Startup, resume, density, durability, and
    isolation claims must name a tested release and environment.
 
-## Logical components
+## Target fleet architecture
+
+The diagram and fleet services in this section are a design target, not the
+current release. The implemented private single-host topology is described
+under [State and data stores](#state-and-data-stores) and bounded by
+[Status](STATUS.md).
 
 ```text
                                 SDK / CLI
@@ -75,7 +81,8 @@ worth it.
 
 ### Product runtime service
 
-The project adds the opinionated product surface and missing system behavior:
+The target product runtime adds the opinionated product surface and system
+behavior:
 
 - organization, project, tenant, role, and service-account identity;
 - declarative sandbox and job APIs;
@@ -172,22 +179,20 @@ streams command events but currently buffers file bodies and proxied HTTP
 bodies. Terminal sessions, WebSockets, raw TCP, capability delegation, and
 multi-hop forwarding are not part of this milestone.
 
-This trust boundary is implemented in internal packages and the separate
-`brezel-node` process, but it is not the default `brezeld` path yet. Lifecycle,
-placement, desired route state, enrollment, and reconciliation still belong to
-the durable API and engine adapter. The current public command,
-file, and preview endpoints still traverse the durable API process, and there
-is no separately authenticated data-edge handoff to the node. Enabling the
-relay as the default byte path requires node registration, certificate and key
-rotation, route-ledger reconciliation, a data-edge routing path, service-unit
-packaging, and Linux/KVM failure qualification. See
-[ADR 0009](decisions/0009-node-relay-trust-boundary.md).
+The packaged single-host profile selects this relay for admitted command, file,
+and preview operations. Public HTTP still terminates at `brezeld`; clients do
+not receive a node capability or connect directly to a node. Lifecycle,
+placement, desired route state, and reconciliation remain controller-owned.
+Dynamic node enrollment, online certificate and signing-key rotation, durable
+node-operation receipts, service-unit packaging, and a direct data-edge
+handoff remain future work. See [ADR
+0009](decisions/0009-node-relay-trust-boundary.md).
 
 ## Primary resources
 
 ### Environment and image
 
-An environment is the reproducible launch contract. It resolves an OCI image,
+In the target architecture, an environment is the reproducible launch contract. It resolves an OCI image,
 resources, startup actions, tool capability manifests, connectors, network
 policy, storage, and retention defaults to immutable revisions.
 
@@ -197,7 +202,10 @@ as build inputs; a sandbox always launches a resolved digest.
 
 ### Sandbox
 
-A sandbox has stable identity and an explicit lifecycle:
+A sandbox has stable identity and an explicit lifecycle. `archiving`,
+`archived`, and `restoring` below are target fleet states; the current release
+implements requested, preparing, running, standby, failed, expired, deleting,
+and deleted:
 
 ```text
 requested -> preparing -> running <-> standby
@@ -222,7 +230,7 @@ revalidated.
 
 ### Checkpoint
 
-A checkpoint is an immutable resource with an explicit kind:
+The target checkpoint contract is an immutable resource with an explicit kind:
 
 - `filesystem` preserves the declared writable filesystem state; and
 - `full_state` also preserves process memory and supported device state.
@@ -237,7 +245,9 @@ same-node resume and must be measured separately. Cross-region replication is a
 later storage workflow, not live migration. A dependent checkpoint cannot be
 deleted until children are deleted or materialized independently.
 
-The first release checkpoints only at an explicit quiescent boundary. A
+The current release exposes filesystem checkpoint and restore. Public
+`full_state` checkpoint and fork operations are not implemented. Any future
+full-state release checkpoints only at an explicit quiescent boundary. A
 checkpoint cannot undo an external effect such as a message, payment, tool call,
 or model request. Restore and fork must not silently duplicate unresolved
 effects.
@@ -274,7 +284,7 @@ overwrite, truncate, atomic rename, nested creation, and a one-megabyte payload
 across an actual boot-identity change. This is local-host crash durability, not
 replicated storage, backup, secure erase, or host-loss recovery.
 
-### Drive
+### Drive (planned)
 
 A drive is a concurrent shared workspace with semantics that differ from a
 volume. It requires coherency, authorization, quota, backup, and failure tests.
@@ -282,7 +292,7 @@ The first implementation should evaluate JuiceFS over S3-compatible object
 storage and PostgreSQL or Redis metadata. Do not expose it as production-ready
 until rename, fsync, locking, partial-failure, and tenant-isolation tests pass.
 
-### Job
+### Job (planned)
 
 A job is a durable desired state for one or many bounded runs. It stores input
 references, concurrency, retry policy, timeout, result policy, and cancellation
@@ -292,7 +302,7 @@ Cancellation is durable. A cancelled client connection is not cancellation.
 Retries never reuse a potentially contaminated sandbox unless the job explicitly
 starts from a qualified checkpoint.
 
-### Model route
+### Model route (target)
 
 A model route maps a stable alias to an approved OpenAI-compatible or later
 protocol endpoint. The route contains model allowlists, placement, credential
@@ -329,14 +339,14 @@ records the boundary. The private profile requires SPIFFE or equivalent
 workload identity, a managed secret resolver, rate and concurrency budgets, and
 streaming conformance.
 
-### Sandbox group
+### Sandbox group (planned)
 
 A sandbox group requests co-located computers with an explicit private link
 network. It supports an agent with a browser, database, trusted helper, or peer
 workers without packing mutually untrusted workloads into one sandbox. Group
 identity, addressability, and teardown are atomic at the control-plane level.
 
-### Rollout
+### Rollout (planned)
 
 A rollout is a reproducible collection of agent episodes over one environment,
 one or more model connector revisions, a task set, evaluators, budgets, branch
@@ -345,9 +355,9 @@ it does not own agent reasoning or inference serving.
 
 ### Operation event and receipt
 
-Every long operation emits ordered, replayable events suitable for webhooks and
-SDK streams. Events are lifecycle metadata; tenant logs and customer content are
-separate data products.
+The current release emits ordered lifecycle events and signed receipts. Durable
+webhook delivery and SDK event streams are planned. Events are lifecycle
+metadata; tenant logs and customer content remain separate data products.
 
 A receipt binds immutable identities and the controls observed or enforced. It
 uses a standard attestation envelope and never implies hardware attestation
@@ -357,6 +367,11 @@ measurements.
 ## Request flows
 
 ### Create and use a sandbox
+
+The current single-host flow implements authentication, project policy,
+immutable template resolution, durable creation intent, engine creation,
+guest-readiness verification, relay route installation, and lifecycle activity.
+Fleet placement and organization policy in the numbered flow are target steps.
 
 1. Authenticate caller and resolve organization/project.
 2. Validate the sandbox request and organization policy.
@@ -369,9 +384,10 @@ measurements.
 8. Mark `running` only after the guest health check and policy report succeed.
 9. Authorize process, filesystem, and port requests without exposing the guest
    credential. The current single-host path issues one-operation capabilities so
-   command, file, and application-port bytes travel through the node relay rather
-   than the durable API process. Terminal transport remains unimplemented;
-   lifecycle operations continue through the durable API authority.
+   public command, file, and application-port requests travel through `brezeld`
+   to the node relay. The relay owns guest-facing transport and private engine
+   resolution; lifecycle operations remain in the durable API authority.
+   Terminal transport remains unimplemented.
 10. Refresh activity through a bounded, coalesced lifecycle signal; the relay
     hot path must not fsync durable activity state for every byte operation, and
     activity does not extend absolute expiration.
@@ -391,14 +407,14 @@ a false `running` state.
 2. It acquires the sandbox operation lock and moves the object to `pausing`.
 3. New traffic waits or receives a retryable state; it cannot race a second
    snapshot.
-4. The node records the snapshot manifest and releases compute.
-5. The controller marks `standby` only after artifacts are durable enough for the
-   configured profile.
+4. The engine records the full-state standby artifact and releases compute.
+5. The controller marks `standby` only after the engine confirms the artifact.
 6. Authenticated incoming traffic requests resume.
-7. Policy, quota, CPU compatibility, and snapshot identity are rechecked.
-8. The client proxy buffers only within explicit limits and routes after health.
+7. Project policy, quota, and sandbox identity are rechecked; engine
+   compatibility remains part of the pinned single-host profile.
+8. Traffic routes only after a fresh guest health check.
 
-### Execute a job
+### Execute a job (planned)
 
 1. Persist job and immutable input references.
 2. Expand attempts lazily up to the concurrency and budget limits.
@@ -412,13 +428,13 @@ a false `running` state.
 
 ### Ingress
 
-All inbound traffic passes through the client proxy. Routes use unguessable
-identifiers plus caller authorization; the hostname is not a capability. Public
-preview links are opt-in, scoped, revocable, rate-limited, and never expose the
-guest management API.
+The current HTTP preview path uses an opaque, short-lived lease, rechecks
+sandbox state, and never exposes the guest-management API. It does not yet
+provide a public hosted ingress service, custom domains, WebSockets, or
+independent per-route rate limits.
 
-The proxy may wake a standby sandbox. It must cap queued bytes, connections, and
-resume attempts to prevent a cheap denial of service.
+A future hosted proxy may wake a standby sandbox. It must cap queued bytes,
+connections, and resume attempts to prevent a cheap denial of service.
 
 ### Egress
 
@@ -434,12 +450,15 @@ claim for traffic that bypasses the HTTP gateway.
 ### Private networking
 
 The single-host preview uses per-sandbox virtual interfaces and host-enforced
-rules. Cluster mode assigns stable workload identity and regional addresses,
+rules. A future cluster mode assigns stable workload identity and regional addresses,
 then routes through an overlay or VPC network. Standard Linux/Cilium networking
 comes before custom VPP work. VPP is justified only by measured throughput,
 latency, or density limits.
 
 ## State and data stores
+
+The following table is the target fleet storage split. It is not implemented by
+the private single-host release.
 
 | State | Recommended store | Notes |
 | --- | --- | --- |
@@ -465,7 +484,7 @@ content-free event appends avoid copying unrelated records. Some low-frequency
 lifecycle transactions still use the generic state interface and are a known
 single-host scaling limit, not a fleet database design.
 
-## Scheduling
+## Scheduling (target)
 
 Placement filters before scoring:
 
@@ -495,18 +514,21 @@ We should not promise compatibility with a proprietary provider API without a
 public conformance profile. Undocumented behavior and trademarks stay out of
 scope.
 
-## Availability model
+## Availability model (target)
 
-Control-plane operations are durable and idempotent. Every mutation returns an
-operation ID. Reconcilers can continue after API, controller, or client restart.
+Resource lifecycle mutations in the current single-host release have durable
+idempotency and reconciliation. Command execution, file writes, and ephemeral
+preview leases are not replay-safe mutations. Some node rebind and removal
+transport failures intentionally remain ambiguous and fail closed until durable
+node-operation receipts exist.
 
-The first production profile is single region with multiple worker nodes. It
+The target first production profile is single region with multiple worker nodes. It
 supports node failure by restoring from durable snapshots or volumes where
 available; it does not promise transparent process continuity. Multi-region
 failover requires replicated image, snapshot, policy, and routing state and is a
 later profile.
 
-## Repository shape after implementation begins
+## Target repository shape
 
 ```text
 cmd/

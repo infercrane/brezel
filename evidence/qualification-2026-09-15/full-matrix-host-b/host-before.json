@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "phase": "before",
+  "captured_at": "2026-09-15T12:23:48Z",
+  "host": {
+    "os": {
+      "id": "ubuntu",
+      "version": "24.04"
+    },
+    "kernel_release": "7.0.0-1011-gcp",
+    "architecture": "x86_64",
+    "virtualization": "google",
+    "cpu": {
+      "model": "Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz",
+      "sockets": "1",
+      "cores_per_socket": "4",
+      "threads_per_core": "2",
+      "governors": "unknown"
+    },
+    "memory": {
+      "total_kib": "32857360",
+      "available_kib": "11715824",
+      "hugepages_total": "9216",
+      "hugepages_free": "9201",
+      "hugepages_reserved": "60",
+      "hugepage_size_kib": "2048"
+    },
+    "load_average": "0.70 1.17 0.77",
+    "root_filesystem": {
+      "source": "/dev/nvme0n1p1",
+      "type": "ext4",
+      "options": "rw,relatime,discard,errors=remount-ro,commit=30",
+      "available_bytes": "177851576320"
+    },
+    "devices": {
+      "kvm": true,
+      "tun": true
+    }
+  },
+  "software": {
+    "docker": {
+      "server_version": "29.1.3",
+      "storage_driver": "overlayfs",
+      "cgroup_version": "2",
+      "runtime_image_id": "sha256:743150f6ffbf34f4d6bb48f0351b40b1b8fbc7e280bfb9f74e218bfff4a7d0de"
+    },
+    "repository": {
+      "revision": "67410ab5b928a335a79701d67eaf859df890da9c",
+      "dirty": false
+    },
+    "benchmark_binary_sha256": "2ca852504ad0f73d19d50d974ef3b751528f73062f74897963498b7a9821e2d9",
+    "engine_lock_sha256": "060b354c005841586c5a3e8afaeae2f3809088652181c824bccc750439544c77"
+  }
+}

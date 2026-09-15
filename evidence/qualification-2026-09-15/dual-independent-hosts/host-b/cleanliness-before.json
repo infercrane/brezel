@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "host_label": "b",
+  "phase": "before",
+  "projects": {
+    "brezel-conformance": {
+      "schema_version": 1,
+      "checked_at": "2026-09-15T12:46:01.377020784Z",
+      "project_id": "brezel-conformance",
+      "active_sandboxes": 0,
+      "active_workspaces": 0,
+      "sandbox_request_id": "73e1d6575dad370abafd16fde60dcf46",
+      "workspace_request_id": "03819e2c74df13d15eb23dae8c4b5ef4",
+      "empty": true
+    },
+    "brezel-conformance-isolation": {
+      "schema_version": 1,
+      "checked_at": "2026-09-15T12:46:02.20282318Z",
+      "project_id": "brezel-conformance-isolation",
+      "active_sandboxes": 0,
+      "active_workspaces": 0,
+      "sandbox_request_id": "df98d020de557882f8c068052f7bbe71",
+      "workspace_request_id": "8611f5dc232b9ac6c1010fcc22007967",
+      "empty": true
+    },
+    "brezel-benchmark": {
+      "schema_version": 1,
+      "checked_at": "2026-09-15T12:46:02.995208671Z",
+      "project_id": "brezel-benchmark",
+      "active_sandboxes": 0,
+      "active_workspaces": 0,
+      "sandbox_request_id": "be8d4d9357b7e0de8e9d1e02737fe5e0",
+      "workspace_request_id": "69fe7dafdae95abfcdf54bb0caa866a0",
+      "empty": true
+    }
+  },
+  "outcome": "passed"
+}

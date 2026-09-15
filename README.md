@@ -25,7 +25,7 @@ persistent workspaces, checkpoints, and lifecycle.
 > [!WARNING]
 > **Self-hosted private-tenant developer preview.** The supported profile is one
 > organization on one dedicated Ubuntu 24.04 x86-64 host with KVM and
-> `/dev/net/tun`. Revision `121d7c6952c5bbc0010c365817ef540a1efbaca6` completed
+> `/dev/net/tun`. Revision `67410ab5b928a335a79701d67eaf859df890da9c` completed
 > destructive qualification on two separately administered hosts, each as an
 > independent single-host deployment. Brezel is not qualified for a cluster,
 > high availability, hostile shared multitenancy, or public production. See the
@@ -59,9 +59,8 @@ workloads.
 $ brezel new --ttl 3600
 sbx_01...    running
 
-$ brezel run sbx_01... /bin/sh -lc 'python --version && npm test'
-Python 3.13.7
-...
+$ brezel run sbx_01... python -c 'print(6 * 7)'
+42
 
 $ brezel put sbx_01... /workspace/input.json ./input.json
 $ brezel open sbx_01... 3000
@@ -121,13 +120,13 @@ sandbox.stop()
 | Capability | Current implementation |
 | --- | --- |
 | **Isolation** | Firecracker microVMs with no container fallback in release code |
-| **Execution** | Streamed commands, deadlines, bounded output, and real exit status |
+| **Execution** | Streamed commands, deadlines, bounded output, and confirmed exit status on complete streams |
 | **State** | Durable single-writer workspaces plus filesystem checkpoint and restore |
 | **Lifecycle** | Expiration, automatic standby, same-host resume, cleanup, and restart recovery |
 | **I/O** | Bounded file transfer and short-lived authenticated HTTP previews |
-| **Network** | Deny-by-default policy and a narrow private model or tool connector preview |
-| **Control** | Project-bound credentials, quotas, overload admission, idempotent operations, and a SQLite WAL lifecycle ledger |
-| **Evidence** | Content-minimal Ed25519 lifecycle receipts and reproducible qualification |
+| **Network** | Deny by default; explicit unrestricted-internet opt-in; narrow private model or tool connector preview |
+| **Control** | Project-bound credentials, quotas, overload admission, durable lifecycle idempotency, and a SQLite WAL lifecycle ledger |
+| **Evidence** | Content-minimal Ed25519 lifecycle receipts and revision-bound qualification evidence |
 
 ## Architecture
 
@@ -152,7 +151,7 @@ The single-host distribution sends command, file, and preview traffic through
 a separate node relay. It uses mTLS identities, one-operation Ed25519
 capabilities, replay defense, durable route generations, and bounded protocols.
 The API remains the lifecycle authority. At revision
-`121d7c6952c5bbc0010c365817ef540a1efbaca6`, this integrated path completed
+`67410ab5b928a335a79701d67eaf859df890da9c`, this integrated path completed
 destructive qualification on each of two separately administered Linux/KVM
 hosts, including simultaneous conformance and controller/node-relay crash
 containment. This evidence does not establish a multi-node product topology.
@@ -163,14 +162,23 @@ containment. This evidence does not establish a multi-node product topology.
 
 - The repository test suite exercises contracts, races, authorization denial,
   restart behavior, cleanup, and security-negative cases.
-- Revision `121d7c6952c5bbc0010c365817ef540a1efbaca6` passed the destructive
+- Revision `67410ab5b928a335a79701d67eaf859df890da9c` passed the destructive
   workflow on each of two independent Ubuntu 24.04 x86-64 KVM hosts. See the
   [dated qualification report](docs/QUALIFICATION-2026-09-15.md).
-- The complete pre-optimization matrices finished with 24 of 24 cells passing
-  on a clean host and 22 of 24 on a long-lived host. The two failures were
-  concurrent filesystem restores; all expected resource cleanup succeeded.
-  See the exact [dated evidence](docs/QUALIFICATION-2026-09-15.md). Brezel makes
-  no portable startup-latency or competitive performance claim.
+- Both 24-cell matrices passed: 48 of 48 cells, 2,112 of 2,112 attempts, and
+  3,168 of 3,168 expected resource cleanups. Sequential cached create through
+  first verified instruction measured 70.457–70.957 ms p50 and 79.553–80.804
+  ms p95 across the two hosts. Their 16-way burst p50 was 359.690–384.931 ms.
+  A separate 320-attempt immediate-command stress run also completed with 100%
+  success and cleanup. See the checksummed [dated
+  evidence](docs/QUALIFICATION-2026-09-15.md). These host-local observations do
+  not prove exactly-once execution or elimination of every stream failure, and
+  do not authorize a portable startup-latency or competitive performance claim.
+- Both hosts also passed an exact-revision provider-reset drill. Each reboot
+  changed the host boot identity, preserved the six-file workspace corpus,
+  restored access through a replacement sandbox, and confirmed cleanup. This is
+  crash-durable same-host workspace recovery, not transparent process resume or
+  host-loss recovery.
 
 <details>
 <summary><strong>Not implemented yet</strong></summary>
@@ -178,7 +186,7 @@ containment. This evidence does not establish a multi-node product topology.
 - hostile shared-multitenant production assurance
 - arbitrary OCI environment builds
 - interactive PTY, SSH, desktop, WebSocket, or raw TCP transport
-- full-state checkpoint and fork
+- public full-state checkpoint and fork operations
 - Python and TypeScript SDKs
 - multi-node scheduling or replicated state and storage
 - OIDC, organizations, RBAC, approvals, or dynamic quota administration
@@ -207,7 +215,10 @@ before publishing results.
 A dependency-free adapter under [`benchmarks/computesdk`](benchmarks/computesdk)
 also exercises Brezel through the public ComputeSDK sandbox shape. It is an
 integration and independent-benchmark bridge, not yet a published provider
-package or a performance claim.
+package or a performance claim. The currently qualified engine capacity is 32,
+so the release does not meet Brezel's internal submission gate for ComputeSDK's
+public 100-way Burst TTI comparison. Read the [benchmark methodology and entry
+gates](docs/BENCHMARKING.md).
 
 ## Host requirements
 

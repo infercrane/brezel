@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "host_label": "b",
+  "foreign_resource_hashes": {
+    "sandbox": "6b47dae5bf8089de4ac134b4d7e869abe7ea0e6cfcc125b83589c1821f93c8ee",
+    "workspace": "6ae0db8e054c91122b0c5d292fd1146e5cc2802b728201dd9e06e3a317d82e1f"
+  },
+  "observed_status": {
+    "inspect_sandbox": 404,
+    "delete_sandbox": 404,
+    "run_command": 404,
+    "read_file": 404,
+    "inspect_workspace": 404,
+    "delete_workspace": 404
+  },
+  "outcome": "passed"
+}

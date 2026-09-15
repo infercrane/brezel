@@ -20,6 +20,8 @@ patch makes the NFSv3 server's advertised `FILE_SYNC` write stability true:
 data and inode changes are synced before success, while create, rename,
 remove, and directory operations sync the affected parent directories before
 acknowledgement. A sync failure is returned to the guest instead of becoming
-a false durability promise.
+a false durability promise. The sixth patch bounds simultaneous local sandbox
+starts and makes resource-exhaustion retries bounded, cancellation-aware, and
+observable instead of allowing an unbounded admission loop.
 
 Upstream source: <https://github.com/e2b-dev/runtime>

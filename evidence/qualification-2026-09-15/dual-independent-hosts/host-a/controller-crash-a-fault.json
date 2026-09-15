@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "host_label": "a",
+  "fault": "controller_sigkill",
+  "service": "brezeld",
+  "process_started_at": {
+    "before": "2026-09-15T12:19:07.772515666Z",
+    "after": "2026-09-15T12:46:53.126345384Z"
+  },
+  "fault_started_epoch_ms": 1789476411156,
+  "ready_epoch_ms": 1789476415239,
+  "finished_epoch_ms": 1789476415578,
+  "recovery_ms": 4083,
+  "fixture": {
+    "state": "running",
+    "marker_preserved": true
+  },
+  "outcome": "passed"
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "host_label": "a",
+  "sample_count": 3,
+  "best_sample": {
+    "round_trip_ms": 1755,
+    "coordinator_midpoint_epoch_ms": 1789476353355,
+    "remote_midpoint_offset_ms": 801,
+    "absolute_offset_ms": 801,
+    "uncertainty_ms": 878,
+    "maximum_possible_absolute_offset_ms": 1679
+  },
+  "limits": {
+    "maximum_round_trip_ms": 2000,
+    "maximum_possible_absolute_offset_ms": 5000
+  },
+  "outcome": "passed"
+}

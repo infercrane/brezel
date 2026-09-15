@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "host_label": "b",
+  "started_epoch_ms": 1789476408723,
+  "finished_epoch_ms": 1789476453746,
+  "attempts": 133,
+  "succeeded": 133,
+  "failed": 0,
+  "max_latency_ms": 324,
+  "outcome": "passed"
+}

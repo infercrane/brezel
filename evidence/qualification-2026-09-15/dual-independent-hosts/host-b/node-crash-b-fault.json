@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "host_label": "b",
+  "fault": "node_relay_sigkill",
+  "service": "brezel-node",
+  "process_started_at": {
+    "before": "2026-09-15T12:19:31.919865215Z",
+    "after": "2026-09-15T12:47:38.777569326Z"
+  },
+  "fault_started_epoch_ms": 1789476457960,
+  "ready_epoch_ms": 1789476458885,
+  "finished_epoch_ms": 1789476459235,
+  "recovery_ms": 925,
+  "fixture": {
+    "state": "running",
+    "marker_preserved": true
+  },
+  "outcome": "passed"
+}

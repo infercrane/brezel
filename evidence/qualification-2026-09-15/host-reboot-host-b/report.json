@@ -1,0 +1,166 @@
+{
+  "schema_version": 3,
+  "target": "developer-single-host-brezel-qual-b-20260915-0238-host-reboot-20260915T131243Z",
+  "scope": "full host reboot with active sandbox and durable workspace",
+  "qualification": "host_reboot_workspace_recovery_conformant",
+  "outcome": "passed",
+  "failure": null,
+  "started_at": "2026-09-15T13:10:01Z",
+  "finished_at": "2026-09-15T13:12:46Z",
+  "duration_seconds": 165,
+  "fault_injection": {
+    "reset_method": "gcp-compute-reset",
+    "verify_argument": "gcp-compute-reset",
+    "status": "passed"
+  },
+  "host": {
+    "boot_id_before": "59f051f5-3e6b-4bf8-b115-faaffa19e026",
+    "boot_id_after": "7c83f308-afeb-4025-8a81-4a991d3f3b6c",
+    "changed": true
+  },
+  "runtime_identity": {
+    "status": "passed",
+    "before": {
+      "schema_version": 1,
+      "format": "brezel-runtime-attestation-v1",
+      "source": {
+        "revision": "67410ab5b928a335a79701d67eaf859df890da9c",
+        "clean": true
+      },
+      "services": {
+        "brezeld": {
+          "image_sha256": "743150f6ffbf34f4d6bb48f0351b40b1b8fbc7e280bfb9f74e218bfff4a7d0de",
+          "binary_sha256": "647717e66e27d7d582f920aeb5d22d243fc926d6b3595c35fb1ec58691e5e390"
+        },
+        "brezel-node": {
+          "image_sha256": "662d003e6e8b099a2bfc0059fdeff2e14721205ab5e23c3dc87438b45dc37c59",
+          "binary_sha256": "06111933d60e185107fd5850542443b037f70263fc52287af31f2a764078070b"
+        }
+      },
+      "verified_running": true
+    },
+    "after": {
+      "schema_version": 1,
+      "format": "brezel-runtime-attestation-v1",
+      "source": {
+        "revision": "67410ab5b928a335a79701d67eaf859df890da9c",
+        "clean": true
+      },
+      "services": {
+        "brezeld": {
+          "image_sha256": "743150f6ffbf34f4d6bb48f0351b40b1b8fbc7e280bfb9f74e218bfff4a7d0de",
+          "binary_sha256": "647717e66e27d7d582f920aeb5d22d243fc926d6b3595c35fb1ec58691e5e390"
+        },
+        "brezel-node": {
+          "image_sha256": "662d003e6e8b099a2bfc0059fdeff2e14721205ab5e23c3dc87438b45dc37c59",
+          "binary_sha256": "06111933d60e185107fd5850542443b037f70263fc52287af31f2a764078070b"
+        }
+      },
+      "verified_running": true
+    }
+  },
+  "resources": {
+    "original_sandbox_id": "sbx_594740238acb1694b11412f4cbd4ac65",
+    "recovery_sandbox_id": "sbx_49f62309a5cf0a03b45e713ad63cb41b",
+    "workspace_id": "wrk_09cef05e368bf317c806982e6a874f52"
+  },
+  "observed_sandbox_state": "failed",
+  "recovery_mode": "workspace_replacement",
+  "marker": {
+    "expected_sha256": "c302bc4294228fc969777e179eb3da8dd3cf75a7fcf9871172ba3ab0df8ce2ce",
+    "actual_sha256": "c302bc4294228fc969777e179eb3da8dd3cf75a7fcf9871172ba3ab0df8ce2ce"
+  },
+  "crash_consistency_corpus": {
+    "status": "passed",
+    "expected": [
+      {
+        "path": "atomic-rename.txt",
+        "sha256": "f104a7f5ffc31b0cb5fb53c7357458fdcb6e9cc4546cedd75683e071ac4c5e34",
+        "size_bytes": 71
+      },
+      {
+        "path": "nested/path.txt",
+        "sha256": "6ea42d82e68fdac1107489673887414623cdef3b5505c4c1ff739973b53a5b47",
+        "size_bytes": 71
+      },
+      {
+        "path": "overwrite.txt",
+        "sha256": "e710bcefbbdedd5b2ddb6c4dd373dafca03c37d50e81af319415b583b4706c67",
+        "size_bytes": 70
+      },
+      {
+        "path": "payload-1m.bin",
+        "sha256": "5c7e281936490b030355288e1b64cb5b403d3218342c3e6d0d0fd258e37ae751",
+        "size_bytes": 1048576
+      },
+      {
+        "path": "small.txt",
+        "sha256": "c302bc4294228fc969777e179eb3da8dd3cf75a7fcf9871172ba3ab0df8ce2ce",
+        "size_bytes": 64
+      },
+      {
+        "path": "truncate.txt",
+        "sha256": "064bfc95dd30cb012b460d03e4d72d0070e3ff5f07db9380ec0d923e622a7f00",
+        "size_bytes": 17
+      }
+    ],
+    "actual": [
+      {
+        "path": "atomic-rename.txt",
+        "sha256": "f104a7f5ffc31b0cb5fb53c7357458fdcb6e9cc4546cedd75683e071ac4c5e34",
+        "size_bytes": 71
+      },
+      {
+        "path": "nested/path.txt",
+        "sha256": "6ea42d82e68fdac1107489673887414623cdef3b5505c4c1ff739973b53a5b47",
+        "size_bytes": 71
+      },
+      {
+        "path": "overwrite.txt",
+        "sha256": "e710bcefbbdedd5b2ddb6c4dd373dafca03c37d50e81af319415b583b4706c67",
+        "size_bytes": 70
+      },
+      {
+        "path": "payload-1m.bin",
+        "sha256": "5c7e281936490b030355288e1b64cb5b403d3218342c3e6d0d0fd258e37ae751",
+        "size_bytes": 1048576
+      },
+      {
+        "path": "small.txt",
+        "sha256": "c302bc4294228fc969777e179eb3da8dd3cf75a7fcf9871172ba3ab0df8ce2ce",
+        "size_bytes": 64
+      },
+      {
+        "path": "truncate.txt",
+        "sha256": "064bfc95dd30cb012b460d03e4d72d0070e3ff5f07db9380ec0d923e622a7f00",
+        "size_bytes": 17
+      }
+    ]
+  },
+  "steps": [
+    {
+      "name": "host_boot_identity_changed",
+      "status": "passed"
+    },
+    {
+      "name": "runtime_identity_unchanged",
+      "status": "passed"
+    },
+    {
+      "name": "honest_post_reboot_state",
+      "status": "passed"
+    },
+    {
+      "name": "durable_workspace_marker",
+      "status": "passed"
+    },
+    {
+      "name": "crash_consistency_corpus",
+      "status": "passed"
+    },
+    {
+      "name": "confirmed_cleanup",
+      "status": "passed"
+    }
+  ]
+}

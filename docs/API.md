@@ -8,7 +8,8 @@ surface only; planned resources belong in [Roadmap](ROADMAP.md).
 - Base path: `/v1`
 - Authentication: `Authorization: Bearer <opaque-token>`
 - Project scope: `X-Project-ID`; the credential must already be bound to it
-- Mutations: `Idempotency-Key` is required
+- Resource lifecycle mutations: `Idempotency-Key` is required; command
+  execution, file writes, and preview leases are not replay-safe mutations
 - Timestamps: UTC RFC 3339
 - Long resource mutations: `202 Accepted` with an operation representation
 - Unknown backend state: returned as `unknown`, never coerced to `running`
@@ -62,6 +63,12 @@ Create accepts an immutable environment revision, optional workspace mounts,
 network policy, and lifecycle policy. Admitted guest activity can postpone
 automatic standby but cannot extend absolute expiration.
 
+Network policy defaults to no egress. An explicit `allow_internet: true`
+request enables direct unrestricted internet egress through the embedded
+engine. That mode bypasses connector destination controls and weakens the
+sandbox network boundary; use a connector when destination policy or
+out-of-guest credential injection is required.
+
 ## Commands and files
 
 ```text
@@ -74,9 +81,11 @@ Command responses are NDJSON events with base64-encoded byte chunks followed by
 one terminal exit event. Arguments, output, paths, and file contents are not
 persisted in normal lifecycle events or receipts.
 
-These public endpoints currently send bytes through the durable API process.
-The internal node relay described below is implemented but is not selected by
-the default server wiring and is not yet a public direct-to-node SDK contract.
+Public requests terminate at `brezeld`. After authorization and lifecycle
+admission, the packaged single-host profile forwards command and file bytes to
+`brezel-node` over its separately authenticated data listener. The relay then
+resolves the private engine identity. Clients do not connect directly to a node,
+and lifecycle authority remains in the durable API process.
 
 ## HTTP previews
 
@@ -170,12 +179,11 @@ durable operation receipts are implemented.
 
 This milestone does not move sandbox create, pause, resume, delete, placement,
 or reconciliation authority to the relay. It also does not yet provide
-certificate or signing-key rotation, durable node-operation receipts, a
-separately authenticated data-edge handoff, terminals, WebSockets, raw TCP, or
-direct client authorization. The default `brezeld` configuration continues to
-use the in-process engine adapter. Until the data-edge and deployment work is
-complete, the durable API remains the byte path for the public command, file,
-and preview endpoints.
+certificate or signing-key rotation, durable node-operation receipts, a direct
+client-to-node handoff, terminals, WebSockets, raw TCP, or direct client
+authorization. `brezeld` remains the public HTTP endpoint and forwards admitted
+command, file, and preview operations to the relay; it is not the guest byte
+transport itself in the packaged profile.
 
 ## Workspaces and checkpoints
 

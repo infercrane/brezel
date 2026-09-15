@@ -18,7 +18,7 @@ another tenant, platform credentials, or control-plane integrity.
 The repository currently provides a self-hosted private-tenant developer
 preview. Documentation and APIs may describe later profiles but must not label
 them qualified prematurely. Revision
-`121d7c6952c5bbc0010c365817ef540a1efbaca6` completed the named Linux/KVM
+`67410ab5b928a335a79701d67eaf859df890da9c` completed the named Linux/KVM
 destructive workflow on two separately administered machines, each as an
 independent single-host deployment. That evidence does not qualify either later
 profile in the table above.
@@ -182,20 +182,23 @@ certificate or signing-key rotation, enroll nodes dynamically, support terminal
 or WebSocket tunnels, or provide fleet failover. The packaged single-host
 profile does use the separately authenticated relay for command, file, and
 preview bytes. At revision
-`121d7c6952c5bbc0010c365817ef540a1efbaca6`, this wiring passed integrated
+`67410ab5b928a335a79701d67eaf859df890da9c`, this wiring passed integrated
 Linux/KVM conformance and controller/node-relay crash drills on two independent
 single-host deployments. The result does not qualify shared tenancy, fleet
 failover, or host availability.
 
 ## Checkpoint, restore, and fork boundary
 
-Full-state checkpoints can contain process memory, tokens, files, browser
-sessions, and other secret material. Filesystem checkpoints contain declared
-writable disk state but may still contain credentials or customer content. Both
-are customer-confidential data, encrypted at rest, scoped to the tenant, and
-deleted through durable reconciliation.
+Full-state standby artifacts can contain process memory, tokens, files, browser
+sessions, and other secret material. Filesystem checkpoints can also contain
+credentials or customer content. The current single-host profile scopes and
+deletes these engine-managed artifacts through product lifecycle controls, but
+does not add a customer-managed or project-layer encryption-at-rest mechanism.
+Encryption-at-rest, key ownership, backup, and media-disposal requirements must
+therefore be supplied by the dedicated host and storage environment. A public
+hosted profile must qualify those controls before making an encryption claim.
 
-Resume and fork validate:
+Future public full-state resume and fork operations must validate:
 
 - tenant and project ownership;
 - immutable snapshot manifest;
@@ -208,16 +211,21 @@ Resume and fork validate:
 Forking a compromised or dirty sandbox copies its state. Jobs default to a clean
 template, not the previous attempt's snapshot.
 
-A checkpoint cannot undo an external effect. Before checkpoint, restore, or
-fork, the runtime records unresolved connector requests and idempotency
-identities. The first release requires an explicit quiescent boundary and rejects
-an execution edit when it could silently duplicate or discard an unresolved
-effect.
+A checkpoint cannot undo an external effect. A future public full-state
+checkpoint, restore, or fork contract must record unresolved connector requests
+and idempotency identities, require an explicit quiescent boundary, and reject an
+operation when it could silently duplicate or discard an unresolved effect.
 
 ## Network and credential boundary
 
-The default is no egress. Approved HTTP traffic passes through a gateway outside
-the VM. The gateway:
+The current release defaults to no egress. A caller may explicitly set
+`allow_internet: true`, which enables direct unrestricted internet egress through
+the embedded engine. That mode bypasses connector host, path, method, redirect,
+and credential-injection controls and therefore weakens the sandbox's network
+boundary. It is an operator-approved developer-preview escape hatch, not a
+restricted-egress claim.
+
+Approved connector HTTP traffic passes through a gateway outside the VM. The gateway:
 
 - authenticates workload identity independently of guest claims;
 - resolves DNS independently and blocks metadata, private, loopback,
@@ -307,9 +315,18 @@ paths do not enter them. vCPU time, memory, PID, disk bytes, IOPS, bandwidth, sn
 wake-up rate, job fan-out, and model consumption still require independent
 engine or future product enforcement and must not be advertised as covered.
 
-Delete wins over create, pause, resume, and retry. Every operation is idempotent
-and reconciled after controller or node restart. A lost worker becomes unknown
-or failed until proven otherwise; it never remains falsely healthy.
+Delete wins over create, pause, resume, and retry. Resource lifecycle mutations
+use durable idempotency keys and reconciliation. Command execution, file writes,
+and ephemeral preview leases are not replay-safe mutations. Node bind and
+monotonic route transitions converge on safe retries; rebind and remove
+deliberately reject an ambiguous retry until durable node-operation receipts
+exist. A lost worker becomes unknown or failed until proven otherwise; it never
+remains falsely healthy.
+
+Command execution is not an idempotent lifecycle mutation. If a stream closes
+after dispatch but before a confirmed exit event, the process may have run and
+the outcome is indeterminate. Brezel fails closed and does not automatically
+submit a second start request; a caller retry may duplicate external effects.
 
 ## Receipt trust statement
 

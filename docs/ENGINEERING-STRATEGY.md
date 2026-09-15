@@ -62,7 +62,7 @@ their own explicit profile and customer evidence before inclusion.
 
 ## Current evidence and boundary
 
-Revision `121d7c6952c5bbc0010c365817ef540a1efbaca6` is a self-hosted
+Revision `67410ab5b928a335a79701d67eaf859df890da9c` is a self-hosted
 private-tenant developer preview. It has a meaningful foundation:
 
 - a Firecracker microVM boundary with no release-mode container fallback;
@@ -83,21 +83,21 @@ completed named Linux/KVM qualification at the revision above, including a
 paired run on two separately administered single-host installations. SQLite
 remains an embedded single-controller authority, not a fleet-scale ledger.
 
-Local benchmarks on an Apple M4 on 2026-09-15 compare the current SQLite hot
-paths with the superseded whole-state JSON implementation:
+The final revision's two complete matrices passed 48 of 48 cells, 2,112 of
+2,112 attempts, and 3,168 of 3,168 expected resource cleanups. Sequential
+cached create through first verified instruction measured 70.457–70.957 ms p50
+and 79.553–80.804 ms p95 across the two hosts. Their 16-way burst p50 was
+359.690–384.931 ms. A separate stress set completed 320 of 320 immediate-command
+burst attempts with confirmed cleanup and a pooled 812.188 ms p99.
 
-| Operation | Observed range | Allocation |
-| --- | ---: | ---: |
-| SQLite keyed read at 10,000 resources | 15.7–18.4 µs/op | See retained benchmark output |
-| SQLite activity transaction at 10,000 resources | 67.2–94.8 µs/op | See retained benchmark output |
-| SQLite event transaction at 10,000 resources | 95.3–107.3 µs/op | See retained benchmark output |
-| Prior JSON whole-state update at 10,000 resources | 18.9–21.9 ms/op | See retained benchmark output |
-| Prior specialized JSON event replacement at 10,000 resources | 15.3–17.8 ms/op | See retained benchmark output |
-
-These are engineering microbenchmarks, not sandbox startup numbers. They show
-that the resource-scoped SQLite transactions avoid the old whole-state scaling
-cost. They do not predict hosted latency or authorize a competitive claim. The
-exact commands and claim boundary are in [Benchmarking](BENCHMARKING.md).
+That evidence establishes correctness and host-local latency for the tested
+profile, not a broad speed claim. Checkpoint burst p95 remained approximately
+12.8–13.0 seconds, restore behavior varied materially between hosts, and the
+qualified engine ceiling is 32 sandboxes. The system therefore does not meet
+Brezel's internal gate for a ComputeSDK 100-way Burst TTI submission. Exact host observations,
+hard-reset limits, raw evidence, and external-comparison gates are in
+[Qualification 2026-09-15](QUALIFICATION-2026-09-15.md) and
+[Benchmarking](BENCHMARKING.md).
 
 ## User jobs
 
@@ -338,8 +338,9 @@ Brezel should publish a small set of invariants before publishing latency:
 
 1. A sandbox is `running` only after a fresh authenticated guest readiness
    proof.
-2. Every mutating request has an idempotency identity bound to its canonical
-   input. Reuse with different input fails.
+2. Every durable resource-lifecycle mutation has an idempotency identity bound
+   to its canonical input. Command execution, file writes, and ephemeral preview
+   leases are excluded until they have their own explicit replay semantics.
 3. A timeout has one of three explicit outcomes: not started, completed with a
    durable receipt, or unknown and being reconciled.
 4. Delete intent wins over create, resume, fork, and retry.
@@ -530,7 +531,7 @@ candidate with faster p50 but worse p99, success, or cleanup is rejected.
 
 ### Milestone A: self-hosted private-tenant developer preview
 
-Delivered at revision `121d7c6952c5bbc0010c365817ef540a1efbaca6`:
+Delivered at revision `67410ab5b928a335a79701d67eaf859df890da9c`:
 
 1. Resource-scoped SQLite lifecycle ledger with migration from protected legacy
    state, durable idempotency, events, receipts, and reconciliation.
@@ -541,6 +542,12 @@ Delivered at revision `121d7c6952c5bbc0010c365817ef540a1efbaca6`:
 4. Named-host destructive qualification on two separately administered
    single-host installations, including simultaneous conformance, confirmed
    cleanup, namespace-negative checks, and controller/node-relay crash drills.
+5. Exact-revision provider-reset drills on both hosts demonstrating six-file
+   replacement-sandbox workspace recovery. Original sandboxes became failed, so
+   this is not transparent resume, process continuity, or host-loss recovery.
+6. Two complete 24-cell matrices with 2,112 of 2,112 attempts and 3,168 of
+   3,168 expected resource cleanups, plus 320 of 320 focused
+   immediate-command burst attempts with cleanup confirmed.
 
 Still required before the complete-agent-computer milestone can carry a broader
 operational label:
@@ -551,8 +558,10 @@ operational label:
    stable errors.
 3. PTY/SSH and arbitrary OCI-derived environments with signed immutable
    manifests.
-4. Published full per-host 24-cell benchmark matrices plus reboot, disk-full,
-   interrupted-upgrade, and longer soak evidence.
+4. Reduce and explain checkpoint/restore burst tails; qualify at least 100
+   command-ready slots before ComputeSDK Burst TTI.
+5. Publish disk-full, interrupted-upgrade, backup/restore, rollback, and longer
+   soak evidence.
 
 Current release label: **self-hosted private-tenant developer preview**.
 
@@ -565,7 +574,8 @@ Current release label: **self-hosted private-tenant developer preview**.
    workload-traced snapshot prefetch.
 5. Bounded jobs, TTLs, scheduled wake/stop, cancellation, and artifact
    collection as small lifecycle primitives, not a workflow engine.
-6. ComputeSDK qualification. Add at most one agent-framework adapter requested
+6. ComputeSDK qualification after capacity and reliability entry gates pass.
+   Add at most one agent-framework adapter requested
    by a design partner; Temporal, MCP, and other adapters remain optional.
 7. 24/72-hour soak, resource-exhaustion, interrupted-upgrade, and node-reboot
    evidence.
@@ -624,7 +634,7 @@ qualified commit, and the downloadable raw report.
 
 ## Paid-host qualification protocol
 
-Revision `121d7c6952c5bbc0010c365817ef540a1efbaca6` has crossed the first paid-host
+Revision `67410ab5b928a335a79701d67eaf859df890da9c` has crossed the first paid-host
 gate on two separately administered Ubuntu 24.04 x86-64 KVM machines. Future
 paid-host runs retain the same protocol:
 

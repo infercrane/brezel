@@ -122,8 +122,10 @@ the same workspace, and reading the pre-reboot marker proved that the durable
 workspace survived; both replacement sandbox and workspace then deleted
 cleanly.
 
-This passes honest state detection and local workspace recovery, not transparent
-process continuity or host availability. The release label remains **private
-single-host release candidate**. Before an SLA, repeat host-loss on reliable
-hardware and add disk-full, engine-restart, backup/restore, upgrade rollback,
-and longer soak tests.
+This passed honest state detection and local workspace recovery at that
+revision, not transparent process continuity or host availability. Its label at
+the time was **private single-host release candidate**. This historical report
+is superseded by the current [Status](STATUS.md) and does not define today's
+release label. Before an SLA, host-loss must be repeated on reliable hardware
+and disk-full, engine-restart, backup/restore, upgrade rollback, and longer soak
+tests remain necessary.

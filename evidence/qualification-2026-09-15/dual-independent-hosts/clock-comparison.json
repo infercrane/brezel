@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "observed_midpoint_difference_ms": 15,
+  "uncertainty_ms": {
+    "host_a": 878,
+    "host_b": 853
+  },
+  "maximum_possible_difference_ms": 1746,
+  "limit_ms": 5000,
+  "outcome": "passed"
+}

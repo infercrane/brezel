@@ -9,7 +9,7 @@ Dates do not authorize claims; evidence does.
 The user path is `new`, `run`, files, preview, stop, start, and delete.
 
 Delivered and qualified at revision
-`121d7c6952c5bbc0010c365817ef540a1efbaca6`:
+`67410ab5b928a335a79701d67eaf859df890da9c`:
 
 - an out-of-process `brezel-node` with separate mTLS control and data listeners
 - generation-fenced route reconciliation between the API and node ledger
@@ -18,17 +18,32 @@ Delivered and qualified at revision
 - one-command installation with pinned inputs and runtime attestation
 - destructive qualification on two separately administered single-host runtimes,
   including simultaneous conformance and bounded crash-containment drills
+- exact-revision provider-reset drills on both hosts with six-file
+  replacement-sandbox workspace recovery; this is not transparent sandbox
+  resume or host-loss recovery
+- two complete 24-cell matrices with 2,112 of 2,112 successful attempts and
+  all 3,168 expected resource cleanups
+- 320 of 320 additional immediate-command burst attempts with confirmed
+  cleanup after adding a guest-readiness publication gate
 
 Remaining before a broader operational label:
 
 - explicit node enrollment plus online certificate and signing-key rotation
 - service-unit upgrade and rollback packaging
-- publication of the complete per-host 24-cell benchmark matrices
-- reproducible reboot, disk-full, interrupted-upgrade, and longer soak evidence
+- reduce and explain checkpoint and restore burst tails without weakening the
+  all-success qualification gate
+- raise qualified command-ready capacity from 32 to at least 100 before a
+  public ComputeSDK Burst TTI run
+- disk-full, interrupted-upgrade, longer soak, backup/restore, and rollback
+  evidence
 
 Current label: **self-hosted private-tenant developer preview**. The paired-host
 qualification is evidence for two independent installations, not a cluster,
 automatic failover, or high availability.
+
+Exact figures, raw checksummed evidence, and ComputeSDK entry gates are in
+[Qualification 2026-09-15](QUALIFICATION-2026-09-15.md) and
+[Benchmarking](BENCHMARKING.md).
 
 ## 2. Complete agent computer
 

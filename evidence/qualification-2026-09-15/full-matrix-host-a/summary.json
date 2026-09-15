@@ -1,0 +1,1732 @@
+{
+  "schema_version": 3,
+  "started_at": "2026-09-15T12:23:47Z",
+  "finished_at": "2026-09-15T12:41:32Z",
+  "target": "gcp-c3-standard-8-host-a",
+  "runtime_revision": "67410ab5b928a335a79701d67eaf859df890da9c",
+  "evidence_class": "single-host-linux-kvm",
+  "cache_state": "cached-template",
+  "backend_template": "base",
+  "project": "brezel-benchmark",
+  "configuration": {
+    "scenarios": [
+      "tti",
+      "warm-exec",
+      "resume",
+      "filesystem-checkpoint",
+      "filesystem-restore",
+      "preview-first-byte",
+      "preview-warm",
+      "workspace-io"
+    ],
+    "sequential_runs": 100,
+    "staggered_runs": 16,
+    "burst_runs": 16,
+    "stagger_interval": "200ms",
+    "cooldown_seconds": 15,
+    "io_bytes": 1048576,
+    "preview_port": 8080
+  },
+  "expected_cases": 24,
+  "completed_cases": 24,
+  "passed_cases": 24,
+  "failed_cases": 0,
+  "planned_attempts": 1056,
+  "requested_attempts": 1056,
+  "scheduled_attempts": 1056,
+  "started_attempts": 1056,
+  "completed_attempts": 1056,
+  "successful_attempts": 1056,
+  "failed_attempts": 0,
+  "successful_bytes": {
+    "written": 138412032,
+    "read": 138412032
+  },
+  "latency_censored": 0,
+  "cleanup": {
+    "attempts": {
+      "not_required": 0,
+      "attempted": 1056,
+      "confirmed": 1056,
+      "failed": 0
+    },
+    "resources": {
+      "expected": 1584,
+      "confirmed": 1584,
+      "failed": 0
+    }
+  },
+  "outcome": "passed",
+  "preflight": {
+    "project_inventory": "project-preflight.json",
+    "engine_cache_policy": "engine-cache-before.json"
+  },
+  "postflight": {
+    "project_inventory": "project-postflight.json",
+    "outcome": "passed"
+  },
+  "host_metadata": {
+    "before": "host-before.json",
+    "after": "host-after.json",
+    "engine_cache_before": "engine-cache-before.json",
+    "engine_cache_after": "engine-cache-after.json"
+  },
+  "cases": [
+    {
+      "key": "tti-sequential",
+      "report_schema_version": 3,
+      "scenario": "tti",
+      "mode": "sequential",
+      "runs": 100,
+      "max_in_flight": 1,
+      "command_exit_status": 0,
+      "raw_report": "raw/tti-sequential.json",
+      "stderr_log": "stderr/tti-sequential.log",
+      "preparation_error_category": null,
+      "requested": 100,
+      "scheduled": 100,
+      "started": 100,
+      "completed": 100,
+      "succeeded": 100,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": null,
+      "time_to_first_success_ns": 73635742,
+      "observed_completions_per_second": null,
+      "scheduled_latency": {
+        "samples": 100,
+        "min_ms": 63.222319,
+        "p50_ms": 70.460655,
+        "p95_ms": 79.574091,
+        "p99_ms": 110.591512,
+        "max_ms": 199.623216,
+        "mean_ms": 72.878828
+      },
+      "service_latency": {
+        "samples": 100,
+        "min_ms": 63.217986,
+        "p50_ms": 70.456722,
+        "p95_ms": 79.553165,
+        "p99_ms": 110.586653,
+        "max_ms": 199.619292,
+        "mean_ms": 72.874422
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 100,
+          "confirmed": 100,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 100,
+          "confirmed": 100,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "tti-staggered",
+      "report_schema_version": 3,
+      "scenario": "tti",
+      "mode": "staggered",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/tti-staggered.json",
+      "stderr_log": "stderr/tti-staggered.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 3168229870,
+      "time_to_first_success_ns": 73353012,
+      "observed_completions_per_second": 5.050139,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 66.841486,
+        "p50_ms": 73.413564,
+        "p95_ms": 199.881327,
+        "p99_ms": 199.881327,
+        "max_ms": 199.881327,
+        "mean_ms": 105.727707
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 66.33547,
+        "p50_ms": 73.006038,
+        "p95_ms": 199.454322,
+        "p99_ms": 199.454322,
+        "max_ms": 199.454322,
+        "mean_ms": 105.202976
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "tti-burst",
+      "report_schema_version": 3,
+      "scenario": "tti",
+      "mode": "burst",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/tti-burst.json",
+      "stderr_log": "stderr/tti-burst.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 610395869,
+      "time_to_first_success_ns": 135841825,
+      "observed_completions_per_second": 26.212497,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 135.841825,
+        "p50_ms": 385.32764,
+        "p95_ms": 610.395869,
+        "p99_ms": 610.395869,
+        "max_ms": 610.395869,
+        "mean_ms": 402.241468
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 135.546609,
+        "p50_ms": 384.931118,
+        "p95_ms": 609.766553,
+        "p99_ms": 609.766553,
+        "max_ms": 609.766553,
+        "mean_ms": 401.674825
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "warm-exec-sequential",
+      "report_schema_version": 3,
+      "scenario": "warm-exec",
+      "mode": "sequential",
+      "runs": 100,
+      "max_in_flight": 1,
+      "command_exit_status": 0,
+      "raw_report": "raw/warm-exec-sequential.json",
+      "stderr_log": "stderr/warm-exec-sequential.log",
+      "preparation_error_category": null,
+      "requested": 100,
+      "scheduled": 100,
+      "started": 100,
+      "completed": 100,
+      "succeeded": 100,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": null,
+      "time_to_first_success_ns": 12125170,
+      "observed_completions_per_second": null,
+      "scheduled_latency": {
+        "samples": 100,
+        "min_ms": 10.980927,
+        "p50_ms": 12.061796,
+        "p95_ms": 14.769059,
+        "p99_ms": 18.916137,
+        "max_ms": 22.030954,
+        "mean_ms": 12.437818
+      },
+      "service_latency": {
+        "samples": 100,
+        "min_ms": 10.977963,
+        "p50_ms": 12.057705,
+        "p95_ms": 14.76408,
+        "p99_ms": 18.912162,
+        "max_ms": 22.027884,
+        "mean_ms": 12.433072
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 100,
+          "confirmed": 100,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 100,
+          "confirmed": 100,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "warm-exec-staggered",
+      "report_schema_version": 3,
+      "scenario": "warm-exec",
+      "mode": "staggered",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/warm-exec-staggered.json",
+      "stderr_log": "stderr/warm-exec-staggered.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 3016639889,
+      "time_to_first_success_ns": 15528619,
+      "observed_completions_per_second": 5.303914,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 15.175597,
+        "p50_ms": 16.639889,
+        "p95_ms": 19.824106,
+        "p99_ms": 19.824106,
+        "max_ms": 19.824106,
+        "mean_ms": 17.086154
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 14.620475,
+        "p50_ms": 16.158558,
+        "p95_ms": 19.218146,
+        "p99_ms": 19.218146,
+        "max_ms": 19.218146,
+        "mean_ms": 16.514954
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "warm-exec-burst",
+      "report_schema_version": 3,
+      "scenario": "warm-exec",
+      "mode": "burst",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/warm-exec-burst.json",
+      "stderr_log": "stderr/warm-exec-burst.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 122576712,
+      "time_to_first_success_ns": 67922265,
+      "observed_completions_per_second": 130.530504,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 67.922265,
+        "p50_ms": 94.53687,
+        "p95_ms": 122.576712,
+        "p99_ms": 122.576712,
+        "max_ms": 122.576712,
+        "mean_ms": 98.309455
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 67.494312,
+        "p50_ms": 93.45458,
+        "p95_ms": 122.008669,
+        "p99_ms": 122.008669,
+        "max_ms": 122.008669,
+        "mean_ms": 97.565235
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "resume-sequential",
+      "report_schema_version": 3,
+      "scenario": "resume",
+      "mode": "sequential",
+      "runs": 100,
+      "max_in_flight": 1,
+      "command_exit_status": 0,
+      "raw_report": "raw/resume-sequential.json",
+      "stderr_log": "stderr/resume-sequential.log",
+      "preparation_error_category": null,
+      "requested": 100,
+      "scheduled": 100,
+      "started": 100,
+      "completed": 100,
+      "succeeded": 100,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": null,
+      "time_to_first_success_ns": 98495271,
+      "observed_completions_per_second": null,
+      "scheduled_latency": {
+        "samples": 100,
+        "min_ms": 85.905313,
+        "p50_ms": 413.705373,
+        "p95_ms": 1252.885745,
+        "p99_ms": 1922.56979,
+        "max_ms": 1936.459306,
+        "mean_ms": 508.954919
+      },
+      "service_latency": {
+        "samples": 100,
+        "min_ms": 85.901513,
+        "p50_ms": 413.699497,
+        "p95_ms": 1252.88151,
+        "p99_ms": 1922.564333,
+        "max_ms": 1936.455023,
+        "mean_ms": 508.949595
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 100,
+          "confirmed": 100,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 100,
+          "confirmed": 100,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "resume-staggered",
+      "report_schema_version": 3,
+      "scenario": "resume",
+      "mode": "staggered",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/resume-staggered.json",
+      "stderr_log": "stderr/resume-staggered.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 3111598620,
+      "time_to_first_success_ns": 906893075,
+      "observed_completions_per_second": 5.142051,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 99.251715,
+        "p50_ms": 118.044875,
+        "p95_ms": 906.893075,
+        "p99_ms": 906.893075,
+        "max_ms": 906.893075,
+        "mean_ms": 254.419761
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 99.185617,
+        "p50_ms": 117.550898,
+        "p95_ms": 906.387555,
+        "p99_ms": 906.387555,
+        "max_ms": 906.387555,
+        "mean_ms": 253.92031
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "resume-burst",
+      "report_schema_version": 3,
+      "scenario": "resume",
+      "mode": "burst",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/resume-burst.json",
+      "stderr_log": "stderr/resume-burst.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 1390770144,
+      "time_to_first_success_ns": 966696342,
+      "observed_completions_per_second": 11.504417,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 966.696342,
+        "p50_ms": 1123.652798,
+        "p95_ms": 1390.770144,
+        "p99_ms": 1390.770144,
+        "max_ms": 1390.770144,
+        "mean_ms": 1154.894443
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 966.274592,
+        "p50_ms": 1122.993396,
+        "p95_ms": 1389.981258,
+        "p99_ms": 1389.981258,
+        "max_ms": 1389.981258,
+        "mean_ms": 1154.191535
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "filesystem-checkpoint-sequential",
+      "report_schema_version": 3,
+      "scenario": "filesystem-checkpoint",
+      "mode": "sequential",
+      "runs": 100,
+      "max_in_flight": 1,
+      "command_exit_status": 0,
+      "raw_report": "raw/filesystem-checkpoint-sequential.json",
+      "stderr_log": "stderr/filesystem-checkpoint-sequential.log",
+      "preparation_error_category": null,
+      "requested": 100,
+      "scheduled": 100,
+      "started": 100,
+      "completed": 100,
+      "succeeded": 100,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": null,
+      "time_to_first_success_ns": 180384940,
+      "observed_completions_per_second": null,
+      "scheduled_latency": {
+        "samples": 100,
+        "min_ms": 166.083581,
+        "p50_ms": 373.438191,
+        "p95_ms": 707.072522,
+        "p99_ms": 778.325737,
+        "max_ms": 939.830348,
+        "mean_ms": 383.051873
+      },
+      "service_latency": {
+        "samples": 100,
+        "min_ms": 166.079587,
+        "p50_ms": 373.434664,
+        "p95_ms": 707.068722,
+        "p99_ms": 778.322715,
+        "max_ms": 939.827664,
+        "mean_ms": 383.047945
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 100,
+          "confirmed": 100,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 200,
+          "confirmed": 200,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "filesystem-checkpoint-staggered",
+      "report_schema_version": 3,
+      "scenario": "filesystem-checkpoint",
+      "mode": "staggered",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/filesystem-checkpoint-staggered.json",
+      "stderr_log": "stderr/filesystem-checkpoint-staggered.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 17036775343,
+      "time_to_first_success_ns": 187235566,
+      "observed_completions_per_second": 0.939145,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 187.235566,
+        "p50_ms": 4822.469971,
+        "p95_ms": 14036.775343,
+        "p99_ms": 14036.775343,
+        "max_ms": 14036.775343,
+        "mean_ms": 6350.288184
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 186.857452,
+        "p50_ms": 4822.260149,
+        "p95_ms": 14036.052797,
+        "p99_ms": 14036.052797,
+        "max_ms": 14036.052797,
+        "mean_ms": 6349.761706
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 32,
+          "confirmed": 32,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "filesystem-checkpoint-burst",
+      "report_schema_version": 3,
+      "scenario": "filesystem-checkpoint",
+      "mode": "burst",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/filesystem-checkpoint-burst.json",
+      "stderr_log": "stderr/filesystem-checkpoint-burst.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 13042244498,
+      "time_to_first_success_ns": 401057893,
+      "observed_completions_per_second": 1.226783,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 401.057893,
+        "p50_ms": 3276.043078,
+        "p95_ms": 13042.244498,
+        "p99_ms": 13042.244498,
+        "max_ms": 13042.244498,
+        "mean_ms": 5115.869879
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 400.676133,
+        "p50_ms": 3274.994699,
+        "p95_ms": 13041.532988,
+        "p99_ms": 13041.532988,
+        "max_ms": 13041.532988,
+        "mean_ms": 5115.116592
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 32,
+          "confirmed": 32,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "filesystem-restore-sequential",
+      "report_schema_version": 3,
+      "scenario": "filesystem-restore",
+      "mode": "sequential",
+      "runs": 100,
+      "max_in_flight": 1,
+      "command_exit_status": 0,
+      "raw_report": "raw/filesystem-restore-sequential.json",
+      "stderr_log": "stderr/filesystem-restore-sequential.log",
+      "preparation_error_category": null,
+      "requested": 100,
+      "scheduled": 100,
+      "started": 100,
+      "completed": 100,
+      "succeeded": 100,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": null,
+      "time_to_first_success_ns": 94603184,
+      "observed_completions_per_second": null,
+      "scheduled_latency": {
+        "samples": 100,
+        "min_ms": 72.732952,
+        "p50_ms": 96.676902,
+        "p95_ms": 1264.946457,
+        "p99_ms": 1387.693527,
+        "max_ms": 1489.519719,
+        "mean_ms": 317.802091
+      },
+      "service_latency": {
+        "samples": 100,
+        "min_ms": 72.724365,
+        "p50_ms": 96.673173,
+        "p95_ms": 1264.941773,
+        "p99_ms": 1387.688744,
+        "max_ms": 1489.516555,
+        "mean_ms": 317.798183
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 100,
+          "confirmed": 100,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 300,
+          "confirmed": 300,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "filesystem-restore-staggered",
+      "report_schema_version": 3,
+      "scenario": "filesystem-restore",
+      "mode": "staggered",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/filesystem-restore-staggered.json",
+      "stderr_log": "stderr/filesystem-restore-staggered.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 3093747834,
+      "time_to_first_success_ns": 105280758,
+      "observed_completions_per_second": 5.171721,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 79.393253,
+        "p50_ms": 92.922985,
+        "p95_ms": 136.975911,
+        "p99_ms": 136.975911,
+        "max_ms": 136.975911,
+        "mean_ms": 96.246259
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 79.130408,
+        "p50_ms": 92.071758,
+        "p95_ms": 136.519041,
+        "p99_ms": 136.519041,
+        "max_ms": 136.519041,
+        "mean_ms": 95.713593
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 48,
+          "confirmed": 48,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "filesystem-restore-burst",
+      "report_schema_version": 3,
+      "scenario": "filesystem-restore",
+      "mode": "burst",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/filesystem-restore-burst.json",
+      "stderr_log": "stderr/filesystem-restore-burst.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 2540373864,
+      "time_to_first_success_ns": 2373274961,
+      "observed_completions_per_second": 6.298286,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 2373.274961,
+        "p50_ms": 2453.739418,
+        "p95_ms": 2540.373864,
+        "p99_ms": 2540.373864,
+        "max_ms": 2540.373864,
+        "mean_ms": 2478.711952
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 2372.908848,
+        "p50_ms": 2453.264571,
+        "p95_ms": 2539.722879,
+        "p99_ms": 2539.722879,
+        "max_ms": 2539.722879,
+        "mean_ms": 2478.140287
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 48,
+          "confirmed": 48,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "preview-first-byte-sequential",
+      "report_schema_version": 3,
+      "scenario": "preview-first-byte",
+      "mode": "sequential",
+      "runs": 100,
+      "max_in_flight": 1,
+      "command_exit_status": 0,
+      "raw_report": "raw/preview-first-byte-sequential.json",
+      "stderr_log": "stderr/preview-first-byte-sequential.log",
+      "preparation_error_category": null,
+      "requested": 100,
+      "scheduled": 100,
+      "started": 100,
+      "completed": 100,
+      "succeeded": 100,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": null,
+      "time_to_first_success_ns": 8838802,
+      "observed_completions_per_second": null,
+      "scheduled_latency": {
+        "samples": 100,
+        "min_ms": 4.563559,
+        "p50_ms": 5.596847,
+        "p95_ms": 7.053674,
+        "p99_ms": 8.838802,
+        "max_ms": 9.666737,
+        "mean_ms": 5.692582
+      },
+      "service_latency": {
+        "samples": 100,
+        "min_ms": 4.559767,
+        "p50_ms": 5.592424,
+        "p95_ms": 7.049585,
+        "p99_ms": 8.83608,
+        "max_ms": 9.66174,
+        "mean_ms": 5.687761
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 100,
+          "confirmed": 100,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 100,
+          "confirmed": 100,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "preview-first-byte-staggered",
+      "report_schema_version": 3,
+      "scenario": "preview-first-byte",
+      "mode": "staggered",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/preview-first-byte-staggered.json",
+      "stderr_log": "stderr/preview-first-byte-staggered.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 3005967018,
+      "time_to_first_success_ns": 6959727,
+      "observed_completions_per_second": 5.322746,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 5.967018,
+        "p50_ms": 6.901978,
+        "p95_ms": 7.905837,
+        "p99_ms": 7.905837,
+        "max_ms": 7.905837,
+        "mean_ms": 6.867344
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 5.861496,
+        "p50_ms": 6.31453,
+        "p95_ms": 7.176144,
+        "p99_ms": 7.176144,
+        "max_ms": 7.176144,
+        "mean_ms": 6.38002
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "preview-first-byte-burst",
+      "report_schema_version": 3,
+      "scenario": "preview-first-byte",
+      "mode": "burst",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/preview-first-byte-burst.json",
+      "stderr_log": "stderr/preview-first-byte-burst.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 26892854,
+      "time_to_first_success_ns": 15044508,
+      "observed_completions_per_second": 594.953589,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 15.044508,
+        "p50_ms": 24.394767,
+        "p95_ms": 26.892854,
+        "p99_ms": 26.892854,
+        "max_ms": 26.892854,
+        "mean_ms": 23.330981
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 14.392368,
+        "p50_ms": 23.610284,
+        "p95_ms": 25.895638,
+        "p99_ms": 25.895638,
+        "max_ms": 25.895638,
+        "mean_ms": 22.622399
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "preview-warm-sequential",
+      "report_schema_version": 3,
+      "scenario": "preview-warm",
+      "mode": "sequential",
+      "runs": 100,
+      "max_in_flight": 1,
+      "command_exit_status": 0,
+      "raw_report": "raw/preview-warm-sequential.json",
+      "stderr_log": "stderr/preview-warm-sequential.log",
+      "preparation_error_category": null,
+      "requested": 100,
+      "scheduled": 100,
+      "started": 100,
+      "completed": 100,
+      "succeeded": 100,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": null,
+      "time_to_first_success_ns": 4157645,
+      "observed_completions_per_second": null,
+      "scheduled_latency": {
+        "samples": 100,
+        "min_ms": 2.425214,
+        "p50_ms": 2.658191,
+        "p95_ms": 3.250156,
+        "p99_ms": 4.157645,
+        "max_ms": 5.749948,
+        "mean_ms": 2.776676
+      },
+      "service_latency": {
+        "samples": 100,
+        "min_ms": 2.421502,
+        "p50_ms": 2.653834,
+        "p95_ms": 3.246652,
+        "p99_ms": 4.153741,
+        "max_ms": 5.746054,
+        "mean_ms": 2.772642
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 100,
+          "confirmed": 100,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 100,
+          "confirmed": 100,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "preview-warm-staggered",
+      "report_schema_version": 3,
+      "scenario": "preview-warm",
+      "mode": "staggered",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/preview-warm-staggered.json",
+      "stderr_log": "stderr/preview-warm-staggered.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 3004700914,
+      "time_to_first_success_ns": 3586432,
+      "observed_completions_per_second": 5.324989,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 3.586432,
+        "p50_ms": 4.591389,
+        "p95_ms": 5.597079,
+        "p99_ms": 5.597079,
+        "max_ms": 5.597079,
+        "mean_ms": 4.627256
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 3.256146,
+        "p50_ms": 3.855626,
+        "p95_ms": 4.707868,
+        "p99_ms": 4.707868,
+        "max_ms": 4.707868,
+        "mean_ms": 3.912855
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "preview-warm-burst",
+      "report_schema_version": 3,
+      "scenario": "preview-warm",
+      "mode": "burst",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/preview-warm-burst.json",
+      "stderr_log": "stderr/preview-warm-burst.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 16523516,
+      "time_to_first_success_ns": 6414639,
+      "observed_completions_per_second": 968.316913,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 6.414639,
+        "p50_ms": 13.518043,
+        "p95_ms": 16.523516,
+        "p99_ms": 16.523516,
+        "max_ms": 16.523516,
+        "mean_ms": 12.811958
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 5.946185,
+        "p50_ms": 12.797163,
+        "p95_ms": 15.876614,
+        "p99_ms": 15.876614,
+        "max_ms": 15.876614,
+        "mean_ms": 12.074269
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 0,
+        "read": 0
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 16,
+          "confirmed": 16,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "workspace-io-sequential",
+      "report_schema_version": 3,
+      "scenario": "workspace-io",
+      "mode": "sequential",
+      "runs": 100,
+      "max_in_flight": 1,
+      "command_exit_status": 0,
+      "raw_report": "raw/workspace-io-sequential.json",
+      "stderr_log": "stderr/workspace-io-sequential.log",
+      "preparation_error_category": null,
+      "requested": 100,
+      "scheduled": 100,
+      "started": 100,
+      "completed": 100,
+      "succeeded": 100,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": null,
+      "time_to_first_success_ns": 129698315,
+      "observed_completions_per_second": null,
+      "scheduled_latency": {
+        "samples": 100,
+        "min_ms": 117.07954,
+        "p50_ms": 126.553234,
+        "p95_ms": 141.243554,
+        "p99_ms": 368.909245,
+        "max_ms": 473.526262,
+        "mean_ms": 133.115195
+      },
+      "service_latency": {
+        "samples": 100,
+        "min_ms": 117.075167,
+        "p50_ms": 126.550431,
+        "p95_ms": 141.238427,
+        "p99_ms": 368.905911,
+        "max_ms": 473.516085,
+        "mean_ms": 133.111231
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 104857600,
+        "read": 104857600
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 100,
+          "confirmed": 100,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 200,
+          "confirmed": 200,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "workspace-io-staggered",
+      "report_schema_version": 3,
+      "scenario": "workspace-io",
+      "mode": "staggered",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/workspace-io-staggered.json",
+      "stderr_log": "stderr/workspace-io-staggered.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 3130896187,
+      "time_to_first_success_ns": 130322104,
+      "observed_completions_per_second": 5.110358,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 121.668835,
+        "p50_ms": 129.871164,
+        "p95_ms": 148.560406,
+        "p99_ms": 148.560406,
+        "max_ms": 148.560406,
+        "mean_ms": 130.960091
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 120.910751,
+        "p50_ms": 129.461037,
+        "p95_ms": 148.264383,
+        "p99_ms": 148.264383,
+        "max_ms": 148.264383,
+        "mean_ms": 130.455845
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 16777216,
+        "read": 16777216
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 32,
+          "confirmed": 32,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    },
+    {
+      "key": "workspace-io-burst",
+      "report_schema_version": 3,
+      "scenario": "workspace-io",
+      "mode": "burst",
+      "runs": 16,
+      "max_in_flight": 16,
+      "command_exit_status": 0,
+      "raw_report": "raw/workspace-io-burst.json",
+      "stderr_log": "stderr/workspace-io-burst.log",
+      "preparation_error_category": null,
+      "requested": 16,
+      "scheduled": 16,
+      "started": 16,
+      "completed": 16,
+      "succeeded": 16,
+      "failed": 0,
+      "success_rate": 1,
+      "measurement_window_ns": 952744824,
+      "time_to_first_success_ns": 631394020,
+      "observed_completions_per_second": 16.793584,
+      "scheduled_latency": {
+        "samples": 16,
+        "min_ms": 631.39402,
+        "p50_ms": 892.033364,
+        "p95_ms": 952.744824,
+        "p99_ms": 952.744824,
+        "max_ms": 952.744824,
+        "mean_ms": 861.874751
+      },
+      "service_latency": {
+        "samples": 16,
+        "min_ms": 630.86131,
+        "p50_ms": 888.537597,
+        "p95_ms": 952.164202,
+        "p99_ms": 952.164202,
+        "max_ms": 952.164202,
+        "mean_ms": 861.075404
+      },
+      "failure_latency": {
+        "samples": 0,
+        "min_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0,
+        "mean_ms": 0
+      },
+      "latency_censored": 0,
+      "successful_bytes": {
+        "written": 16777216,
+        "read": 16777216
+      },
+      "cleanup": {
+        "attempts": {
+          "not_required": 0,
+          "attempted": 16,
+          "confirmed": 16,
+          "failed": 0
+        },
+        "resources": {
+          "expected": 32,
+          "confirmed": 32,
+          "failed": 0
+        }
+      },
+      "error_categories": {},
+      "outcome": "passed"
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "host_label": "b",
+  "run_id": "final-67410ab5",
+  "captured_at": "2026-09-15T12:45:48Z",
+  "captured_epoch_ms": 1789476348645,
+  "profile": "independent-single-host",
+  "host_identity": {
+    "machine_id_sha256": "de9b69f7a07119eb8ac7a9ac984994244d807b287fdc8fdaffca262c8d35ab5c",
+    "boot_id_sha256": "62a48265a12732e2f8a75506b55cb5ae8a5e51cb507faf32b7309e768c05f7f4"
+  },
+  "repository": {
+    "revision": "67410ab5b928a335a79701d67eaf859df890da9c",
+    "clean": true
+  },
+  "engine": {
+    "revision": "767ceb4b2ec0e598f512767c8da9e5e6618da368",
+    "lock_sha256": "060b354c005841586c5a3e8afaeae2f3809088652181c824bccc750439544c77"
+  },
+  "runtime_image": "sha256:743150f6ffbf34f4d6bb48f0351b40b1b8fbc7e280bfb9f74e218bfff4a7d0de",
+  "runtime_attestation": {
+    "schema_version": 1,
+    "format": "brezel-runtime-attestation-v1",
+    "source": {
+      "revision": "67410ab5b928a335a79701d67eaf859df890da9c",
+      "clean": true
+    },
+    "services": {
+      "brezeld": {
+        "image_sha256": "743150f6ffbf34f4d6bb48f0351b40b1b8fbc7e280bfb9f74e218bfff4a7d0de",
+        "binary_sha256": "647717e66e27d7d582f920aeb5d22d243fc926d6b3595c35fb1ec58691e5e390"
+      },
+      "brezel-node": {
+        "image_sha256": "662d003e6e8b099a2bfc0059fdeff2e14721205ab5e23c3dc87438b45dc37c59",
+        "binary_sha256": "06111933d60e185107fd5850542443b037f70263fc52287af31f2a764078070b"
+      }
+    },
+    "verified_running": true
+  },
+  "identity": {
+    "ca_sha256": "b304136146bf816d1a965facecdca05218f4da6cd701510954c38c5a585a2594",
+    "node_certificate_sha256": "b4e14f610ed3a5a5647b762953f9da4cd83ff0433e3fa6925655fbd7eb30bbbe",
+    "api_certificate_sha256": "1457531f7f466e8d5dd85e066452b1ea4b17847b886cbe5dd1cb7c45fcf6d6e0"
+  },
+  "listeners": {
+    "api": "127.0.0.1:8080",
+    "node_data": "127.0.0.1:8443",
+    "node_control": "127.0.0.1:8444",
+    "public": false
+  },
+  "capacity": {
+    "capacity_contract": "conformant",
+    "mode": "live",
+    "guest_memory_mib": 512,
+    "max_active_sandboxes": 32,
+    "max_active_sandboxes_per_project": 32,
+    "max_starting_sandboxes": 3,
+    "hugepages_2m": 9216,
+    "required_hugepages_2m": 9216,
+    "lifecycle_headroom_sandboxes": 4,
+    "system_memory_reserve_mib": 8192,
+    "host_memory_mib": 32087
+  },
+  "engine_capacity": {
+    "engine_capacity_contract": "conformant",
+    "mode": "verify",
+    "max_active_sandboxes": 32
+  },
+  "kvm": true,
+  "tun": true,
+  "clock": {
+    "ntp_synchronized": true
+  }
+}

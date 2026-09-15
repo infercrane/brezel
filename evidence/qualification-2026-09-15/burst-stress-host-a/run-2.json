@@ -1,0 +1,584 @@
+{
+  "schema_version": 3,
+  "started_at": "2026-09-15T12:21:01.101878523Z",
+  "finished_at": "2026-09-15T12:21:02.348365172Z",
+  "boundary": "customer-observed wall clock from initiating sandbox creation through a confirmed successful nonce command; environment preparation and cleanup excluded",
+  "scenario": "tti",
+  "mode": "burst",
+  "runs": 16,
+  "max_in_flight": 16,
+  "metadata": {
+    "target": "gcp-c3-standard-8-host-a",
+    "runtime_revision": "67410ab5b928a335a79701d67eaf859df890da9c",
+    "evidence_class": "single-host-linux-kvm",
+    "cache_state": "cached-template",
+    "backend_template": "base",
+    "project_id": "brezel-benchmark",
+    "api_transport": "http",
+    "http_connection_reuse": true,
+    "http_connection_reuse_source": "default benchmark transport with HTTP keep-alives enabled",
+    "cache_state_source": "operator-declared; the harness does not clear or mutate host caches",
+    "percentile_method": "nearest-rank; successful and failed observed latencies are summarized separately without trimming",
+    "latency_definition": "scheduled arrival through verified result; includes client-side admission delay to avoid coordinated omission",
+    "service_latency_definition": "request initiation through verified result; excludes client-side admission delay",
+    "command": [
+      "/bin/sh",
+      "-lc",
+      "printf '%s' \"$1\"",
+      "perfbench",
+      "\u003crandom-nonce\u003e"
+    ],
+    "command_success_definition": "HTTP 200; started event; exact generated nonce on stdout; zero exit event; complete ordered stream",
+    "scenario_setup_definition": "resolve one immutable environment revision",
+    "verification_definition": "exact generated nonce through the complete ordered command stream",
+    "client_os": "linux",
+    "client_arch": "amd64",
+    "client_go_version": "go1.23.12",
+    "environment_revision": "envr_78c8bb4121bc116049a367f6",
+    "preparation_request_id": "34719b5f539c8849b2a94005b99052c6"
+  },
+  "summary": {
+    "requested": 16,
+    "scheduled": 16,
+    "started": 16,
+    "completed": 16,
+    "succeeded": 16,
+    "failed": 0,
+    "success_rate": 1,
+    "cleanup_not_required": 0,
+    "cleanup_succeeded": 16,
+    "cleanup_failed": 0,
+    "cleanup_resources_expected": 16,
+    "cleanup_resources_succeeded": 16,
+    "cleanup_resources_failed": 0,
+    "measurement_window_ns": 876255262,
+    "time_to_first_success_ns": 193194443,
+    "observed_completions_per_second": 18.259519,
+    "latency": {
+      "samples": 16,
+      "min_ms": 193.194443,
+      "p50_ms": 429.924476,
+      "p95_ms": 876.255262,
+      "p99_ms": 876.255262,
+      "max_ms": 876.255262,
+      "mean_ms": 515.140891
+    },
+    "service_latency": {
+      "samples": 16,
+      "min_ms": 192.881815,
+      "p50_ms": 429.379259,
+      "p95_ms": 875.97626,
+      "p99_ms": 875.97626,
+      "max_ms": 875.97626,
+      "mean_ms": 514.579715
+    },
+    "failure_latency": {
+      "samples": 0,
+      "min_ms": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0,
+      "max_ms": 0,
+      "mean_ms": 0
+    },
+    "latency_censored": 0
+  },
+  "samples": [
+    {
+      "index": 1,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153543933Z",
+      "completed_at": "2026-09-15T12:21:01.582923197Z",
+      "schedule_delay_ns": 545217,
+      "observed_ns": 429924476,
+      "measured_ns": 429379259,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "36c82e83d3dbbc386250a6573ba0a33f",
+        "6ad277f7ebff33c0e773d08470630369",
+        "9a5adf0d252fcadfadecf030da833631"
+      ],
+      "phases": {
+        "create_ns": 398258089,
+        "first_command_ns": 31117377,
+        "cleanup_ns": 107318395
+      }
+    },
+    {
+      "index": 2,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153943718Z",
+      "completed_at": "2026-09-15T12:21:01.548589939Z",
+      "schedule_delay_ns": 945006,
+      "observed_ns": 395591226,
+      "measured_ns": 394646220,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "2c9254878e4cdbf2a56a67b1855afd07",
+        "d5506bb38b6549582958abaf64ecdcf0",
+        "b8fc27c2fae42f335f226074eb0e5a2e"
+      ],
+      "phases": {
+        "create_ns": 300261305,
+        "first_command_ns": 94380892,
+        "cleanup_ns": 163848448
+      }
+    },
+    {
+      "index": 3,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153642176Z",
+      "completed_at": "2026-09-15T12:21:01.4971558Z",
+      "schedule_delay_ns": 643450,
+      "observed_ns": 344157086,
+      "measured_ns": 343513636,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "6f60d723641f545e6e8003c161155598",
+        "7ba77f5390670c74d4fab16efb54e64f",
+        "3dbecc1520ff97336421aa800f057a44"
+      ],
+      "phases": {
+        "create_ns": 264537822,
+        "first_command_ns": 78971960,
+        "cleanup_ns": 170549880
+      }
+    },
+    {
+      "index": 4,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153292053Z",
+      "completed_at": "2026-09-15T12:21:01.351499382Z",
+      "schedule_delay_ns": 293332,
+      "observed_ns": 198500662,
+      "measured_ns": 198207330,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "cedb1dca6b94b0b876f0c0e9ae2c57c2",
+        "691d257df1ec2d1662de885aa4f639a4",
+        "61fd088b4a4bfa6e02340309df298dc5"
+      ],
+      "phases": {
+        "create_ns": 151325150,
+        "first_command_ns": 46878510,
+        "cleanup_ns": 158030733
+      }
+    },
+    {
+      "index": 5,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153277722Z",
+      "completed_at": "2026-09-15T12:21:02.02925397Z",
+      "schedule_delay_ns": 279002,
+      "observed_ns": 876255262,
+      "measured_ns": 875976260,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "afd5b396d1d55e25e387bbaea29a5d8c",
+        "d5ab052eeb7be4677efa25b2342c786d",
+        "79810dd538d960adca289f16e7389f97"
+      ],
+      "phases": {
+        "create_ns": 841772948,
+        "first_command_ns": 34196986,
+        "cleanup_ns": 152585022
+      }
+    },
+    {
+      "index": 6,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153496695Z",
+      "completed_at": "2026-09-15T12:21:01.794574626Z",
+      "schedule_delay_ns": 497982,
+      "observed_ns": 641575907,
+      "measured_ns": 641077925,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "2daab6da0b1ed6058568160fe44ff1e6",
+        "1d9772e1abc647c9a8284d8b19a5f95c",
+        "99bac3e29144a309c181205408e67175"
+      ],
+      "phases": {
+        "create_ns": 597068513,
+        "first_command_ns": 44005934,
+        "cleanup_ns": 128270568
+      }
+    },
+    {
+      "index": 7,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153597981Z",
+      "completed_at": "2026-09-15T12:21:01.386254173Z",
+      "schedule_delay_ns": 599253,
+      "observed_ns": 233255462,
+      "measured_ns": 232656209,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "19a9ad9ca9411c782e26998eb7f881f8",
+        "15dca0148beba1dc7366055195d9898b",
+        "8413f7b4eae27cf33bdd15e781eee9e5"
+      ],
+      "phases": {
+        "create_ns": 144382468,
+        "first_command_ns": 88269982,
+        "cleanup_ns": 98479856
+      }
+    },
+    {
+      "index": 8,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153805433Z",
+      "completed_at": "2026-09-15T12:21:01.614965654Z",
+      "schedule_delay_ns": 806717,
+      "observed_ns": 461966934,
+      "measured_ns": 461160217,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "2f640d4adefa74e08d0f190fedc1cbfc",
+        "b25aaecf807dd2ef6b16e6a3caacceeb",
+        "17b06f9de26eb31a724bc00ec9917d42"
+      ],
+      "phases": {
+        "create_ns": 407677749,
+        "first_command_ns": 53478340,
+        "cleanup_ns": 223800257
+      }
+    },
+    {
+      "index": 9,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.15331133Z",
+      "completed_at": "2026-09-15T12:21:01.346193164Z",
+      "schedule_delay_ns": 312628,
+      "observed_ns": 193194443,
+      "measured_ns": 192881815,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "e24bb11b484bf9ed561d507581b898d6",
+        "9c39750627e948f3ea64aa85d7032a49",
+        "2718c885af85cb68b23473980f211baa"
+      ],
+      "phases": {
+        "create_ns": 110779069,
+        "first_command_ns": 82098629,
+        "cleanup_ns": 185029678
+      }
+    },
+    {
+      "index": 10,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153695735Z",
+      "completed_at": "2026-09-15T12:21:01.457319516Z",
+      "schedule_delay_ns": 697008,
+      "observed_ns": 304320796,
+      "measured_ns": 303623788,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "8050e9801bb732f8f89eb07306bf2242",
+        "0a1612b6817ca4571cc4d164df33c597",
+        "7760d40a9e9f158ab9a3d54ee0914990"
+      ],
+      "phases": {
+        "create_ns": 256366978,
+        "first_command_ns": 47251790,
+        "cleanup_ns": 162936282
+      }
+    },
+    {
+      "index": 11,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.1535456Z",
+      "completed_at": "2026-09-15T12:21:01.96573365Z",
+      "schedule_delay_ns": 546868,
+      "observed_ns": 812734935,
+      "measured_ns": 812188067,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "790e48a1b103b41bfc803e8255b60342",
+        "e2c95e95484b5eed822a3ceaccbf44f7",
+        "72ed85cc0cffc863915d8d65777cc77a"
+      ],
+      "phases": {
+        "create_ns": 758860839,
+        "first_command_ns": 53323696,
+        "cleanup_ns": 82728816
+      }
+    },
+    {
+      "index": 12,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153390446Z",
+      "completed_at": "2026-09-15T12:21:01.862588757Z",
+      "schedule_delay_ns": 391733,
+      "observed_ns": 709590047,
+      "measured_ns": 709198314,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "2103eca8c9bb6b48d8521ed38fa3599b",
+        "cccdcc829b518e3ee67aa83d64425074",
+        "3bc1bbac07fd9cab61d0e7c98c0263d7"
+      ],
+      "phases": {
+        "create_ns": 641152708,
+        "first_command_ns": 68041726,
+        "cleanup_ns": 119237614
+      }
+    },
+    {
+      "index": 13,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.15399844Z",
+      "completed_at": "2026-09-15T12:21:01.982752796Z",
+      "schedule_delay_ns": 999727,
+      "observed_ns": 829754085,
+      "measured_ns": 828754358,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "1a742cfbd324eeb5a2990307b4b8696a",
+        "e53c7a0f863865d67b4872f5917460da",
+        "70575a599815dd820e45ed33b26c607d"
+      ],
+      "phases": {
+        "create_ns": 770896241,
+        "first_command_ns": 57854377,
+        "cleanup_ns": 133750984
+      }
+    },
+    {
+      "index": 14,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153548684Z",
+      "completed_at": "2026-09-15T12:21:01.767375569Z",
+      "schedule_delay_ns": 549965,
+      "observed_ns": 614376865,
+      "measured_ns": 613826900,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "160a8b751d41d94a0243e71930994b52",
+        "d9b1abee08a03dd8536bfafead38b08c",
+        "4c9634653f3785c0a901d42e41097888"
+      ],
+      "phases": {
+        "create_ns": 582965525,
+        "first_command_ns": 30857110,
+        "cleanup_ns": 133612605
+      }
+    },
+    {
+      "index": 15,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.153591956Z",
+      "completed_at": "2026-09-15T12:21:01.563382449Z",
+      "schedule_delay_ns": 593232,
+      "observed_ns": 410383751,
+      "measured_ns": 409790519,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "a1cf5b2873b4534586ad7428f36de827",
+        "19ec1152316463aa80d853cec55772d3",
+        "2e57ad6f07909126439f1bcd4dac90a5"
+      ],
+      "phases": {
+        "create_ns": 371527638,
+        "first_command_ns": 38259296,
+        "cleanup_ns": 148220053
+      }
+    },
+    {
+      "index": 16,
+      "scheduled_at": "2026-09-15T12:21:01.152998705Z",
+      "started_at": "2026-09-15T12:21:01.15327643Z",
+      "completed_at": "2026-09-15T12:21:01.939671043Z",
+      "schedule_delay_ns": 277698,
+      "observed_ns": 786672327,
+      "measured_ns": 786394629,
+      "success": true,
+      "cleanup_succeeded": true,
+      "cleanup_attempts": 1,
+      "resource_outcome": "deleted",
+      "cleanup_resources": [
+        {
+          "kind": "sandbox",
+          "identity_known": true,
+          "outcome": "deleted",
+          "attempts": 1
+        }
+      ],
+      "request_ids": [
+        "73c1266b4cc8a22129eab3eb837f5aaf",
+        "6dad15cf1d6542fb11dc81854ce89c07",
+        "d6d030249c6cd081c04a6f88153a5692"
+      ],
+      "phases": {
+        "create_ns": 745486117,
+        "first_command_ns": 40904000,
+        "cleanup_ns": 70199322
+      }
+    }
+  ]
+}

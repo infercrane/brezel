@@ -210,21 +210,24 @@ cleanup operations pass. Raw JSON and stderr are retained for failed runs.
 
 The [2026-09-15 qualification](QUALIFICATION-2026-09-15.md) ran two separately
 administered single-host deployments at revision
-`121d7c6952c5bbc0010c365817ef540a1efbaca6`. After simultaneous conformance, the
+`67410ab5b928a335a79701d67eaf859df890da9c`. After simultaneous conformance, the
 coordinator launched cached-template `tti`, `filesystem-restore`, and
 `workspace-io` burst cases on both hosts. A paired case passed only when every
 requested sample and every resource cleanup succeeded on both hosts and the
 measurement windows overlapped.
 
-Those three paired cases are simultaneous independent-host observations. The
-two complete 24-cell per-host matrices later finished: Host B passed every cell
-and Host A failed the staggered and burst filesystem-restore cells. The dated
-report preserves the exact counts, selected latency observations, and diagnosis.
-Neither the paired cases nor the matrices replace the repeated-matrix promotion
-gate below or an independently operated provider benchmark. They do not measure
-a cluster, scheduling, automatic placement or failover, cross-host restore,
-replicated storage, high availability, or hostile shared multitenancy. Brezel
-makes no portable or competitive performance claim from this qualification.
+Those three paired cases are simultaneous independent-host observations. Both
+complete 24-cell per-host matrices passed: 48 of 48 cells, 2,112 of 2,112
+attempts, and 3,168 of 3,168 expected resource cleanups. A separate unchanged
+16-way immediate-command workload completed 320 of 320 attempts across the two
+hosts at revision `67410ab5` after adding a guest-readiness gate and reducing
+the default concurrent-start limit to three. The dated report preserves exact counts,
+latency observations, and checksummed raw evidence. Neither the paired cases nor
+the matrices replace an independently operated provider benchmark. They do not
+measure a cluster, scheduling, automatic placement or failover, cross-host
+restore, replicated storage, high availability, or hostile shared multitenancy.
+Brezel makes no portable or competitive performance claim from this
+qualification.
 
 ## Before and after tuning
 
@@ -326,6 +329,57 @@ separate:
   outside DAX's reported `totalMs`; CPU quality and contention, writable-root
   storage, package setup, and network egress dominate that number.
 
+#### Public reference and Brezel entry gate
+
+The public run dated 2026-09-11 is a useful reference, not a prediction of
+Brezel's result:
+
+| Provider | Burst TTI p50 / p95 | DAX total | Publicly useful architecture signal |
+| --- | ---: | ---: | --- |
+| Isorun | 0.03 / 0.04 s | 33.97 s | Documents KVM sandboxes, cached OCI images, hibernate/resume, snapshots, and forks; scheduler and VMM internals are not public |
+| Miosa | 0.22 / 0.25 s | 42.30 s | Documents warm capacity as compatible compute kept ready; the isolation and storage hot paths are not public |
+| Blaxel | 0.63 / 0.67 s | 43.65 s | Documents bare-metal Firecracker, host-local boot artifacts, EROFS, memory-backed writable roots, custom scheduling, and prepared VPP networking |
+| E2B | 1.28 / 1.61 s | 80.07 s | A result for the hosted E2B service path, not an isolated measurement of the open-source runtime embedded by Brezel |
+
+Sources: [ComputeSDK Burst TTI](https://www.computesdk.com/benchmarks/sandboxes/burst-tti/),
+[ComputeSDK DAX](https://www.computesdk.com/benchmarks/sandboxes/dax/),
+[Isorun documentation](https://docs.isorun.ai/),
+[Miosa glossary](https://miosa.ai/docs/glossary), and
+[Blaxel's runtime architecture](https://blaxel.ai/blog/anatomy-of-a-runtime).
+Only Blaxel publishes enough internals in these sources for an architectural
+comparison. Do not reverse-engineer the Isorun or Miosa leaderboard position
+into an undocumented hypervisor, scheduler, cache, or pool design.
+
+Brezel does not yet meet its internal gate for a meaningful public run. The current base
+environment is fixed at 512 MiB, arbitrary OCI-derived environments are not
+implemented, and the qualified single-host profile caps active sandboxes at
+32. DAX expects a full Linux environment with root or sudo, a package manager,
+curl, internet access, and an 8-vCPU/16-GiB resource shape. Burst TTI launches
+100 sandboxes concurrently. Submitting the current profile would measure known
+product limits rather than a competitive runtime.
+
+The entry gate is therefore:
+
+1. qualify an immutable DAX-compatible environment with 8 vCPU, 16 GiB memory,
+   at least 16 GiB of fast ephemeral writable root, and a separate durable
+   workspace;
+2. qualify at least 100 simultaneous command-ready creates with headroom, zero
+   admission failures, complete cleanup, and no host swap or disk saturation;
+3. deploy an HTTPS data edge near the benchmark runner, reuse transport
+   connections, and remove every redundant readiness round trip;
+4. repeat the exact upstream workloads from a neutral client, retain all raw
+   results, and require 100% success before requesting public inclusion; and
+5. keep correctness gates on cancellation, standby, recovery, and cleanup even
+   though the external suites do not score them.
+
+The immediate performance program follows two distinct paths. Burst TTI needs
+pre-created host plumbing, a small clean warm-template pool, command-ready
+create semantics, a direct regional data path, and a 100-slot admission
+profile. DAX needs modern high-clock CPUs, no vCPU overcommit, fast local
+ephemeral storage for package-manager and compiler work, node-local immutable
+artifacts, and phase-level CPU, memory, disk, and network telemetry. A single
+optimization should not be expected to win both suites.
+
 The public DAX run dated 2026-09-11 used an advertised 8-vCPU/16-GiB shape but
 reported different physical CPU families between providers and only one
 iteration per provider in the retained result. It is useful comparative
@@ -365,9 +419,10 @@ the SQLite keyed read at 15.7 to 18.4 microseconds, activity transaction at
 67.2 to 94.8 microseconds, and event transaction at 95.3 to 107.3 microseconds
 with 10,000 unrelated resources across five runs. The prior JSON whole-state
 update was 18.9 to 21.9 milliseconds and its specialized event replacement was
-15.3 to 17.8 milliseconds in the same run. This demonstrates constant-scale
-controller hot paths and a roughly two-order-of-magnitude local write-path
-improvement. It is not a Firecracker startup result, does not predict hosted
+15.3 to 17.8 milliseconds in the same run. This demonstrates bounded history
+sensitivity for the indexed controller hot paths and a roughly two-order-of-
+magnitude local write-path improvement over the measured whole-state
+implementation. It is not a Firecracker startup result, does not predict hosted
 latency, and authorizes no competitive claim.
 
 ### Relay authorization microbenchmark
@@ -393,7 +448,8 @@ release evidence still requires the complete matrix above.
 
 ## Publishing rules
 
-A result is publishable only when:
+A result is eligible for a performance headline or promotion decision only
+when:
 
 1. all 24 cells completed and every per-attempt and per-resource cleanup succeeded;
 2. the repository, engine lock, runtime image, and benchmark binary identities
@@ -405,6 +461,11 @@ A result is publishable only when:
    cleanup result, and observed throughput are published together;
 5. at least one independent rerun shows comparable results; and
 6. the report says exactly which boundary was timed.
+
+Failed and partial evidence may still be published when it is labeled as such,
+retains failure and cleanup accounting, and is not used as a performance
+headline. Failure publication is part of the methodology, not an exception to
+it.
 
 Keep startup latency separate from workload throughput. The
 [ComputeSDK methodology](https://www.computesdk.com/methodology/),
