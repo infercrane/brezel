@@ -92,11 +92,13 @@ burst attempts with confirmed cleanup and a pooled 812.188 ms p99.
 
 That evidence establishes correctness and host-local latency for the tested
 profile, not a broad speed claim. Checkpoint burst p95 remained approximately
-12.8–13.0 seconds, restore behavior varied materially between hosts, and the
-qualified engine ceiling is 32 sandboxes. The system therefore does not meet
-Brezel's internal gate for a ComputeSDK 100-way Burst TTI submission. Exact host observations,
-hard-reset limits, raw evidence, and external-comparison gates are in
-[Qualification 2026-09-15](QUALIFICATION-2026-09-15.md) and
+12.8–13.0 seconds and restore behavior varied materially between hosts. A later
+separately sized profile at revision
+`f9fbc0ede72636349b27f01db49343d8daa87c5c` cleared Brezel's internal 100-way
+functional gate with 1,000 of 1,000 command-ready executions and confirmed
+cleanup, although its 2.431 s p50 is not leaderboard-leading. Exact host
+observations, hard-reset limits, raw evidence, and external-comparison gates are
+in [Qualification 2026-09-15](QUALIFICATION-2026-09-15.md) and
 [Benchmarking](BENCHMARKING.md).
 
 ## User jobs
@@ -558,8 +560,8 @@ operational label:
    stable errors.
 3. PTY/SSH and arbitrary OCI-derived environments with signed immutable
    manifests.
-4. Reduce and explain checkpoint/restore burst tails; qualify at least 100
-   command-ready slots before ComputeSDK Burst TTI.
+4. Reduce and explain checkpoint/restore burst tails, and improve the qualified
+   100-way 2.431 s p50 before ComputeSDK submission.
 5. Publish disk-full, interrupted-upgrade, backup/restore, rollback, and longer
    soak evidence.
 

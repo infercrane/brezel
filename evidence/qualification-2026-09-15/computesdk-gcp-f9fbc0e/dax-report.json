@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "suite": "computesdk-dax-rehearsal",
+  "upstream": {
+    "commit": "273927519c0ac6558d3e545eed9d59eb56a47ec7",
+    "scriptSha256": "58f4640ac170b366f87e8466a9ac1e9f50383faa59553246e4664c77af34d550"
+  },
+  "region": "us-east4",
+  "startedAt": "2026-09-15T20:01:31.620Z",
+  "finishedAt": "2026-09-15T20:04:59.069Z",
+  "provenance": {
+    "sourceRevision": "f9fbc0ede72636349b27f01db49343d8daa87c5c",
+    "environmentRevision": "envr_a0cc8c94505360960fbe2c33",
+    "endpoint": "https://brezel.35.199.36.212.sslip.io",
+    "runner": {
+      "node": "v23.11.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "allowInternet": true,
+    "measuredState": "fresh sandbox after one disclosed shape preflight"
+  },
+  "guest": {
+    "cpus": 8,
+    "memory_kib": 16392004,
+    "free_root_kib": 17482564,
+    "uid": 1000
+  },
+  "requested": 3,
+  "succeeded": 3,
+  "cleanupConfirmed": 3,
+  "projectEmptyBefore": true,
+  "projectEmptyAfter": true,
+  "cleanupConformant": true,
+  "summary": {
+    "p50Ms": 68435.369041,
+    "p95Ms": 69542.34100000001,
+    "p99Ms": 69542.34100000001
+  },
+  "attempts": [
+    {
+      "iteration": 1,
+      "cleanup": "confirmed",
+      "totalMs": 68435.369041,
+      "exitCode": 0,
+      "result": {
+        "phases": {
+          "prepare": 6402,
+          "cache_clear": 59,
+          "bun_download": 405,
+          "bun_unpack": 725,
+          "clone": 2434,
+          "install": 14738,
+          "typecheck": 37251,
+          "total": 63272
+        },
+        "metadata": {
+          "commit": "08fb47373509ba64b13441061314eeacf4264f51",
+          "architecture": "x86_64",
+          "kernel": "Linux 6.1.177+",
+          "logical_cpus": "8",
+          "cpu_model": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+          "memory_kib": "16392004",
+          "bun_version": "1.3.14",
+          "node_version": "v20.9.0"
+        },
+        "disk": {
+          "after_clone": 349993984,
+          "after_install": 3069740000,
+          "after_typecheck": 3072930000
+        },
+        "failures": [],
+        "errors": [],
+        "completedCommit": "08fb47373509ba64b13441061314eeacf4264f51"
+      },
+      "stderrTail": "debconf: delaying package configuration, since apt-utils is not installed\nResolving dependencies\nResolved, downloaded and extracted [537]\nSaved lockfile\n\n$ bun run --cwd packages/core fix-node-pty\n$ bun run script/fix-node-pty.ts\n$ husky\n$ bun turbo typecheck"
+    },
+    {
+      "iteration": 2,
+      "cleanup": "confirmed",
+      "totalMs": 69542.34100000001,
+      "exitCode": 0,
+      "result": {
+        "phases": {
+          "prepare": 6407,
+          "cache_clear": 68,
+          "bun_download": 427,
+          "bun_unpack": 726,
+          "clone": 2625,
+          "install": 14160,
+          "typecheck": 38635,
+          "total": 64400
+        },
+        "metadata": {
+          "commit": "08fb47373509ba64b13441061314eeacf4264f51",
+          "architecture": "x86_64",
+          "kernel": "Linux 6.1.177+",
+          "logical_cpus": "8",
+          "cpu_model": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+          "memory_kib": "16392004",
+          "bun_version": "1.3.14",
+          "node_version": "v20.9.0"
+        },
+        "disk": {
+          "after_clone": 349998080,
+          "after_install": 3069750000,
+          "after_typecheck": 3072930000
+        },
+        "failures": [],
+        "errors": [],
+        "completedCommit": "08fb47373509ba64b13441061314eeacf4264f51"
+      },
+      "stderrTail": "debconf: delaying package configuration, since apt-utils is not installed\nResolving dependencies\nResolved, downloaded and extracted [537]\nSaved lockfile\n\n$ bun run --cwd packages/core fix-node-pty\n$ bun run script/fix-node-pty.ts\n$ husky\n$ bun turbo typecheck"
+    },
+    {
+      "iteration": 3,
+      "cleanup": "confirmed",
+      "totalMs": 62269.08937499998,
+      "exitCode": 0,
+      "result": {
+        "phases": {
+          "prepare": 6462,
+          "cache_clear": 68,
+          "bun_download": 287,
+          "bun_unpack": 725,
+          "clone": 2597,
+          "install": 8389,
+          "typecheck": 37551,
+          "total": 57896
+        },
+        "metadata": {
+          "commit": "08fb47373509ba64b13441061314eeacf4264f51",
+          "architecture": "x86_64",
+          "kernel": "Linux 6.1.177+",
+          "logical_cpus": "8",
+          "cpu_model": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+          "memory_kib": "16392004",
+          "bun_version": "1.3.14",
+          "node_version": "v20.9.0"
+        },
+        "disk": {
+          "after_clone": 349998080,
+          "after_install": 3018700000,
+          "after_typecheck": 3021890000
+        },
+        "failures": [],
+        "errors": [],
+        "completedCommit": "08fb47373509ba64b13441061314eeacf4264f51"
+      },
+      "stderrTail": "debconf: delaying package configuration, since apt-utils is not installed\nResolving dependencies\nResolved, downloaded and extracted [537]\ngyp info it worked if it ends with ok\ngyp info using node-gyp@13.0.2\ngyp info using node@20.9.0 | linux | x64\ngyp info find Python using Python version 3.11.6 found at \"/usr/local/bin/python3\"\ngyp ERR! configure error \ngyp ERR! stack TypeError: webidl.util.markAsUncloneable is not a function\ngyp ERR! stack at new CacheStorage (/tmp/bunx-1000-node-gyp@latest/node_modules/undici/lib/web/cache/cachestorage.js:20:17)\ngyp ERR! stack at Object.<anonymous> (/tmp/bunx-1000-node-gyp@latest/node_modules/undici/index.js:179:25)\ngyp ERR! stack at Module._compile (node:internal/modules/cjs/loader:1241:14)\ngyp ERR! stack at Module._extensions..js (node:internal/modules/cjs/loader:1295:10)\ngyp ERR! stack at Module.load (node:internal/modules/cjs/loader:1091:32)\ngyp ERR! stack at Module._load (node:internal/modules/cjs/loader:938:12)\ngyp ERR! stack at Module.require (node:internal/modules/cjs/loader:1115:19)\ngyp ERR! stack at require (node:internal/modules/helpers:130:18)\ngyp ERR! stack at Object.<anonymous> (/tmp/bunx-1000-node-gyp@latest/node_modules/node-gyp/lib/download.js:2:57)\ngyp ERR! stack at Module._compile (node:internal/modules/cjs/loader:1241:14)\ngyp ERR! System Linux 6.1.177+\ngyp ERR! command \"/usr/local/bin/node\" \"/tmp/bunx-1000-node-gyp@latest/node_modules/.bin/node-gyp\" \"rebuild\"\ngyp ERR! cwd /tmp/opencode-provider-benchmark/repo/node_modules/.bun/tree-sitter-powershell@0.25.10/node_modules/tree-sitter-powershell\ngyp ERR! node -v v20.9.0\ngyp ERR! node-gyp -v v13.0.2\ngyp ERR! $npm_package_name opencode\ngyp ERR! $npm_package_version 0.25.10\ngyp ERR! not ok \n\nerror: install script from \"tree-sitter-powershell\" exited with 1\n$ bun turbo typecheck"
+    }
+  ]
+}

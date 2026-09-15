@@ -350,14 +350,21 @@ Only Blaxel publishes enough internals in these sources for an architectural
 comparison. Do not reverse-engineer the Isorun or Miosa leaderboard position
 into an undocumented hypervisor, scheduler, cache, or pool design.
 
-Brezel does not yet meet its internal gate for a meaningful public run. The
-last qualified single-host profile caps active sandboxes at 32. Candidate
-profiles now build an 8-vCPU/16-GiB DAX environment and a separate 100-way
-capacity environment, but neither is evidence until it passes on a named KVM
-host. DAX expects a full Linux environment with root or sudo, a package
-manager, curl, internet access, and a large writable root. Burst TTI launches
-100 sandboxes concurrently. Publishing either candidate before qualification
-would turn configuration into an unsupported performance claim.
+Brezel cleared its internal functional entry gate at revision
+`f9fbc0ede72636349b27f01db49343d8daa87c5c` on a named 32-vCPU GCP N2 KVM
+host in `us-east4`. The 100-way profile completed ten consecutive waves with
+1,000 of 1,000 successful command-ready sandboxes and confirmed deletion. Its
+aggregate TTI was 2.431 s p50, 2.937 s p95, and 3.182 s p99 from a neutral HTTPS
+client. The separate 8-vCPU/16-GiB profile completed three of three pinned DAX
+runs; the guest-reported workload total was 63.272 s median and every cleanup
+was confirmed.
+
+Against the public table dated 2026-09-11, the self-run DAX median falls between
+Arker's 54.74 s and Daytona's 67.28 s. The Burst result is materially slower
+than the leading providers and the published E2B median of 1.28 s. These are
+directional comparisons only: Brezel has not run inside ComputeSDK's official
+provider harness, host CPUs differ, and the public table uses one iteration per
+scheduled provider run.
 
 The entry gate is therefore:
 

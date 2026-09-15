@@ -12,7 +12,9 @@ The supported evaluation profile is one organization on one dedicated Ubuntu
 24.04 x86-64 machine with KVM and `/dev/net/tun`. Revision
 `67410ab5b928a335a79701d67eaf859df890da9c` completed destructive qualification
 on two separately administered machines, each operating as an independent
-single-host deployment. It must not be described as a cluster, highly available,
+single-host deployment. Revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`
+also qualified dedicated 100-way Burst and 8-vCPU/16-GiB DAX profiles on one
+named GCP KVM host. It must not be described as a cluster, highly available,
 hostile shared-multitenant, or public-production system.
 
 ## Implemented
@@ -21,7 +23,7 @@ hostile shared-multitenant, or public-production system.
 | --- | --- |
 | Environments | Immutable template revisions; arbitrary OCI builds are not available |
 | Sandboxes | Project-scoped create, inspect, list, pause, resume, expiration, and delete |
-| Commands | Streamed output, bounded response, deadline, confirmed exit status on complete streams; interrupted outcomes fail closed without automatic replay |
+| Commands | Streamed output, bounded response, deadline, and confirmed exit status; an interrupted stream reconnects to the same process through a bounded generation-bound cursor journal and never reruns the command; unavailable or evicted suffixes fail closed |
 | Files | Authenticated guest path, absolute-path validation, bounded upload/download |
 | HTTP previews | Opaque 30–900 second lease, state recheck, credential stripping; no WebSockets |
 | Workspaces | Host-backed, durable across sandbox replacement, single writer |
@@ -100,16 +102,30 @@ figures and raw evidence are in [Qualification
 2026-09-15](QUALIFICATION-2026-09-15.md) and the public-comparison gates are in
 [Benchmarking](BENCHMARKING.md).
 
+The separately sized GCP profiles at revision
+`f9fbc0ede72636349b27f01db49343d8daa87c5c` produced:
+
+| Rehearsal | Result | Success and cleanup |
+| --- | ---: | ---: |
+| 100-way Burst TTI, 10 consecutive waves | 2.431 s p50 / 2.937 s p95 / 3.182 s p99 | 1,000 / 1,000; 1,000 / 1,000 deletions |
+| Pinned ComputeSDK DAX, guest workload total | 63.272 s median | 3 / 3; 3 / 3 deletions |
+
+The Burst runner was a neutral macOS HTTPS client. DAX used a fresh
+8-vCPU/16-GiB sandbox for every iteration, ran the digest-pinned upstream
+script, and allowed internet access only for that disposable benchmark project.
+Both projects were empty before and after the runs. These are self-run
+rehearsals, not official ComputeSDK leaderboard entries.
+
 ## Next release gate
 
 The separate node process, default single-host byte path, row-scoped lifecycle
 operations, bounded snapshot-diff cache, readiness gate, and three-start
 admission default completed the named-host workflow. Candidate profiles now
 exist for DAX and 100 simultaneous command-ready sandboxes, together with
-strict workload and cleanup rehearsals. They do not raise the qualified ceiling
-until the named GCP KVM run passes. The immediate performance gate is measuring
-those profiles, locating their dominant tails, and improving them without
-weakening the all-success requirement.
+strict workload and cleanup rehearsals. Both passed on the named GCP KVM host at
+revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`. The next performance gate
+is reducing Burst TTI and DAX's CPU-bound typecheck time without weakening the
+all-success requirement, then running the independent provider harness.
 Longer soak, disk-full, interrupted-upgrade, backup/restore, and rollback
 exercises remain required. Existing evidence qualifies independent single-host
 operation only; it does not establish multi-node scheduling, shared control,

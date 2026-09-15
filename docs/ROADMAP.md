@@ -8,8 +8,9 @@ Dates do not authorize claims; evidence does.
 
 The user path is `new`, `run`, files, preview, stop, start, and delete.
 
-Delivered and qualified at revision
-`67410ab5b928a335a79701d67eaf859df890da9c`:
+Delivered and qualified across revisions
+`67410ab5b928a335a79701d67eaf859df890da9c` and
+`f9fbc0ede72636349b27f01db49343d8daa87c5c`:
 
 - an out-of-process `brezel-node` with separate mTLS control and data listeners
 - generation-fenced route reconciliation between the API and node ledger
@@ -25,6 +26,10 @@ Delivered and qualified at revision
   all 3,168 expected resource cleanups
 - 320 of 320 additional immediate-command burst attempts with confirmed
   cleanup after adding a guest-readiness publication gate
+- a separately sized 100-way profile completing 1,000 of 1,000 command-ready
+  executions across ten waves, with all 1,000 deletions confirmed
+- a separately sized 8-vCPU/16-GiB profile completing three of three pinned
+  ComputeSDK DAX rehearsals with confirmed cleanup
 
 Remaining before a broader operational label:
 
@@ -32,8 +37,8 @@ Remaining before a broader operational label:
 - service-unit upgrade and rollback packaging
 - reduce and explain checkpoint and restore burst tails without weakening the
   all-success qualification gate
-- raise qualified command-ready capacity from 32 to at least 100 before a
-  public ComputeSDK Burst TTI run
+- reduce the qualified 100-way TTI from 2.431 s p50 before requesting public
+  ComputeSDK inclusion
 - disk-full, interrupted-upgrade, longer soak, backup/restore, and rollback
   evidence
 

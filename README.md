@@ -27,9 +27,11 @@ persistent workspaces, checkpoints, and lifecycle.
 > organization on one dedicated Ubuntu 24.04 x86-64 host with KVM and
 > `/dev/net/tun`. Revision `67410ab5b928a335a79701d67eaf859df890da9c` completed
 > destructive qualification on two separately administered hosts, each as an
-> independent single-host deployment. Brezel is not qualified for a cluster,
-> high availability, hostile shared multitenancy, or public production. See the
-> exact [claim boundary](docs/STATUS.md).
+> independent single-host deployment. Revision
+> `f9fbc0ede72636349b27f01db49343d8daa87c5c` additionally passed the dedicated
+> 100-way Burst and 8-vCPU/16-GiB DAX profiles on a named GCP KVM host. Brezel is
+> not qualified for a cluster, high availability, hostile shared multitenancy,
+> or public production. See the exact [claim boundary](docs/STATUS.md).
 
 ## First sandbox
 
@@ -120,7 +122,7 @@ sandbox.stop()
 | Capability | Current implementation |
 | --- | --- |
 | **Isolation** | Firecracker microVMs with no container fallback in release code |
-| **Execution** | Streamed commands, deadlines, bounded output, and confirmed exit status on complete streams |
+| **Execution** | Streamed commands, deadlines, bounded output, confirmed exit status, and generation-bound cursor replay after an interrupted output stream without rerunning the command |
 | **State** | Durable single-writer workspaces plus filesystem checkpoint and restore |
 | **Lifecycle** | Expiration, automatic standby, same-host resume, cleanup, and restart recovery |
 | **I/O** | Bounded file transfer and short-lived authenticated HTTP previews |
@@ -154,7 +156,10 @@ The API remains the lifecycle authority. At revision
 `67410ab5b928a335a79701d67eaf859df890da9c`, this integrated path completed
 destructive qualification on each of two separately administered Linux/KVM
 hosts, including simultaneous conformance and controller/node-relay crash
-containment. This evidence does not establish a multi-node product topology.
+containment. Revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`
+added bounded, fail-closed guest-output replay and passed the same destructive
+single-host workflow under both benchmark profiles on GCP. This evidence does
+not establish a multi-node product topology.
 
 ## Readiness boundary
 
@@ -179,6 +184,15 @@ containment. This evidence does not establish a multi-node product topology.
   restored access through a replacement sandbox, and confirmed cleanup. This is
   crash-durable same-host workspace recovery, not transparent process resume or
   host-loss recovery.
+- On a separate 32-vCPU GCP N2 KVM host, revision
+  `f9fbc0ede72636349b27f01db49343d8daa87c5c` completed 1,000 of 1,000
+  command-ready executions across ten consecutive 100-sandbox bursts, held all
+  100 sandboxes in every wave, and confirmed all 1,000 deletions. Its 100-way
+  TTI was 2.431 s p50, 2.937 s p95, and 3.182 s p99 from a neutral HTTPS client.
+  The same revision completed three of three pinned ComputeSDK DAX rehearsals;
+  the guest-reported workload total was 63.272 s median. These are reproducible
+  self-run rehearsals, not official ComputeSDK leaderboard results. Raw reports
+  and profile qualification are retained in the [dated evidence](docs/QUALIFICATION-2026-09-15.md).
 
 <details>
 <summary><strong>Not implemented yet</strong></summary>
@@ -215,11 +229,11 @@ before publishing results.
 A dependency-free adapter under [`benchmarks/computesdk`](benchmarks/computesdk)
 also exercises Brezel through the public ComputeSDK sandbox shape. It is an
 integration and independent-benchmark bridge, not yet a published provider
-package or a performance claim. Candidate host profiles and fail-closed
-rehearsals now exist for the 8-vCPU/16-GiB DAX workload and a separately sized
-100-way Burst TTI run. They remain release candidates until both profiles pass
-on a named KVM host with complete cleanup and retained evidence. Read the
-[benchmark methodology and entry gates](docs/BENCHMARKING.md).
+package or an official leaderboard result. The 8-vCPU/16-GiB DAX workload and
+separately sized 100-way Burst TTI profile both passed on a named GCP KVM host
+at revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`, with complete cleanup
+and retained evidence. Read the [benchmark methodology, results, and remaining
+external-submission boundary](docs/BENCHMARKING.md).
 
 Load benchmark profiles through the checked runner so every value reaches the
 installer and Compose process tree:

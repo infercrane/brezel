@@ -140,22 +140,35 @@ Each evidence set has its own SHA-256 manifest:
 - [`dual-independent-hosts`](../evidence/qualification-2026-09-15/dual-independent-hosts)
 - [`host-reboot-host-a`](../evidence/qualification-2026-09-15/host-reboot-host-a)
 - [`host-reboot-host-b`](../evidence/qualification-2026-09-15/host-reboot-host-b)
+- [`computesdk-gcp-f9fbc0e`](../evidence/qualification-2026-09-15/computesdk-gcp-f9fbc0e)
 
-The reports contain no service token, private key, public IP address, email
-address, workload content, or absolute coordinator path.
+The paired-host and reboot reports contain no service token, private key,
+public IP address, email address, workload content, or absolute coordinator
+path. The ComputeSDK reports retain the now-ephemeral public benchmark endpoint
+for provenance, but contain no credential or customer workload.
 
-## ComputeSDK boundary
+## ComputeSDK profile qualification
 
-Brezel does not yet meet its internal gate for ComputeSDK's public 100-way Burst
-TTI comparison.
-The qualified engine profile permits 32 active sandboxes and the base guest has
-512 MiB RAM. The DAX workload additionally requires an arbitrary, writable
-8-vCPU/16-GiB environment with package installation and internet access.
+Revision `f9fbc0ede72636349b27f01db49343d8daa87c5c` was installed on a separate
+32-vCPU GCP N2 KVM host in `us-east4`. Both mutually exclusive profiles ran the
+29-step destructive single-host workflow, engine fast-path check, active API
+restart, node restart, and post-restart checks before measurement.
 
-A comparable external submission requires a separately qualified 100-slot
-profile, a DAX-compatible environment, a regional HTTPS endpoint, repeated
-neutral-client runs, and 100% workload and cleanup success. See
-[Benchmarking](BENCHMARKING.md).
+The 2-vCPU/512-MiB profile then completed ten consecutive 100-sandbox waves:
+1,000 of 1,000 sandboxes reached a successful `node -v`, every wave held all
+100 sandboxes simultaneously, and all 1,000 deletions were confirmed. Aggregate
+TTI was 2.431 s p50, 2.937 s p95, and 3.182 s p99 from a neutral HTTPS client.
+
+The host was reinstalled and requalified with the 8-vCPU/16-GiB DAX profile.
+Three fresh sandboxes each completed the digest-pinned upstream script. The
+guest-reported total was 63.272 s median; the surrounding adapter wall time was
+68.435 s median. All three sandboxes were deleted and the project was empty
+afterward.
+
+This clears Brezel's internal functional entry gate. It is not an official
+ComputeSDK provider run. The public harness still needs a stable regional
+endpoint and provider integration, and the current Burst latency is not a
+leaderboard-leading result. See [Benchmarking](BENCHMARKING.md).
 
 ## Exact claim scope
 
