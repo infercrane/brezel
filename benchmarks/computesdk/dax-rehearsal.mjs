@@ -60,15 +60,15 @@ async function qualifyGuest(compute) {
 cpus=$(getconf _NPROCESSORS_ONLN)
 memory_kib=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)
 free_root_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
+printf '{"cpus":%s,"memory_kib":%s,"free_root_kib":%s,"uid":%s}\n' "$cpus" "$memory_kib" "$free_root_kib" "$(id -u)"
 test "$cpus" -ge 8
 test "$memory_kib" -ge 15728640
 test "$free_root_kib" -ge 16777216
 if test "$(id -u)" -ne 0; then command -v sudo >/dev/null; sudo -n true; fi
 command -v bash >/dev/null
-command -v apt-get >/dev/null || command -v dnf >/dev/null || command -v apk >/dev/null
-printf '{"cpus":%s,"memory_kib":%s,"free_root_kib":%s,"uid":%s}\n' "$cpus" "$memory_kib" "$free_root_kib" "$(id -u)"`);
+command -v apt-get >/dev/null || command -v dnf >/dev/null || command -v apk >/dev/null`);
     if (result.exitCode !== 0) {
-      throw new Error(`DAX guest shape preflight failed: ${result.stderr.slice(-1000)}`);
+      throw new Error(`DAX guest shape preflight failed with exit ${result.exitCode}: stdout=${JSON.stringify(result.stdout.slice(-1000))} stderr=${JSON.stringify(result.stderr.slice(-1000))}`);
     }
     const line = result.stdout.trim().split("\n").at(-1);
     return JSON.parse(line);

@@ -982,6 +982,8 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 		"0007-scale-local-resource-pools-and-template-shape.patch",
 		"engine_local_capacity_patch_sha256",
 		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_LOCAL_CAPACITY_PATCH"`,
+		`BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT="$INSTALL_DIR/artifacts/build-base-template.mjs"`,
+		`BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256=$(sha256sum "$BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT"`,
 		`"$ENGINE_START_ADMISSION_PATCH_SHA256" "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256"`,
 		"engine local-capacity patch verification failed",
 	} {
@@ -1001,9 +1003,28 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 		"NBD_POOL_SIZE: ${BREZEL_ENGINE_NBD_POOL_SIZE:",
 		"BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}",
 		"BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}",
+		"BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256:",
+		"/opt/brezel/build-base-template.mjs:ro",
+		"mounted builder digest mismatch",
 	} {
 		if !strings.Contains(override, required) {
 			t.Fatalf("engine override is missing local-capacity setting %q", required)
+		}
+	}
+
+	contractData, err := os.ReadFile("engine-capacity-contract.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := string(contractData)
+	for _, required := range []string{
+		"active base template does not match the operator guest shape",
+		"public.env_build_assignments",
+		"public.env_builds",
+		"active_base_template_verified",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("engine capacity contract is missing template-shape gate %q", required)
 		}
 	}
 

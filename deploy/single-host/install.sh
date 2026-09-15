@@ -338,6 +338,22 @@ patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NFS_DURABILITY_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_START_ADMISSION_PATCH"
 patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_LOCAL_CAPACITY_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
+
+# The upstream base-template service executes a JavaScript helper embedded in
+# the released tools image. Brezel patches that helper to make the guest shape
+# operator-owned, so running the image's original copy would silently build the
+# default 2-vCPU/512-MiB template. Preserve the exact patched helper outside the
+# temporary build tree and bind it into the one-shot service below. The service
+# verifies this digest before Node evaluates the file.
+mkdir -p "$INSTALL_DIR/artifacts"
+chmod 700 "$INSTALL_DIR/artifacts"
+BASE_TEMPLATE_SCRIPT_TMP=$(mktemp "$INSTALL_DIR/artifacts/.build-base-template.XXXXXX")
+cp "$ENGINE_BUILD_DIR/embed/compose/scripts/node/build-base-template.mjs" "$BASE_TEMPLATE_SCRIPT_TMP"
+chmod 500 "$BASE_TEMPLATE_SCRIPT_TMP"
+BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT="$INSTALL_DIR/artifacts/build-base-template.mjs"
+mv -f -- "$BASE_TEMPLATE_SCRIPT_TMP" "$BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT"
+BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256=$(sha256sum "$BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT" | awk '{print $1}')
+export BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256
 EXPECTED_MIGRATION_TIMESTAMP=$(find "$ENGINE_BUILD_DIR/packages/db/migrations" -maxdepth 1 -type f -printf '%f\n' | sed 's/_.*//' | sort | tail -n 1)
 if [ -z "$EXPECTED_MIGRATION_TIMESTAMP" ]; then
   echo "could not resolve the pinned engine migration version" >&2
@@ -365,8 +381,6 @@ docker build \
   --build-arg "COMMIT_SHA=${ENGINE_COMMIT}-durability-v1" \
   --build-arg "VERSION=${ENGINE_COMMIT}-durability-v1" \
   "$ENGINE_BUILD_DIR/packages"
-mkdir -p "$INSTALL_DIR/artifacts"
-chmod 700 "$INSTALL_DIR/artifacts"
 ORCHESTRATOR_ARTIFACT_TMP=$(mktemp -d "$INSTALL_DIR/orchestrator-artifact.XXXXXX")
 ORCHESTRATOR_BUILD_CONTAINER=$(docker create --entrypoint /orchestrator "$BREZEL_ENGINE_ORCHESTRATOR_IMAGE")
 docker cp "$ORCHESTRATOR_BUILD_CONTAINER:/orchestrator" "$ORCHESTRATOR_ARTIFACT_TMP/orchestrator"

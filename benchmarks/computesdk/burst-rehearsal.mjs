@@ -76,12 +76,14 @@ async function qualifyGuest(compute) {
 cpus=$(getconf _NPROCESSORS_ONLN)
 memory_kib=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)
 free_root_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
+printf '{"cpus":%s,"memory_kib":%s,"free_root_kib":%s}\n' "$cpus" "$memory_kib" "$free_root_kib"
 test "$cpus" -ge 2
 test "$memory_kib" -ge 491520
 test "$free_root_kib" -ge 524288
-command -v node >/dev/null
-printf '{"cpus":%s,"memory_kib":%s,"free_root_kib":%s}\n' "$cpus" "$memory_kib" "$free_root_kib"`);
-    if (result.exitCode !== 0) throw new Error(`burst guest shape preflight failed: ${result.stderr.slice(-1000)}`);
+command -v node >/dev/null`);
+    if (result.exitCode !== 0) {
+      throw new Error(`burst guest shape preflight failed with exit ${result.exitCode}: stdout=${JSON.stringify(result.stdout.slice(-1000))} stderr=${JSON.stringify(result.stderr.slice(-1000))}`);
+    }
     return JSON.parse(result.stdout.trim().split("\n").at(-1));
   } finally {
     await sandbox.destroy();

@@ -201,6 +201,25 @@ services:
       BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}
       BASE_TEMPLATE_MEMORY_MB: ${BREZEL_GUEST_MEMORY_MIB:-512}
       BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}
+      BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256: ${BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256:?set the verified base-template builder digest}
+    volumes:
+      - ${BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT:?set the verified base-template builder path}:/opt/brezel/build-base-template.mjs:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        expected="$$BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256"
+        actual=$$(sha256sum /opt/brezel/build-base-template.mjs | awk '{print $$1}')
+        [ "$$actual" = "$$expected" ] || {
+          echo "build-base-template: mounted builder digest mismatch" >&2
+          exit 1
+        }
+        test -s /run/e2b/team-api-key || {
+          echo "build-base-template: the seed left no team API key" >&2
+          exit 1
+        }
+        E2B_API_KEY="$$(cat /run/e2b/team-api-key)" exec node /opt/brezel/build-base-template.mjs
 
   smoke:
     pull_policy: never
