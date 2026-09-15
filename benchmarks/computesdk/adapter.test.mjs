@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createBrezelCompute } from "./adapter.mjs";
+import { createBrezelCompute, createBrezelComputeFromEnv } from "./adapter.mjs";
 
 const token = "test_service_token_0123456789abcdef";
 
@@ -158,6 +158,57 @@ test("does not poll an immediate-running create response", async (t) => {
     0,
   );
   await instance.destroy();
+});
+
+test("enables sandbox internet only from an explicit true environment value", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t);
+  const compute = createBrezelComputeFromEnv({
+    BREZEL_API_URL: baseUrl,
+    BREZEL_SERVICE_TOKEN_FILE: tokenFile,
+    BREZEL_PROJECT_ID: "project-test",
+    BREZEL_ENVIRONMENT_REVISION: "envr_test",
+    BREZEL_ALLOW_INTERNET: "true",
+  });
+
+  const instance = await compute.sandbox.create();
+  await instance.destroy();
+
+  const createRequest = requests.find((request) => request.method === "POST" && request.url === "/v1/sandboxes");
+  assert.deepEqual(JSON.parse(createRequest.body).network, { allow_internet: true });
+});
+
+test("rejects an invalid internet environment value before making a request", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t);
+  for (const value of ["", "TRUE", " true ", "1"]) {
+    assert.throws(
+      () => createBrezelComputeFromEnv({
+        BREZEL_API_URL: baseUrl,
+        BREZEL_SERVICE_TOKEN_FILE: tokenFile,
+        BREZEL_PROJECT_ID: "project-test",
+        BREZEL_ENVIRONMENT_REVISION: "envr_test",
+        BREZEL_ALLOW_INTERNET: value,
+      }),
+      /BREZEL_ALLOW_INTERNET must be exactly "true" or "false" when set/,
+    );
+  }
+  assert.equal(requests.length, 0);
+});
+
+test("rejects a non-boolean programmatic internet setting", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t);
+  for (const allowInternet of ["true", null, 1]) {
+    assert.throws(
+      () => createBrezelCompute({
+        baseUrl,
+        tokenFile,
+        projectId: "project-test",
+        environmentRevision: "envr_test",
+        allowInternet,
+      }),
+      /allowInternet must be a boolean/,
+    );
+  }
+  assert.equal(requests.length, 0);
 });
 
 test("rejects permissive token files before making a network request", async (t) => {

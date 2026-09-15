@@ -301,6 +301,12 @@ BREZEL_ENVIRONMENT_REVISION=envr_... \
 node benchmarks/computesdk/qualified-smoke.mjs
 ```
 
+Guest internet is disabled when `BREZEL_ALLOW_INTERNET` is omitted or set to
+the exact value `false`. The DAX workload downloads packages and source, so set
+`BREZEL_ALLOW_INTERNET=true` only for that qualified run. Any other value,
+including different capitalization or surrounding whitespace, is rejected
+before sandbox creation.
+
 This adapter enables comparable external measurement; it is not yet a
 published `@computesdk/brezel` package and does not authorize a competitive
 performance claim. Upstream publication still requires a qualified hosted

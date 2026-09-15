@@ -34,6 +34,21 @@ function positiveInteger(value, fallback, name) {
   return resolved;
 }
 
+function boolean(value, fallback, name) {
+  const resolved = value === undefined ? fallback : value;
+  if (typeof resolved !== "boolean") {
+    throw new Error(`${name} must be a boolean`);
+  }
+  return resolved;
+}
+
+function environmentBoolean(value, name) {
+  if (value === undefined) return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be exactly "true" or "false" when set`);
+}
+
 function resolveBaseUrl(value) {
   let parsed;
   try {
@@ -96,6 +111,7 @@ function resolveConfig(config) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(projectId)) {
     throw new Error("BREZEL_PROJECT_ID is invalid");
   }
+  const allowInternet = boolean(config.allowInternet, false, "allowInternet");
   return Object.freeze({
     baseUrl: resolveBaseUrl(baseUrlValue),
     projectId,
@@ -105,7 +121,7 @@ function resolveConfig(config) {
     createTimeoutMs: positiveInteger(config.createTimeoutMs, DEFAULT_CREATE_TIMEOUT_MS, "createTimeoutMs"),
     destroyTimeoutMs: positiveInteger(config.destroyTimeoutMs, DEFAULT_DESTROY_TIMEOUT_MS, "destroyTimeoutMs"),
     sandboxTtlSeconds: positiveInteger(config.sandboxTtlSeconds, DEFAULT_SANDBOX_TTL_SECONDS, "sandboxTtlSeconds"),
-    allowInternet: config.allowInternet ?? false,
+    allowInternet,
   });
 }
 
@@ -520,12 +536,13 @@ export function createBrezelCompute(configInput = {}) {
   };
 }
 
-/** Create an adapter from the four non-secret environment values used by CI. */
-export function createBrezelComputeFromEnv() {
+/** Create an adapter from the required CI environment and optional policy toggle. */
+export function createBrezelComputeFromEnv(environment = process.env) {
   return createBrezelCompute({
-    baseUrl: process.env.BREZEL_API_URL,
-    tokenFile: process.env.BREZEL_SERVICE_TOKEN_FILE,
-    projectId: process.env.BREZEL_PROJECT_ID,
-    environmentRevision: process.env.BREZEL_ENVIRONMENT_REVISION,
+    baseUrl: environment.BREZEL_API_URL,
+    tokenFile: environment.BREZEL_SERVICE_TOKEN_FILE,
+    projectId: environment.BREZEL_PROJECT_ID,
+    environmentRevision: environment.BREZEL_ENVIRONMENT_REVISION,
+    allowInternet: environmentBoolean(environment.BREZEL_ALLOW_INTERNET, "BREZEL_ALLOW_INTERNET"),
   });
 }
