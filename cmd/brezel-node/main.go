@@ -101,16 +101,7 @@ func run() (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("load microVM engine token: %w", err)
 	}
-	engineTransport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          32,
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-	}
+	engineTransport := newEngineTransport(config.maxInFlight)
 	defer engineTransport.CloseIdleConnections()
 	engine, err := e2b.New(
 		config.engineURL,
@@ -209,6 +200,29 @@ func run() (resultErr error) {
 		}
 	}
 	return errors.Join(serveErrors...)
+}
+
+// newEngineTransport aligns the node-to-engine connection pool with the
+// relay's own concurrency bound. All guest command and file traffic crosses a
+// single local proxy host, so a small fixed idle pool forces healthy
+// connections closed after every burst and creates avoidable socket churn.
+// MaxConnsPerHost remains bounded by relay admission.
+func newEngineTransport(maxInFlight int) *http.Transport {
+	perHost := maxInFlight
+	if perHost < 32 {
+		perHost = 32
+	}
+	return &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          perHost * 2,
+		MaxIdleConnsPerHost:   perHost,
+		MaxConnsPerHost:       perHost,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	}
 }
 
 func loadNodeConfig() (nodeConfig, error) {
