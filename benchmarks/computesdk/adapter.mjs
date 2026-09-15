@@ -494,6 +494,7 @@ export function createBrezelCompute(configInput = {}) {
             };
         const response = await requestJson(config, "POST", "/v1/sandboxes", body, randomUUID(), options.signal);
         const requested = validateSandbox(response?.resource);
+        if (requested.state === "running") return sandboxHandle(config, requested);
         try {
           const ready = await waitForState(config, requested.id, new Set(["running"]), config.createTimeoutMs, options.signal);
           if (!ready) throw new Error("Brezel sandbox disappeared while it was being created");

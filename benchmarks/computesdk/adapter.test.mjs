@@ -40,7 +40,10 @@ async function fixture(t, options = {}) {
 
     if (request.method === "POST" && request.url === "/v1/sandboxes") {
       response.statusCode = 202;
-      response.end(JSON.stringify({ resource: sandbox("requested"), operation: { id: "op_create", state: "running" } }));
+      response.end(JSON.stringify({
+        resource: sandbox(options.createState ?? "requested"),
+        operation: { id: "op_create", state: "running" },
+      }));
       return;
     }
     if (request.method === "GET" && request.url === "/v1/sandboxes/sb_test") {
@@ -107,6 +110,11 @@ test("implements the benchmark create, runCommand, and destroy lifecycle", async
   const instance = await compute.sandbox.create();
   assert.equal(instance.sandboxId, "sb_test");
   assert.equal(instance.provider, "brezel");
+  assert.equal(
+    requests.filter((request) => request.method === "GET" && request.url === "/v1/sandboxes/sb_test").length,
+    2,
+    "transitional create response was polled through preparing to running",
+  );
   const streamedOut = [];
   const streamedErr = [];
   const result = await instance.runCommand("node -v", {
@@ -132,6 +140,24 @@ test("implements the benchmark create, runCommand, and destroy lifecycle", async
   const commandRequest = requests.find((request) => request.url?.endsWith("/commands"));
   assert.deepEqual(JSON.parse(commandRequest.body).argv, ["/bin/sh", "-lc", "node -v"]);
   for (const request of requests) assert.equal(request.body.includes(token), false);
+});
+
+test("does not poll an immediate-running create response", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t, { createState: "running" });
+  const compute = createBrezelCompute({
+    baseUrl,
+    tokenFile,
+    projectId: "project-test",
+    environmentRevision: "envr_test",
+  });
+
+  const instance = await compute.sandbox.create();
+  assert.equal(instance.sandboxId, "sb_test");
+  assert.equal(
+    requests.filter((request) => request.method === "GET" && request.url === "/v1/sandboxes/sb_test").length,
+    0,
+  );
+  await instance.destroy();
 });
 
 test("rejects permissive token files before making a network request", async (t) => {
