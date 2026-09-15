@@ -789,21 +789,18 @@ func (s *Service) Delete(ctx context.Context, projectID, sandboxID, idempotencyK
 	s.mu.Unlock()
 	locked = false
 	backendStarted := time.Now()
-	routedSandbox, backendErr := s.prepareNodeRoutePause(ctx, sandbox)
-	if backendErr == nil {
-		backendErr = s.backend.Delete(ctx, routedSandbox.BackendID)
-	}
-	if backendErr == nil || errors.Is(backendErr, backend.ErrNotFound) {
-		routedSandbox, backendErr = s.removeNodeRoute(ctx, routedSandbox)
-	}
+	routedSandbox, failureCode, backendErr := s.cleanupSandboxOutsideLock(ctx, sandbox)
 	sandbox = routedSandbox
 	telemetry.Observe(s.observer, telemetry.OperationSandboxDelete, telemetry.PhaseBackendCall, backendStarted, backendErr)
 	s.mu.Lock()
 	locked = true
 	delete(s.activeBackendMutations, mutationKey)
 	if backendErr != nil && !errors.Is(backendErr, backend.ErrNotFound) {
+		if failureCode == "" {
+			failureCode = "backend_delete_failed"
+		}
 		persistResultStarted := time.Now()
-		resultSandbox, resultOperation, resultErr := s.failTransitionLocked(sandbox, op, "backend_delete_failed")
+		resultSandbox, resultOperation, resultErr := s.failTransitionLocked(sandbox, op, failureCode)
 		telemetry.Observe(s.observer, telemetry.OperationSandboxDelete, telemetry.PhasePersistResult, persistResultStarted, resultErr)
 		return resultSandbox, resultOperation, resultErr
 	}
@@ -1799,11 +1796,18 @@ func (s *Service) cleanupSandboxOutsideLock(ctx context.Context, sandbox domain.
 			return sandbox, "backend_cleanup_recovery_failed", err
 		}
 	}
-	routed, err := s.prepareNodeRoutePause(ctx, sandbox)
+	routed, err := s.recoverNodeRouteForCleanup(ctx, sandbox)
 	if err != nil {
-		return routed, "node_route_cleanup_fence_failed", err
+		return routed, "node_route_cleanup_recovery_failed", err
 	}
 	sandbox = routed
+	if sandbox.NodeRouteID != "" {
+		routed, err = s.prepareNodeRoutePause(ctx, sandbox)
+		if err != nil {
+			return routed, "node_route_cleanup_fence_failed", err
+		}
+		sandbox = routed
+	}
 	if sandbox.BackendID != "" {
 		if err := s.backend.Delete(ctx, sandbox.BackendID); err != nil && !errors.Is(err, backend.ErrNotFound) {
 			return sandbox, "backend_cleanup_failed", err

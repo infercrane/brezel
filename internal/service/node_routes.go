@@ -312,6 +312,34 @@ func (s *Service) removeNodeRoute(ctx context.Context, sandbox domain.Sandbox) (
 	return sandbox, nil
 }
 
+// recoverNodeRouteForCleanup closes the crash window between a successful
+// node bind and persistence of the assignment. Cleanup must also tolerate the
+// normal case where backend creation failed before any route existed.
+func (s *Service) recoverNodeRouteForCleanup(ctx context.Context, sandbox domain.Sandbox) (domain.Sandbox, error) {
+	if s.routeAdmin == nil {
+		return sandbox, nil
+	}
+	if sandbox.NodeRouteID != "" && sandbox.NodeGeneration != 0 && sandbox.NodeID != "" {
+		return sandbox, nil
+	}
+	clearNodeAssignment(&sandbox)
+	result, err := s.routeAdmin.Resolve(ctx, sandbox.ID)
+	if err != nil {
+		var remoteErr *node.RouteAdminError
+		if errors.As(err, &remoteErr) && remoteErr.StatusCode == http.StatusNotFound {
+			return sandbox, nil
+		}
+		return sandbox, fmt.Errorf("recover node route for cleanup: %w", err)
+	}
+	if result.Route.RouteID != sandbox.ID || result.Route.ProjectID != sandbox.ProjectID || result.Route.SandboxID != sandbox.ID {
+		return sandbox, errors.New("recovered node route does not match sandbox cleanup identity")
+	}
+	if err := applyNodeAssignment(&sandbox, result); err != nil {
+		return sandbox, err
+	}
+	return sandbox, nil
+}
+
 func (s *Service) resolveNodeRoute(ctx context.Context, sandbox domain.Sandbox) (node.RouteAdminResult, error) {
 	if sandbox.NodeRouteID == "" || sandbox.NodeGeneration == 0 || sandbox.NodeID == "" {
 		return node.RouteAdminResult{}, errors.New("sandbox has no durable node assignment")

@@ -401,6 +401,51 @@ func TestMissingBackendRemovesNodeRouteBeforeTerminalState(t *testing.T) {
 	}
 }
 
+func TestUnknownCreateWithoutBackendOrRouteCanBeDeleted(t *testing.T) {
+	now := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	state := newReconcileTestStore()
+	runtime := newReconcileTestBackend()
+	sandbox := reconcileSandboxFixture(now, "sandbox-unconfirmed", "")
+	sandbox.State = domain.SandboxUnknown
+	state.state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+	admin := &memoryRouteAdmin{nodeID: "node-a"}
+	service := newReconcileTestService(t, state, runtime, WithClock(func() time.Time { return now.Add(time.Minute) }), WithNodeRouteAdministrator(admin))
+
+	deleted, operation, err := service.Delete(context.Background(), sandbox.ProjectID, sandbox.ID, "delete-unconfirmed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.State != domain.SandboxDeleted || operation.State != domain.OperationSucceeded {
+		t.Fatalf("sandbox=%#v operation=%#v", deleted, operation)
+	}
+	if runtime.deleteCalls != 0 || admin.removed {
+		t.Fatalf("backend deletes=%d route removed=%v", runtime.deleteCalls, admin.removed)
+	}
+}
+
+func TestDeleteRecoversUnpersistedNodeRoute(t *testing.T) {
+	now := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	state := newReconcileTestStore()
+	runtime := newReconcileTestBackend()
+	sandbox := reconcileSandboxFixture(now, "sandbox-route-unconfirmed", "engine-running")
+	sandbox.State = domain.SandboxUnknown
+	state.state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+	runtime.sandboxes[sandbox.BackendID] = backend.Sandbox{ID: sandbox.BackendID, State: domain.SandboxRunning}
+	admin := &memoryRouteAdmin{nodeID: "node-a", route: nodeledger.Route{
+		RouteID: sandbox.ID, ProjectID: sandbox.ProjectID, SandboxID: sandbox.ID,
+		Generation: 1, State: nodeledger.StateReady, LastActivity: now,
+	}}
+	service := newReconcileTestService(t, state, runtime, WithClock(func() time.Time { return now.Add(time.Minute) }), WithNodeRouteAdministrator(admin))
+
+	deleted, operation, err := service.Delete(context.Background(), sandbox.ProjectID, sandbox.ID, "delete-route-unconfirmed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.State != domain.SandboxDeleted || operation.State != domain.OperationSucceeded || runtime.deleteCalls != 1 || !admin.removed {
+		t.Fatalf("sandbox=%#v operation=%#v backend deletes=%d route removed=%v", deleted, operation, runtime.deleteCalls, admin.removed)
+	}
+}
+
 func TestReconcilePropagatesCleanupBackendFailure(t *testing.T) {
 	now := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
 	state := newReconcileTestStore()
