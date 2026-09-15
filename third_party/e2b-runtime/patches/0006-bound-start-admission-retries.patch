@@ -1,0 +1,352 @@
+diff --git a/packages/api/internal/orchestrator/placement/config.go b/packages/api/internal/orchestrator/placement/config.go
+index 5d1d5e3d..b55f4320 100644
+--- a/packages/api/internal/orchestrator/placement/config.go
++++ b/packages/api/internal/orchestrator/placement/config.go
+@@ -1,5 +1,9 @@
+ package placement
+ 
++import "time"
++
+ const (
+-	maxRetries = 3
++	maxRetries                      = 3
++	resourceExhaustedBackoffInitial = 10 * time.Millisecond
++	resourceExhaustedBackoffMax     = 100 * time.Millisecond
+ )
+diff --git a/packages/api/internal/orchestrator/placement/placement.go b/packages/api/internal/orchestrator/placement/placement.go
+index 3ca5975c..b2430172 100644
+--- a/packages/api/internal/orchestrator/placement/placement.go
++++ b/packages/api/internal/orchestrator/placement/placement.go
+@@ -2,6 +2,8 @@ package placement
+ 
+ import (
+ 	"context"
++	"hash/fnv"
++	"time"
+ 
+ 	"go.opentelemetry.io/otel"
+ 	"go.uber.org/zap"
+@@ -63,6 +65,21 @@ func placeSandbox(
+ 	features FeatureRequirement,
+ 	labelFilteringEnabled bool,
+ 	requiredLabels []string,
++) (PlacementResult, error) {
++	return placeSandboxWithResourceExhaustedWait(ctx, algorithm, clusterNodes, preferredNode, sbxRequest, cpu, features, labelFilteringEnabled, requiredLabels, waitForResourceExhaustedRetry)
++}
++
++func placeSandboxWithResourceExhaustedWait(
++	ctx context.Context,
++	algorithm Algorithm,
++	clusterNodes []*nodemanager.Node,
++	preferredNode *nodemanager.Node,
++	sbxRequest *orchestrator.SandboxCreateRequest,
++	cpu CPURequirement,
++	features FeatureRequirement,
++	labelFilteringEnabled bool,
++	requiredLabels []string,
++	waitForRetry func(context.Context, string, int) bool,
+ ) (PlacementResult, error) {
+ 	ctx, span := tracer.Start(ctx, "place-sandbox")
+ 	defer span.End()
+@@ -199,6 +216,9 @@ func placeSandbox(
+ 			refusals++
+ 			failedNode.PlacementMetrics.Skip(sbxRequest.GetSandbox().GetSandboxId())
+ 			logger.L().Warn(ctx, "Node exhausted, trying another node", logger.WithSandboxID(sbxRequest.GetSandbox().GetSandboxId()), logger.WithNodeID(failedNode.ID), zap.Error(utils.UnwrapGRPCError(err)))
++			if !waitForRetry(ctx, sbxRequest.GetSandbox().GetSandboxId(), refusals) {
++				return deadline()
++			}
+ 		default:
+ 			nodesExcluded[failedNode.ID] = struct{}{}
+ 			failedNode.PlacementMetrics.Fail(sbxRequest.GetSandbox().GetSandboxId())
+@@ -215,3 +235,44 @@ func placeSandbox(
+ 
+ 	return failed(SandboxCreateError{Attempts: attempt, LastErr: lastCreateErr})
+ }
++
++func waitForResourceExhaustedRetry(ctx context.Context, sandboxID string, refusal int) bool {
++	timer := time.NewTimer(resourceExhaustedRetryDelay(sandboxID, refusal))
++	defer timer.Stop()
++
++	select {
++	case <-ctx.Done():
++		return false
++	case <-timer.C:
++		return true
++	}
++}
++
++// resourceExhaustedRetryDelay applies deterministic per-sandbox jitter to a
++// capped exponential backoff. This prevents a single exhausted node from
++// turning placement into a CPU and log hot loop while avoiding a synchronized
++// retry wave from callers that arrived together.
++func resourceExhaustedRetryDelay(sandboxID string, refusal int) time.Duration {
++	if refusal < 1 {
++		refusal = 1
++	}
++
++	delay := resourceExhaustedBackoffInitial
++	for i := 1; i < refusal && delay < resourceExhaustedBackoffMax; i++ {
++		delay *= 2
++		if delay > resourceExhaustedBackoffMax {
++			delay = resourceExhaustedBackoffMax
++		}
++	}
++
++	hash := fnv.New64a()
++	_, _ = hash.Write([]byte(sandboxID))
++	var refusalBytes [8]byte
++	for i := range refusalBytes {
++		refusalBytes[i] = byte(uint64(refusal) >> (8 * i))
++	}
++	_, _ = hash.Write(refusalBytes[:])
++
++	half := delay / 2
++	return half + time.Duration(hash.Sum64()%uint64(half+1))
++}
+diff --git a/packages/api/internal/orchestrator/placement/resource_exhausted_backoff_test.go b/packages/api/internal/orchestrator/placement/resource_exhausted_backoff_test.go
+new file mode 100644
+index 00000000..2407ba84
+--- /dev/null
++++ b/packages/api/internal/orchestrator/placement/resource_exhausted_backoff_test.go
+@@ -0,0 +1,74 @@
++package placement
++
++import (
++	"context"
++	"sync/atomic"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++
++	"github.com/e2b-dev/infra/packages/api/internal/api"
++	"github.com/e2b-dev/infra/packages/api/internal/orchestrator/nodemanager"
++)
++
++func TestResourceExhaustedRetryDelayIsPositiveBoundedAndJittered(t *testing.T) {
++	t.Parallel()
++
++	for _, refusal := range []int{0, 1, 2, 3, 8, 64} {
++		delay := resourceExhaustedRetryDelay("sbx-a", refusal)
++		require.Positive(t, delay)
++		require.LessOrEqual(t, delay, resourceExhaustedBackoffMax)
++	}
++
++	require.NotEqual(t,
++		resourceExhaustedRetryDelay("sbx-a", 3),
++		resourceExhaustedRetryDelay("sbx-b", 3),
++	)
++}
++
++func TestResourceExhaustedRetryStopsOnCancellation(t *testing.T) {
++	t.Parallel()
++
++	ctx, cancel := context.WithCancel(t.Context())
++	cancel()
++	require.False(t, waitForResourceExhaustedRetry(ctx, "sbx-cancelled", 64))
++}
++
++func TestResourceExhaustedPlacementDoesNotHotSpin(t *testing.T) {
++	t.Parallel()
++
++	ctx, cancel := context.WithCancel(t.Context())
++	defer cancel()
++
++	var calls atomic.Int64
++	node := nodemanager.NewTestNode("node-exhausted", api.NodeStatusReady, 0, 8)
++	node.SetSandboxClient(&nodemanager.MockSandboxClientCustom{CreateFunc: func() error {
++		calls.Add(1)
++
++		return status.Error(codes.ResourceExhausted, "no start capacity")
++	}})
++	algorithm := stubAlgorithm{choose: func(map[string]struct{}) (*nodemanager.Node, error) {
++		return node, nil
++	}}
++	waits := 0
++	waitForRetry := func(_ context.Context, sandboxID string, refusal int) bool {
++		waits++
++		require.Equal(t, "sbx-exhausted", sandboxID)
++		require.Equal(t, waits, refusal)
++		if refusal == 3 {
++			cancel()
++
++			return false
++		}
++
++		return true
++	}
++	result, err := placeSandboxWithResourceExhaustedWait(ctx, algorithm, []*nodemanager.Node{node}, node, testSbxRequest("sbx-exhausted"), CPURequirement{}, FeatureRequirement{}, false, nil, waitForRetry)
++	require.Error(t, err)
++	require.True(t, result.TimedOut)
++	require.Nil(t, result.WarmedNode)
++	require.Equal(t, int64(3), calls.Load(), "every refusal must pass through the bounded waiter")
++	require.Equal(t, 3, waits)
++}
+diff --git a/packages/orchestrator/pkg/cfg/model.go b/packages/orchestrator/pkg/cfg/model.go
+index 5b101eb2..303edcfa 100644
+--- a/packages/orchestrator/pkg/cfg/model.go
++++ b/packages/orchestrator/pkg/cfg/model.go
+@@ -89,6 +89,7 @@ type Config struct {
+ 	GRPCPort                            uint16            `env:"GRPC_PORT"                     envDefault:"5008"`
+ 	InstanceGroupName                   string            `env:"INSTANCE_GROUP_NAME"`
+ 	LocalUploadBaseURL                  string            `env:"LOCAL_UPLOAD_BASE_URL"`
++	MaxStartingInstancesPerNode         int               `env:"MAX_STARTING_INSTANCES_PER_NODE"             envDefault:"0"`
+ 	NodeIP                              string            `env:"NODE_IP"                       envDefault:"localhost"`
+ 	NodeLabels                          []string          `env:"NODE_LABELS"                   envSeparator:","`
+ 	OrchestratorLockPath                string            `env:"ORCHESTRATOR_LOCK_PATH"        envDefault:"/orchestrator.lock"`
+@@ -175,6 +176,9 @@ func Parse() (Config, error) {
+ 	if config.BuildCacheDiskUsageHighWaterPercent < 1 || config.BuildCacheDiskUsageHighWaterPercent > 100 {
+ 		return config, fmt.Errorf("BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100")
+ 	}
++	if config.MaxStartingInstancesPerNode < 0 {
++		return config, fmt.Errorf("MAX_STARTING_INSTANCES_PER_NODE must be non-negative")
++	}
+ 
+ 	bc := config.BuilderConfig
+ 	if err = makePathsAbsolute(&bc); err != nil {
+diff --git a/packages/orchestrator/pkg/cfg/model_test.go b/packages/orchestrator/pkg/cfg/model_test.go
+index be693ed9..b8524eba 100644
+--- a/packages/orchestrator/pkg/cfg/model_test.go
++++ b/packages/orchestrator/pkg/cfg/model_test.go
+@@ -82,6 +82,29 @@ func TestParse(t *testing.T) {
+ 		assert.Equal(t, 100, config.BuildCacheDiskUsageHighWaterPercent)
+ 	})
+ 
++	t.Run("local starting limit defaults to feature flag control", func(t *testing.T) {
++		config, err := Parse()
++		require.NoError(t, err)
++
++		assert.Zero(t, config.MaxStartingInstancesPerNode)
++	})
++
++	t.Run("local starting limit accepts a positive override", func(t *testing.T) {
++		t.Setenv("MAX_STARTING_INSTANCES_PER_NODE", "16")
++
++		config, err := Parse()
++		require.NoError(t, err)
++
++		assert.Equal(t, 16, config.MaxStartingInstancesPerNode)
++	})
++
++	t.Run("local starting limit rejects negative values", func(t *testing.T) {
++		t.Setenv("MAX_STARTING_INSTANCES_PER_NODE", "-1")
++
++		_, err := Parse()
++		require.ErrorContains(t, err, "MAX_STARTING_INSTANCES_PER_NODE must be non-negative")
++	})
++
+ 	t.Run("build cache policy accepts bounded overrides", func(t *testing.T) {
+ 		t.Setenv("BUILD_CACHE_TTL", "4h")
+ 		t.Setenv("BUILD_CACHE_MAX_BYTES", "34359738368")
+diff --git a/packages/orchestrator/pkg/server/main.go b/packages/orchestrator/pkg/server/main.go
+index 59516258..9de0c2ef 100644
+--- a/packages/orchestrator/pkg/server/main.go
++++ b/packages/orchestrator/pkg/server/main.go
+@@ -127,7 +127,7 @@ func New(ctx context.Context, cfg ServiceConfig) (*Server, error) {
+ 	)
+ 	go uploadedBuilds.Start()
+ 
+-	startingLimit := cfg.FeatureFlags.IntFlag(ctx, featureflags.MaxStartingInstancesPerNode)
++	startingLimit := resolveStartingSandboxesLimit(ctx, cfg.Config, cfg.FeatureFlags)
+ 	startingSandboxes, err := utils.NewAdjustableSemaphore(int64(startingLimit))
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to create starting sandboxes semaphore: %w", err)
+@@ -423,6 +423,12 @@ func (s *Server) waitSandboxLifecycles(ctx context.Context) error {
+ }
+ 
+ func (s *Server) refreshStartingSandboxesLimit(ctx context.Context) {
++	// A non-zero local limit is an operator-owned capacity boundary. Do not let
++	// a remote feature-flag refresh silently resize it after the node starts.
++	if s.config.MaxStartingInstancesPerNode > 0 {
++		return
++	}
++
+ 	ticker := time.NewTicker(startingSandboxesLimitRefreshInterval)
+ 	defer ticker.Stop()
+ 
+@@ -444,6 +450,14 @@ func (s *Server) refreshStartingSandboxesLimit(ctx context.Context) {
+ 	}
+ }
+ 
++func resolveStartingSandboxesLimit(ctx context.Context, config cfg.Config, flags *featureflags.Client) int {
++	if config.MaxStartingInstancesPerNode > 0 {
++		return config.MaxStartingInstancesPerNode
++	}
++
++	return flags.IntFlag(ctx, featureflags.MaxStartingInstancesPerNode)
++}
++
+ func (s *Server) updateMaxSandboxesLimit(ctx context.Context) {
+ 	s.info.MaxSandboxes.Store(int64(s.featureFlags.IntFlag(ctx, featureflags.MaxSandboxesPerNode)))
+ }
+diff --git a/packages/orchestrator/pkg/server/starting_sandbox_limit_test.go b/packages/orchestrator/pkg/server/starting_sandbox_limit_test.go
+new file mode 100644
+index 00000000..14b28ba0
+--- /dev/null
++++ b/packages/orchestrator/pkg/server/starting_sandbox_limit_test.go
+@@ -0,0 +1,64 @@
++//go:build linux
++
++package server
++
++import (
++	"context"
++	"testing"
++	"testing/synctest"
++	"time"
++
++	"github.com/launchdarkly/go-sdk-common/v3/ldvalue"
++	"github.com/launchdarkly/go-server-sdk/v7/testhelpers/ldtestdata"
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
++	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
++	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
++)
++
++func TestResolveStartingSandboxesLimitPreservesFeatureFlagDefault(t *testing.T) {
++	t.Parallel()
++
++	source := ldtestdata.DataSource()
++	source.Update(source.Flag(featureflags.MaxStartingInstancesPerNode.Key()).ValueForAll(ldvalue.Int(3)))
++	flags, err := featureflags.NewClientWithDatasource(source)
++	require.NoError(t, err)
++	t.Cleanup(func() { require.NoError(t, flags.Close(context.WithoutCancel(t.Context()))) })
++
++	require.Equal(t, 3, resolveStartingSandboxesLimit(t.Context(), cfg.Config{}, flags))
++	require.Equal(t, 16, resolveStartingSandboxesLimit(t.Context(), cfg.Config{MaxStartingInstancesPerNode: 16}, flags))
++}
++
++func TestLocalStartingSandboxesLimitIsNotRemotelyResized(t *testing.T) {
++	t.Parallel()
++
++	synctest.Test(t, func(t *testing.T) {
++		source := ldtestdata.DataSource()
++		source.Update(source.Flag(featureflags.MaxStartingInstancesPerNode.Key()).ValueForAll(ldvalue.Int(1)))
++		flags, err := featureflags.NewClientWithDatasource(source)
++		require.NoError(t, err)
++		t.Cleanup(func() { require.NoError(t, flags.Close(context.WithoutCancel(t.Context()))) })
++
++		startingSandboxes, err := utils.NewAdjustableSemaphore(4)
++		require.NoError(t, err)
++		server := &Server{
++			config:            cfg.Config{MaxStartingInstancesPerNode: 4},
++			featureFlags:      flags,
++			startingSandboxes: startingSandboxes,
++			done:              make(chan struct{}),
++		}
++		go server.refreshStartingSandboxesLimit(t.Context())
++		synctest.Wait()
++
++		source.Update(source.Flag(featureflags.MaxStartingInstancesPerNode.Key()).ValueForAll(ldvalue.Int(32)))
++		time.Sleep(2 * startingSandboxesLimitRefreshInterval)
++		synctest.Wait()
++
++		for range 4 {
++			require.True(t, server.startingSandboxes.TryAcquire(1))
++		}
++		require.False(t, server.startingSandboxes.TryAcquire(1))
++		server.startingSandboxes.Release(4)
++	})
++}

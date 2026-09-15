@@ -13,6 +13,7 @@ CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
 MAX_ACTIVE_SANDBOXES_TOTAL=${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
 MIN_READY_NETWORK_SLOTS=${BREZEL_MIN_READY_NETWORK_SLOTS:-32}
+ENGINE_MAX_STARTING_SANDBOXES=${BREZEL_ENGINE_MAX_STARTING_SANDBOXES:-8}
 
 if [ ! -s "$TOKEN_FILE" ]; then
   echo "runtime service token is missing; run install.sh first" >&2
@@ -279,6 +280,7 @@ run_engine_fast_path_qualification() {
   cli exec "$ACTIVE_SANDBOX_ID" /bin/true >/dev/null
   engine_sandbox_id=$(resolve_engine_sandbox_id "$ACTIVE_SANDBOX_ID")
   min_network_slots=$MIN_READY_NETWORK_SLOTS
+  max_starting_sandboxes=$ENGINE_MAX_STARTING_SANDBOXES
 
   capacity_json=$("$CAPACITY_PROBE" live)
   engine_capacity_json=$(engine_compose exec -T \
@@ -286,7 +288,7 @@ run_engine_fast_path_qualification() {
     postgres sh -s -- verify < "$ENGINE_CAPACITY_PROBE")
 
   if ! capability_json=$(engine_compose exec -T orchestrator \
-    nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" \
+    nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" "$max_starting_sandboxes" \
     < "$ENGINE_CAPABILITY_PROBE"); then
     echo "the installed engine did not satisfy the live fast-path contract" >&2
     return 1

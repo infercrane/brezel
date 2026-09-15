@@ -26,6 +26,7 @@ GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}
 HUGEPAGES=${BREZEL_ENGINE_HUGEPAGES:-9216}
 MAX_ACTIVE_TOTAL=${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
 MAX_ACTIVE_PROJECT=${BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT:-32}
+MAX_STARTING_SANDBOXES=${BREZEL_ENGINE_MAX_STARTING_SANDBOXES:-8}
 HEADROOM_SANDBOXES=4
 MIN_SYSTEM_MEMORY_MIB=8192
 MAX_NETWORK_SLOTS=32
@@ -34,10 +35,13 @@ positive_integer "$GUEST_MEMORY_MIB" BREZEL_GUEST_MEMORY_MIB
 positive_integer "$HUGEPAGES" BREZEL_ENGINE_HUGEPAGES
 positive_integer "$MAX_ACTIVE_TOTAL" BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL
 positive_integer "$MAX_ACTIVE_PROJECT" BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT
+positive_integer "$MAX_STARTING_SANDBOXES" BREZEL_ENGINE_MAX_STARTING_SANDBOXES
 [ "$GUEST_MEMORY_MIB" -eq 512 ] || \
   fail "the bundled base environment requires BREZEL_GUEST_MEMORY_MIB=512"
 [ "$MAX_ACTIVE_PROJECT" -le "$MAX_ACTIVE_TOTAL" ] || \
   fail "the per-project active limit cannot exceed the host active limit"
+[ "$MAX_STARTING_SANDBOXES" -le "$MAX_ACTIVE_TOTAL" ] || \
+  fail "the local starting-sandbox limit cannot exceed the host active limit"
 [ "$MAX_ACTIVE_TOTAL" -le "$MAX_NETWORK_SLOTS" ] || \
   fail "the active limit cannot exceed the qualified $MAX_NETWORK_SLOTS-slot new-sandbox network pool"
 
@@ -77,4 +81,4 @@ case "$MODE" in
 esac
 
 printf '%s\n' \
-  "{\"capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"guest_memory_mib\":$GUEST_MEMORY_MIB,\"max_active_sandboxes\":$MAX_ACTIVE_TOTAL,\"max_active_sandboxes_per_project\":$MAX_ACTIVE_PROJECT,\"hugepages_2m\":$HUGEPAGES,\"required_hugepages_2m\":$required_hugepages,\"lifecycle_headroom_sandboxes\":$HEADROOM_SANDBOXES,\"system_memory_reserve_mib\":$MIN_SYSTEM_MEMORY_MIB,\"host_memory_mib\":$memory_total_mib}"
+  "{\"capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"guest_memory_mib\":$GUEST_MEMORY_MIB,\"max_active_sandboxes\":$MAX_ACTIVE_TOTAL,\"max_active_sandboxes_per_project\":$MAX_ACTIVE_PROJECT,\"max_starting_sandboxes\":$MAX_STARTING_SANDBOXES,\"hugepages_2m\":$HUGEPAGES,\"required_hugepages_2m\":$required_hugepages,\"lifecycle_headroom_sandboxes\":$HEADROOM_SANDBOXES,\"system_memory_reserve_mib\":$MIN_SYSTEM_MEMORY_MIB,\"host_memory_mib\":$memory_total_mib}"

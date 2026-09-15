@@ -72,6 +72,15 @@ check_source() {
     "func (m *Map) WaitLifecycle(ctx context.Context" "one-lifecycle cleanup completion tracking"
 
   require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"MAX_STARTING_INSTANCES_PER_NODE"' "the operator-owned concurrent-start limit"
+  require_literal "$source_root/packages/orchestrator/pkg/server/main.go" \
+    "resolveStartingSandboxesLimit" "the local concurrent-start limit resolver"
+  require_literal "$source_root/packages/api/internal/orchestrator/placement/placement.go" \
+    "resourceExhaustedRetryDelay" "bounded capacity-refusal retry backoff"
+  require_literal "$source_root/packages/api/internal/orchestrator/placement/config.go" \
+    "resourceExhaustedBackoffMax" "the capacity-refusal retry ceiling"
+
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
     'env:"BUILD_CACHE_TTL"' "the configurable snapshot-diff cache TTL"
   require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
     'env:"BUILD_CACHE_MAX_BYTES"' "the snapshot-diff cache byte high water"
@@ -110,7 +119,7 @@ check_source() {
   require_literal "$source_root/embed/compose/compose.yaml" \
     'NETWORK_VERSION: "1"' "the qualified network implementation"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"new":32,"reused":100},"nbd_pool":64,"network_version":1}'
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"new":32,"reused":100},"nbd_pool":64,"network_version":1}'
 }
 
 find_orchestrator_pid() {
@@ -215,6 +224,17 @@ check_live() {
   done
   [ -n "$orchestrator_pid" ] || fail "the host orchestrator process is not running"
   [ "$uffd_fd_observed" = true ] || fail "the orchestrator has no live userfaultfd descriptor"
+  expected_starting_limit=${3:-}
+  case "$expected_starting_limit" in
+    ""|*[!0-9]*) fail "the expected local starting-sandbox limit must be a positive integer" ;;
+  esac
+  [ "$expected_starting_limit" -gt 0 ] || fail "the expected local starting-sandbox limit must be greater than zero"
+  actual_starting_limit=$(process_environment_value "$orchestrator_pid" MAX_STARTING_INSTANCES_PER_NODE)
+  case "$actual_starting_limit" in
+    ""|*[!0-9]*) fail "the live local starting-sandbox limit is missing or malformed" ;;
+  esac
+  [ "$actual_starting_limit" -eq "$expected_starting_limit" ] || \
+    fail "the live local starting-sandbox limit is $actual_starting_limit; expected $expected_starting_limit"
   expected_orchestrator_sha256=$(tr '\000' '\n' < "/proc/$orchestrator_pid/environ" | \
     sed -n 's/^BREZEL_ENGINE_ORCHESTRATOR_SHA256=//p')
   printf '%s\n' "$expected_orchestrator_sha256" | grep -Eq '^[0-9a-f]{64}$' || \
@@ -280,7 +300,7 @@ check_live() {
   cache_policy_json=$(observe_cache_policy "$orchestrator_pid")
 
   printf '%s\n' \
-    "{\"live_contract\":\"conformant\",\"snapshot_restore\":\"observed\",\"lazy_paging\":\"observed\",\"template_prefetch\":\"usable_mapping_observed\",\"cow_rootfs\":\"observed\",\"local_template_cache\":\"observed\",\"snapshot_diff_cache\":$cache_policy_json,\"nbd_pool\":64,\"network_version\":1,\"ready_network_namespaces\":$network_slots,\"minimum_ready_network_namespaces\":$min_network_slots}"
+    "{\"live_contract\":\"conformant\",\"snapshot_restore\":\"observed\",\"lazy_paging\":\"observed\",\"template_prefetch\":\"usable_mapping_observed\",\"cow_rootfs\":\"observed\",\"local_template_cache\":\"observed\",\"max_starting_sandboxes\":$actual_starting_limit,\"snapshot_diff_cache\":$cache_policy_json,\"nbd_pool\":64,\"network_version\":1,\"ready_network_namespaces\":$network_slots,\"minimum_ready_network_namespaces\":$min_network_slots}"
 }
 
 check_cache() {
@@ -303,7 +323,7 @@ case "${1:-}" in
     check_cache
     ;;
   *)
-    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID [MIN_READY_NETWORK_SLOTS] | cache" >&2
+    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID MIN_READY_NETWORK_SLOTS MAX_STARTING_SANDBOXES | cache" >&2
     exit 2
     ;;
 esac

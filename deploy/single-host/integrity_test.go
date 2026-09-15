@@ -33,6 +33,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"orchestrator_lifecycle_patch_sha256":      "0003-acknowledge-delete-after-sandbox-teardown.patch",
 		"orchestrator_cache_patch_sha256":          "0004-bound-snapshot-diff-cache.patch",
 		"orchestrator_nfs_durability_patch_sha256": "0005-make-nfs-writes-crash-durable.patch",
+		"engine_start_admission_patch_sha256":      "0006-bound-start-admission-retries.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -267,6 +268,8 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 		t.Fatalf("default capacity plan failed: %v: %s", err, output)
 	} else if !strings.Contains(string(output), `"required_hugepages_2m":9216`) {
 		t.Fatalf("capacity plan did not bind quota to lifecycle headroom: %s", output)
+	} else if !strings.Contains(string(output), `"max_starting_sandboxes":8`) {
+		t.Fatalf("capacity plan did not emit the local starting-sandbox limit: %s", output)
 	}
 	if output, err := run("live"); err != nil {
 		t.Fatalf("live capacity contract failed: %v: %s", err, output)
@@ -280,6 +283,14 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 		t.Fatalf("capacity contract accepted more active guests than qualified network slots: %s", output)
 	} else if !strings.Contains(string(output), "32-slot") {
 		t.Fatalf("network capacity failure was unclear: %s", output)
+	}
+	if output, err := run("plan", "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=4", "BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=4"); err == nil {
+		t.Fatalf("capacity contract accepted a starting limit above the active limit: %s", output)
+	} else if !strings.Contains(string(output), "starting-sandbox limit cannot exceed") {
+		t.Fatalf("starting-limit capacity failure was unclear: %s", output)
+	}
+	if output, err := run("plan", "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=4", "BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=4", "BREZEL_ENGINE_MAX_STARTING_SANDBOXES=4", "BREZEL_ENGINE_HUGEPAGES=2048"); err != nil {
+		t.Fatalf("capacity contract rejected a coherent four-sandbox profile: %v: %s", err, output)
 	}
 }
 
@@ -609,7 +620,10 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(network.NewSlotsPoolSize, network.ReusedSlotsPoolSize\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
 		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
-		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
+		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
+		"packages/orchestrator/pkg/server/main.go":                            "resolveStartingSandboxesLimit\n",
+		"packages/api/internal/orchestrator/placement/placement.go":           "resourceExhaustedRetryDelay\n",
+		"packages/api/internal/orchestrator/placement/config.go":              "resourceExhaustedBackoffMax\n",
 		"packages/orchestrator/pkg/sandbox/build/cache.go":                    "func allocatedBytes(path string)\ncachePressureObservationFailed\ncachePressureAllocatedBytes\norchestrator.build.cache.pressure_evictions\n",
 		"packages/orchestrator/pkg/sandbox/template/cache.go":                 "config.BuildCacheTTL\n",
 		"packages/orchestrator/pkg/nfsproxy/chroot/file.go":                   "syncing NFS write\nsyncing NFS truncate\n",
@@ -668,7 +682,7 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 	for _, required := range []string{
 		"run_engine_fast_path_qualification",
 		"resolve_engine_sandbox_id",
-		`/bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots"`,
+		`/bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" "$max_starting_sandboxes"`,
 		"engine_fast_path_conformant",
 	} {
 		if !strings.Contains(qualification, required) {
@@ -704,6 +718,10 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"syncing NFS truncate",
 		"syncDirectoryTree",
 		"fsync_before_success",
+		"MAX_STARTING_INSTANCES_PER_NODE",
+		"resourceExhaustedRetryDelay",
+		"resourceExhaustedBackoffMax",
+		"max_starting_sandboxes",
 	} {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("engine capability probe is missing %q", required)
@@ -742,6 +760,67 @@ func TestInstallerPinsAndAttestsNFSDurabilityPatch(t *testing.T) {
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("distribution manifest writer is missing NFS durability identity %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsAndValidatesStartAdmissionPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0006-bound-start-admission-retries.patch",
+		"engine_start_admission_patch_sha256",
+		"BREZEL_ENGINE_MAX_STARTING_SANDBOXES:-8",
+		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_START_ADMISSION_PATCH"`,
+		`"$ENGINE_NFS_DURABILITY_PATCH_SHA256" "$ENGINE_START_ADMISSION_PATCH_SHA256"`,
+		"engine start-admission patch verification failed",
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing start-admission invariant %q", required)
+		}
+	}
+
+	overrideData, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override := string(overrideData); !strings.Contains(override, "MAX_STARTING_INSTANCES_PER_NODE: ${BREZEL_ENGINE_MAX_STARTING_SANDBOXES:") {
+		t.Fatal("engine override does not pass the operator-owned starting-sandbox limit")
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.engine.start_admission_patch_sha256",
+		"artifact.orchestrator.start_admission=operator-pinned-local-limit",
+		"artifact.api.capacity_retry=capped-exponential-backoff-with-jitter",
+		"the start-admission patch requires the NFS durability patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("distribution manifest writer is missing start-admission identity %q", required)
+		}
+	}
+
+	probeData, err := os.ReadFile("engine-capabilities.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := string(probeData)
+	for _, required := range []string{
+		`env:"MAX_STARTING_INSTANCES_PER_NODE"`,
+		"resolveStartingSandboxesLimit",
+		"resourceExhaustedRetryDelay",
+		"resourceExhaustedBackoffMax",
+		"actual_starting_limit",
+	} {
+		if !strings.Contains(probe, required) {
+			t.Fatalf("engine capability probe is missing start-admission contract %q", required)
 		}
 	}
 }

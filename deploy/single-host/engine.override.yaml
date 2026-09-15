@@ -138,6 +138,10 @@ services:
       BUILD_CACHE_TTL: ${BREZEL_BUILD_CACHE_TTL:?set the audited build cache TTL}
       BUILD_CACHE_MAX_BYTES: ${BREZEL_BUILD_CACHE_MAX_BYTES:?set the audited build cache byte high water}
       BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT: ${BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT:?set the audited build cache disk high water}
+      # Keep concurrent VM starts within the locally qualified host envelope.
+      # An explicit value is operator-owned and is not replaced by a remote
+      # feature-flag refresh.
+      MAX_STARTING_INSTANCES_PER_NODE: ${BREZEL_ENGINE_MAX_STARTING_SANDBOXES:?set the audited local starting-sandbox limit}
       # The upstream launcher enters the host mount namespace before starting
       # the orchestrator. Pass the protected absolute host path rather than a
       # container mount target. The engine exposes workspace contents only
