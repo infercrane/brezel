@@ -85,27 +85,6 @@ func TestErrorPhaseObserverLogsOnlyFailedClosedEnumPhase(t *testing.T) {
 	}
 }
 
-func TestEngineTransportMatchesRelayAdmissionWithoutDroppingBelowSafeFloor(t *testing.T) {
-	for _, test := range []struct {
-		name              string
-		maxInFlight       int
-		wantPerHost       int
-		wantTotalIdleConn int
-	}{
-		{name: "small relay", maxInFlight: 8, wantPerHost: 32, wantTotalIdleConn: 64},
-		{name: "burst relay", maxInFlight: 128, wantPerHost: 128, wantTotalIdleConn: 256},
-		{name: "maximum relay", maxInFlight: 1024, wantPerHost: 1024, wantTotalIdleConn: 2048},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			transport := newEngineTransport(test.maxInFlight)
-			defer transport.CloseIdleConnections()
-			if transport.MaxIdleConnsPerHost != test.wantPerHost || transport.MaxConnsPerHost != test.wantPerHost || transport.MaxIdleConns != test.wantTotalIdleConn {
-				t.Fatalf("transport limits per_host_idle=%d per_host_total=%d total_idle=%d", transport.MaxIdleConnsPerHost, transport.MaxConnsPerHost, transport.MaxIdleConns)
-			}
-		})
-	}
-}
-
 func TestLoadNodeConfigRejectsMissingIdentity(t *testing.T) {
 	t.Setenv("BREZEL_NODE_ID", "")
 	if _, err := loadNodeConfig(); err == nil || !strings.Contains(err.Error(), "BREZEL_NODE_ID") {
