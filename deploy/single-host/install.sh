@@ -242,7 +242,7 @@ docker build \
 mkdir -p "$INSTALL_DIR/artifacts"
 chmod 700 "$INSTALL_DIR/artifacts"
 ORCHESTRATOR_ARTIFACT_TMP=$(mktemp -d "$INSTALL_DIR/orchestrator-artifact.XXXXXX")
-ORCHESTRATOR_BUILD_CONTAINER=$(docker create "$BREZEL_ENGINE_ORCHESTRATOR_IMAGE")
+ORCHESTRATOR_BUILD_CONTAINER=$(docker create --entrypoint /orchestrator "$BREZEL_ENGINE_ORCHESTRATOR_IMAGE")
 docker cp "$ORCHESTRATOR_BUILD_CONTAINER:/orchestrator" "$ORCHESTRATOR_ARTIFACT_TMP/orchestrator"
 docker rm "$ORCHESTRATOR_BUILD_CONTAINER" >/dev/null
 ORCHESTRATOR_BUILD_CONTAINER=

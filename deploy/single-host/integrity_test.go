@@ -316,6 +316,7 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		"ENGINE_ORCHESTRATOR_PATCH",
 		"BREZEL_ENGINE_ORCHESTRATOR_IMAGE",
 		"BREZEL_ENGINE_ORCHESTRATOR_SHA256",
+		"docker create --entrypoint /orchestrator",
 		"brezel-orchestrator-install",
 	} {
 		if !strings.Contains(installer, required) {
