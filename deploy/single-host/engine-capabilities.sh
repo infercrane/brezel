@@ -71,6 +71,29 @@ check_source() {
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/map.go" \
     "func (m *Map) WaitLifecycle(ctx context.Context" "one-lifecycle cleanup completion tracking"
 
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"BUILD_CACHE_TTL"' "the configurable snapshot-diff cache TTL"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"BUILD_CACHE_MAX_BYTES"' "the snapshot-diff cache byte high water"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT"' "the local disk high water"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'BUILD_CACHE_TTL must be at least 1h' "the safe cache TTL floor"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'BUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB' "the safe cache byte-bound floor"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100' "the cache disk high-water validation"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/template/cache.go" \
+    'config.BuildCacheTTL' "the configured TTL at diff-store construction"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/build/cache.go" \
+    'func allocatedBytes(path string)' "physical-block cache accounting"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/build/cache.go" \
+    'cachePressureObservationFailed' "fail-closed cache observation"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/build/cache.go" \
+    'cachePressureAllocatedBytes' "absolute cache pressure"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/build/cache.go" \
+    'orchestrator.build.cache.pressure_evictions' "cache pressure eviction metrics"
+
   require_literal "$source_root/embed/compose/compose.yaml" \
     'TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates' "local template artifact storage"
   require_literal "$source_root/embed/compose/compose.yaml" \
@@ -78,7 +101,60 @@ check_source() {
   require_literal "$source_root/embed/compose/compose.yaml" \
     'NETWORK_VERSION: "1"' "the qualified network implementation"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","network_slot_pool":{"new":32,"reused":100},"nbd_pool":64,"network_version":1}'
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"new":32,"reused":100},"nbd_pool":64,"network_version":1}'
+}
+
+find_orchestrator_pid() {
+  for process in /proc/[0-9]*; do
+    [ -r "$process/comm" ] || continue
+    [ "$(tr -d '\r\n' < "$process/comm")" = "orchestrator" ] || continue
+    printf '%s\n' "${process#/proc/}"
+    return 0
+  done
+  return 1
+}
+
+process_environment_value() {
+  process_id=$1
+  key=$2
+  tr '\000' '\n' < "/proc/$process_id/environ" | sed -n "s/^${key}=//p"
+}
+
+observe_cache_policy() {
+  process_id=$1
+  cache_ttl=$(process_environment_value "$process_id" BUILD_CACHE_TTL)
+  cache_max_bytes=$(process_environment_value "$process_id" BUILD_CACHE_MAX_BYTES)
+  disk_high_water=$(process_environment_value "$process_id" BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT)
+
+  case "$cache_ttl" in
+    *h)
+      cache_ttl_hours=${cache_ttl%h}
+      case "$cache_ttl_hours" in ""|*[!0-9]*) fail "the live cache TTL is malformed" ;; esac
+      [ "$cache_ttl_hours" -ge 1 ] && [ "$cache_ttl_hours" -le 168 ] || \
+        fail "the live cache TTL is outside the qualified 1h to 168h range"
+      ;;
+    *) fail "the live cache TTL is not a whole number of hours" ;;
+  esac
+  case "$cache_max_bytes" in ""|*[!0-9]*) fail "the live cache byte high water is malformed" ;; esac
+  [ "$cache_max_bytes" -ge 1073741824 ] || fail "the live cache byte high water is below 1 GiB"
+  case "$disk_high_water" in ""|*[!0-9]*) fail "the live disk high water is malformed" ;; esac
+  [ "$disk_high_water" -ge 50 ] && [ "$disk_high_water" -le 90 ] || \
+    fail "the live disk high water is outside the qualified 50 to 90 percent range"
+
+  cache_root=/orchestrator/build
+  [ -d "$cache_root" ] || fail "the live snapshot-diff cache directory is missing"
+  cache_allocated_bytes=$(du -sx -B1 "$cache_root" | awk 'NR == 1 {print $1}')
+  cache_file_count=$(find "$cache_root" -type f | wc -l | tr -d ' ')
+  set -- $(df -P -B1 "$cache_root" | awk 'NR == 2 {print $2, $3, $4}')
+  disk_total_bytes=$1
+  disk_used_bytes=$2
+  disk_available_bytes=$3
+  for observed_number in "$cache_allocated_bytes" "$cache_file_count" "$disk_total_bytes" "$disk_used_bytes" "$disk_available_bytes"; do
+    case "$observed_number" in ""|*[!0-9]*) fail "the live cache storage observation is malformed" ;; esac
+  done
+
+  printf '%s\n' \
+    "{\"ttl\":\"$cache_ttl\",\"max_allocated_bytes\":$cache_max_bytes,\"disk_usage_high_water_percent\":$disk_high_water,\"observed\":{\"allocated_bytes\":$cache_allocated_bytes,\"file_count\":$cache_file_count,\"disk_total_bytes\":$disk_total_bytes,\"disk_used_bytes\":$disk_used_bytes,\"disk_available_bytes\":$disk_available_bytes}}"
 }
 
 has_nonempty_prefetch() {
@@ -192,8 +268,15 @@ check_live() {
   [ -n "$prefetch_metadata" ] || \
     fail "no usable memory prefetch mapping was produced; upstream template optimization is best effort"
 
+  cache_policy_json=$(observe_cache_policy "$orchestrator_pid")
+
   printf '%s\n' \
-    "{\"live_contract\":\"conformant\",\"snapshot_restore\":\"observed\",\"lazy_paging\":\"observed\",\"template_prefetch\":\"usable_mapping_observed\",\"cow_rootfs\":\"observed\",\"local_template_cache\":\"observed\",\"nbd_pool\":64,\"network_version\":1,\"ready_network_namespaces\":$network_slots,\"minimum_ready_network_namespaces\":$min_network_slots}"
+    "{\"live_contract\":\"conformant\",\"snapshot_restore\":\"observed\",\"lazy_paging\":\"observed\",\"template_prefetch\":\"usable_mapping_observed\",\"cow_rootfs\":\"observed\",\"local_template_cache\":\"observed\",\"snapshot_diff_cache\":$cache_policy_json,\"nbd_pool\":64,\"network_version\":1,\"ready_network_namespaces\":$network_slots,\"minimum_ready_network_namespaces\":$min_network_slots}"
+}
+
+check_cache() {
+  orchestrator_pid=$(find_orchestrator_pid) || fail "the host orchestrator process is not running"
+  observe_cache_policy "$orchestrator_pid"
 }
 
 case "${1:-}" in
@@ -205,8 +288,13 @@ case "${1:-}" in
     shift
     check_live "$@"
     ;;
+  cache)
+    shift
+    [ "$#" -eq 0 ] || fail "cache mode accepts no arguments"
+    check_cache
+    ;;
   *)
-    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID [MIN_READY_NETWORK_SLOTS]" >&2
+    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID [MIN_READY_NETWORK_SLOTS] | cache" >&2
     exit 2
     ;;
 esac

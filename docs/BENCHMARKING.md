@@ -84,6 +84,21 @@ The benchmark does not clear caches. `cold`, `cached-template`, `warm-pool`, and
 `unknown` are explicit operator declarations. A cold-cache report must document
 the external reset procedure; changing the label alone does not make a run cold.
 
+Snapshot diffs under `/orchestrator/build` are a recoverable performance cache,
+not a durable workspace or template store. The single-host distribution defaults
+to a 4 hour TTL, a 32 GiB physical-allocation high water, and a 70 percent local
+filesystem high water. Operators may set these before installation with
+`BREZEL_BUILD_CACHE_TTL`, `BREZEL_BUILD_CACHE_MAX_BYTES`, and
+`BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT`. The supported installer
+range is 1 to 168 whole hours, at least 1 GiB, and 50 to 90 percent respectively.
+
+The byte high water is deliberately soft. Active and unsealed diffs cannot be
+evicted without violating sandbox correctness, one large entry can cross the
+limit, and deletion is delayed for 60 seconds so current readers can finish.
+Physical accounting uses allocated filesystem blocks, making it sparse-file
+aware; shared reflink extents may be conservatively counted more than once.
+Cache eviction therefore protects capacity without promising a hard disk quota.
+
 ## Run the matrix
 
 First complete `make qualify-single-host` on an otherwise dedicated Ubuntu
@@ -142,6 +157,9 @@ Each invocation creates a new timestamped directory under
 TARGET-TIMESTAMP/
   STATUS
   project-preflight.json
+  project-postflight.json
+  engine-cache-before.json
+  engine-cache-after.json
   host-before.json
   host-after.json
   cases.ndjson
@@ -158,6 +176,22 @@ TARGET-TIMESTAMP/
 The project preflight records only the project name, non-terminal resource
 counts, request IDs, timestamp, and pass/fail result. It omits resource IDs and
 fails the matrix before environment creation when either count is nonzero.
+The postflight repeats the same authenticated inventory after every matrix cell
+and its cleanup have completed. A missing, malformed, or non-empty postflight
+fails the complete matrix even if every individual attempt reported cleanup.
+
+The engine-cache records capture the effective TTL and high waters plus
+content-free physical allocation, file count, and containing-filesystem totals
+before and after the matrix. A missing, malformed, or out-of-policy observation
+fails the benchmark. They do not contain paths below the cache root, filenames,
+sandbox identifiers, or file contents.
+
+The patched orchestrator also publishes content-free OpenTelemetry instruments
+for allocated and effective cache bytes, available filesystem bytes, pressure
+evictions by reason, and allocation-observation failures under the
+`orchestrator.build.cache.*` namespace. Alert on repeated observation failures
+or on pressure with no evictable entry; the latter means active or unsealed
+work is holding the recoverable cache above its high water.
 
 The host records intentionally omit hostname, IP addresses, machine serials,
 environment variables, tokens, command output, and customer content. They bind
@@ -171,6 +205,26 @@ hide an unfavorable cell. It stops immediately after unconfirmed cleanup or an
 invalid report because creating more resources would amplify an unknown leak.
 `STATUS` and `summary.json.outcome` are `passed` only when all 24 cells and all
 cleanup operations pass. Raw JSON and stderr are retained for failed runs.
+
+## Two independent-host qualification
+
+The [2026-09-15 qualification](QUALIFICATION-2026-09-15.md) ran two separately
+administered single-host deployments at revision
+`121d7c6952c5bbc0010c365817ef540a1efbaca6`. After simultaneous conformance, the
+coordinator launched cached-template `tti`, `filesystem-restore`, and
+`workspace-io` burst cases on both hosts. A paired case passed only when every
+requested sample and every resource cleanup succeeded on both hosts and the
+measurement windows overlapped.
+
+Those three paired cases are simultaneous independent-host observations. The
+two complete 24-cell per-host matrices later finished: Host B passed every cell
+and Host A failed the staggered and burst filesystem-restore cells. The dated
+report preserves the exact counts, selected latency observations, and diagnosis.
+Neither the paired cases nor the matrices replace the repeated-matrix promotion
+gate below or an independently operated provider benchmark. They do not measure
+a cluster, scheduling, automatic placement or failover, cross-host restore,
+replicated storage, high availability, or hostile shared multitenancy. Brezel
+makes no portable or competitive performance claim from this qualification.
 
 ## Before and after tuning
 

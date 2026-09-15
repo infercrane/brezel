@@ -4,27 +4,31 @@ Brezel optimizes for a small, dependable interface. Each milestone earns a
 larger operational claim through conformance, failure testing, and measurements.
 Dates do not authorize claims; evidence does.
 
-## 1. Publishable single-host developer preview
+## 1. Self-hosted private-tenant developer preview
 
 The user path is `new`, `run`, files, preview, stop, start, and delete.
 
-Build next:
+Delivered and qualified at revision
+`121d7c6952c5bbc0010c365817ef540a1efbaca6`:
 
-- package the implemented relay foundation as an out-of-process `brezel-node`
-- add explicit node enrollment plus certificate and signing-key rotation
-- reconcile API placement state with the protected node generation ledger
-- make command, file, and preview traffic bypass the durable API by default
-- safe node drain, restart, reconciliation, and cleanup
-- one-command installation on a fresh supported host
-- reproducible sequential, staggered, burst, reboot, and soak benchmarks
+- an out-of-process `brezel-node` with separate mTLS control and data listeners
+- generation-fenced route reconciliation between the API and node ledger
+- command, file, and preview traffic through the node relay by default
+- safe install drain, restart, reconciliation, and confirmed cleanup boundaries
+- one-command installation with pinned inputs and runtime attestation
+- destructive qualification on two separately administered single-host runtimes,
+  including simultaneous conformance and bounded crash-containment drills
 
-Exit gate:
+Remaining before a broader operational label:
 
-- all local unit, race, contract, and security-negative tests pass
-- two destructive qualification runs pass around an API restart
-- a node restart invalidates old capabilities and previews
-- failed and timed-out operations reach a known cleanup state
-- current-host p50, p95, p99, success rate, and raw attempts are published
+- explicit node enrollment plus online certificate and signing-key rotation
+- service-unit upgrade and rollback packaging
+- publication of the complete per-host 24-cell benchmark matrices
+- reproducible reboot, disk-full, interrupted-upgrade, and longer soak evidence
+
+Current label: **self-hosted private-tenant developer preview**. The paired-host
+qualification is evidence for two independent installations, not a cluster,
+automatic failover, or high availability.
 
 ## 2. Complete agent computer
 

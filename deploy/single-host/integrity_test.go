@@ -31,6 +31,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"api_patch_sha256":                    "0001-harden-volume-secrets-and-cleanup.patch",
 		"api_build_patch_sha256":              "0002-pin-api-build-images.patch",
 		"orchestrator_lifecycle_patch_sha256": "0003-acknowledge-delete-after-sandbox-teardown.patch",
+		"orchestrator_cache_patch_sha256":     "0004-bound-snapshot-diff-cache.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -565,6 +566,7 @@ func TestInstallerEnforcesOwnedArtifactBoundary(t *testing.T) {
 		"pull_policy: never", "BREZEL_ENGINE_ARTIFACT_BASE_URL",
 		"BREZEL_VM_OVERCOMMIT_MEMORY", "BREZEL_HOST_TUNING_SCRIPT",
 		"BREZEL_ENGINE_HUGEPAGES", "HUGEPAGES:",
+		"BUILD_CACHE_TTL", "BUILD_CACHE_MAX_BYTES", "BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT",
 		"brezel-orchestrator-install", "BREZEL_ENGINE_ORCHESTRATOR_BINARY",
 		"BREZEL_ENGINE_ORCHESTRATOR_SHA256",
 		"fetch-artifacts:\n        condition: service_completed_successfully",
@@ -606,6 +608,9 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(network.NewSlotsPoolSize, network.ReusedSlotsPoolSize\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
 		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
+		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
+		"packages/orchestrator/pkg/sandbox/build/cache.go":                    "func allocatedBytes(path string)\ncachePressureObservationFailed\ncachePressureAllocatedBytes\norchestrator.build.cache.pressure_evictions\n",
+		"packages/orchestrator/pkg/sandbox/template/cache.go":                 "config.BuildCacheTTL\n",
 		"embed/compose/compose.yaml":                                          "TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates\nNBD_POOL_SIZE: \"64\"\nNETWORK_VERSION: \"1\"\n",
 	}
 	for name, content := range files {
@@ -687,9 +692,91 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"/orchestrator/template/",
 		"/var/run/netns/ns-",
 		"no usable memory prefetch mapping was produced",
+		"BUILD_CACHE_TTL",
+		"BUILD_CACHE_MAX_BYTES",
+		"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT",
+		"orchestrator.build.cache.pressure_evictions",
+		"observation_failure",
 	} {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("engine capability probe is missing %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsAndValidatesSnapshotDiffCachePolicy(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0004-bound-snapshot-diff-cache.patch",
+		"orchestrator_cache_patch_sha256",
+		"BREZEL_BUILD_CACHE_TTL:-4h",
+		"BREZEL_BUILD_CACHE_MAX_BYTES:-34359738368",
+		"BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT:-70",
+		"BREZEL_BUILD_CACHE_TTL must be between 1h and 168h",
+		"BREZEL_BUILD_CACHE_MAX_BYTES must be at least 1073741824",
+		"BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 50 and 90",
+		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CACHE_PATCH"`,
+		`"$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$ENGINE_ORCHESTRATOR_PATCH_SHA256" "$ENGINE_CACHE_PATCH_SHA256"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing snapshot-diff cache invariant %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.cache_patch_sha256",
+		"artifact.orchestrator.snapshot_diff_cache=bounded-recoverable-cache",
+		"the cache patch requires the lifecycle patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("distribution manifest writer is missing cache-patch identity %q", required)
+		}
+	}
+}
+
+func TestBenchmarkCapturesSnapshotDiffCacheBeforeAndAfter(t *testing.T) {
+	data, err := os.ReadFile("benchmark.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	benchmark := string(data)
+	for _, required := range []string{
+		"capture_engine_cache",
+		"engine-cache-before.json",
+		"engine-cache-after.json",
+		`/bin/sh -s -- cache`,
+		"Benchmark cache-policy preflight failed before any environment or VM was created",
+	} {
+		if !strings.Contains(benchmark, required) {
+			t.Fatalf("benchmark is missing snapshot-diff cache evidence %q", required)
+		}
+	}
+}
+
+func TestBenchmarkRequiresEmptyProjectPostflight(t *testing.T) {
+	data, err := os.ReadFile("benchmark.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	benchmark := string(data)
+	for _, required := range []string{
+		"project-postflight.json",
+		"project-postflight.invalid",
+		"project_postflight_outcome=failed",
+		`$project_postflight_outcome == "passed"`,
+		`postflight:{project_inventory:"project-postflight.json",outcome:$project_postflight_outcome}`,
+	} {
+		if !strings.Contains(benchmark, required) {
+			t.Fatalf("benchmark is missing empty-project postflight invariant %q", required)
 		}
 	}
 }
@@ -702,7 +789,7 @@ func TestHostRebootDrillRequiresHonestStateAndWorkspaceRecovery(t *testing.T) {
 	drill := string(data)
 	for _, required := range []string{
 		"observed_state", "workspace_replacement", "host_reboot_workspace_recovery_conformant",
-		"durable workspace marker changed", "confirmed_cleanup",
+		"durable workspace marker changed", "confirmed_cleanup", "--ttl 3600", "failed|deleted",
 	} {
 		if !strings.Contains(drill, required) {
 			t.Fatalf("host reboot drill is missing %q", required)

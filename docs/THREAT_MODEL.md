@@ -15,10 +15,13 @@ another tenant, platform credentials, or control-plane integrity.
 | `shared-multitenant` | Mutually untrusted projects | Available only after dedicated conformance and external review |
 | `dedicated-accelerator` | One tenant with GPU or device access | Separate profile; no inherited shared-tenant claim |
 
-The repository currently provides a hardened single-host release candidate.
-Documentation and APIs may describe later profiles but must not label them
-qualified prematurely. Even the single-host profile is qualified only after
-the named Linux/KVM deployment passes the destructive workflow.
+The repository currently provides a self-hosted private-tenant developer
+preview. Documentation and APIs may describe later profiles but must not label
+them qualified prematurely. Revision
+`121d7c6952c5bbc0010c365817ef540a1efbaca6` completed the named Linux/KVM
+destructive workflow on two separately administered machines, each as an
+independent single-host deployment. That evidence does not qualify either later
+profile in the table above.
 
 ## Adversary capabilities
 
@@ -178,8 +181,11 @@ The system does not expose a public capability-minting endpoint, perform online
 certificate or signing-key rotation, enroll nodes dynamically, support terminal
 or WebSocket tunnels, or provide fleet failover. The packaged single-host
 profile does use the separately authenticated relay for command, file, and
-preview bytes. This wiring remains a release candidate until the integrated
-Linux/KVM restart and failure suite passes.
+preview bytes. At revision
+`121d7c6952c5bbc0010c365817ef540a1efbaca6`, this wiring passed integrated
+Linux/KVM conformance and controller/node-relay crash drills on two independent
+single-host deployments. The result does not qualify shared tenancy, fleet
+failover, or host availability.
 
 ## Checkpoint, restore, and fork boundary
 

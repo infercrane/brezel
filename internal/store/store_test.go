@@ -45,6 +45,29 @@ func TestFileStorePersistsAtomicallyAndScopesResources(t *testing.T) {
 	defer reopened.Close()
 }
 
+func TestUpdateRowsKeepsFileStoreWholeStateFallback(t *testing.T) {
+	s, err := OpenFile(privateTestPath(t, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sandbox := sqliteTestSandbox()
+	key := ScopedKey(sandbox.ProjectID, sandbox.ID)
+	if err := UpdateRows(s, MutationScope{Sandboxes: []string{key}}, func(state *State) error {
+		state.Sandboxes[key] = sandbox
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetSandbox(sandbox.ProjectID, sandbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, sandbox) {
+		t.Fatalf("fallback sandbox mismatch: %#v", got)
+	}
+}
+
 func TestFailedUpdateDoesNotMutateMemoryOrDisk(t *testing.T) {
 	path := privateTestPath(t, "state.json")
 	s, err := OpenFile(path)

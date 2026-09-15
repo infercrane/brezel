@@ -31,6 +31,7 @@ BASE_URL=${BREZEL_BENCH_BASE_URL:-http://127.0.0.1:8080}
 BASE_URL=${BASE_URL%/}
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
+ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
 ENGINE_ENV="$INSTALL_DIR/engine/embed/compose/.env"
 MAX_ACTIVE_SANDBOXES_TOTAL=${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
@@ -176,6 +177,36 @@ chmod 700 "$run_dir" "$run_dir/raw" "$run_dir/stderr"
 write_status running
 cases_file="$run_dir/cases.ndjson"
 : > "$cases_file"
+
+capture_engine_cache() {
+  destination=$1
+  stderr_file=$2
+  temporary="$destination.temporary"
+  if docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" exec -T orchestrator \
+    nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- cache \
+    < "$ENGINE_CAPABILITY_PROBE" > "$temporary" 2> "$stderr_file" && \
+    jq -e '(.ttl | type) == "string" and (.max_allocated_bytes | type) == "number" and (.disk_usage_high_water_percent | type) == "number" and (.observed.allocated_bytes | type) == "number" and (.observed.file_count | type) == "number" and (.observed.disk_total_bytes | type) == "number" and (.observed.disk_used_bytes | type) == "number" and (.observed.disk_available_bytes | type) == "number"' \
+      "$temporary" >/dev/null 2>&1; then
+    chmod 600 "$temporary" "$stderr_file"
+    mv "$temporary" "$destination"
+    return 0
+  fi
+  chmod 600 "$temporary" "$stderr_file" 2>/dev/null || true
+  mv "$temporary" "$destination.invalid" 2>/dev/null || true
+  return 1
+}
+
+if ! capture_engine_cache "$run_dir/engine-cache-before.json" "$run_dir/stderr/engine-cache-before.log"; then
+  (
+    cd "$run_dir"
+    find . -type f ! -name SHA256SUMS ! -name STATUS ! -name '.STATUS.*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+    chmod 600 SHA256SUMS
+    sha256sum -c SHA256SUMS >/dev/null
+  )
+  write_status failed
+  echo "Benchmark cache-policy preflight failed before any environment or VM was created. Evidence was retained at $run_dir" >&2
+  exit 1
+fi
 
 # Establish project emptiness through the same authenticated public API used by
 # the measurements. The preflight mode is read-only and returns content-minimal
@@ -398,7 +429,44 @@ for scenario in $SCENARIOS; do
   done
 done
 
+# Independently prove that every benchmark-owned sandbox and workspace reached
+# a terminal state after the matrix. Per-attempt cleanup remains the primary
+# evidence; this postflight catches any resource the harness failed to retain
+# in its own cleanup set. Keep malformed output rather than silently replacing
+# it with an empty-looking report.
+project_postflight_tmp="$run_dir/.project-postflight.temporary"
+project_postflight_file="$run_dir/project-postflight.json"
+project_postflight_stderr="$run_dir/stderr/project-postflight.log"
+set +e
+BREZEL_SERVICE_TOKEN_FILE="$TOKEN_FILE" "$BENCH_BINARY" \
+  -base-url "$BASE_URL" \
+  -project "$PROJECT" \
+  -timeout 30s \
+  -preflight-empty-project > "$project_postflight_tmp" 2> "$project_postflight_stderr"
+project_postflight_status=$?
+set -e
+chmod 600 "$project_postflight_tmp" "$project_postflight_stderr"
+if jq -e \
+  --arg project "$PROJECT" \
+  '.schema_version == 1 and .project_id == $project and (.active_sandboxes | type == "number") and (.active_workspaces | type == "number") and (.empty | type == "boolean")' \
+  "$project_postflight_tmp" >/dev/null 2>&1; then
+  mv "$project_postflight_tmp" "$project_postflight_file"
+else
+  mv "$project_postflight_tmp" "$run_dir/project-postflight.invalid"
+fi
+project_postflight_outcome=passed
+if [ "$project_postflight_status" -ne 0 ] || [ ! -f "$project_postflight_file" ] || \
+   [ "$(jq -r '.empty' "$project_postflight_file" 2>/dev/null || printf false)" != true ]; then
+  matrix_failed=true
+  project_postflight_outcome=failed
+fi
+
 capture_host "$run_dir/host-after.json" after
+cache_after_outcome=passed
+if ! capture_engine_cache "$run_dir/engine-cache-after.json" "$run_dir/stderr/engine-cache-after.log"; then
+  matrix_failed=true
+  cache_after_outcome=failed
+fi
 finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 case_count=$(wc -l < "$cases_file" | tr -d ' ')
 if [ "$case_count" -ne "$EXPECTED_CASES" ]; then
@@ -422,7 +490,9 @@ jq -s \
   --argjson io_bytes "$IO_BYTES" \
   --argjson preview_port "$PREVIEW_PORT" \
   --argjson expected_cases "$EXPECTED_CASES" \
-  '{schema_version:3,started_at:$started_at,finished_at:$finished_at,target:$target,runtime_revision:$runtime_revision,evidence_class:$evidence_class,cache_state:$cache_state,backend_template:$backend_template,project:$project,configuration:{scenarios:($scenarios | split(" ")),sequential_runs:$sequential_runs,staggered_runs:$staggered_runs,burst_runs:$burst_runs,stagger_interval:$stagger_interval,cooldown_seconds:$cooldown_seconds,io_bytes:$io_bytes,preview_port:$preview_port},expected_cases:$expected_cases,completed_cases:length,passed_cases:([.[] | select(.outcome == "passed")] | length),failed_cases:([.[] | select(.outcome != "passed")] | length),planned_attempts:([.[].runs] | add // 0),requested_attempts:([.[].requested // 0] | add // 0),scheduled_attempts:([.[].scheduled // 0] | add // 0),started_attempts:([.[].started // 0] | add // 0),completed_attempts:([.[].completed // 0] | add // 0),successful_attempts:([.[].succeeded // 0] | add // 0),failed_attempts:([.[].failed // 0] | add // 0),successful_bytes:{written:([.[].successful_bytes.written // 0] | add // 0),read:([.[].successful_bytes.read // 0] | add // 0)},latency_censored:([.[].latency_censored // 0] | add // 0),cleanup:{attempts:{not_required:([.[].cleanup.attempts.not_required // 0] | add // 0),attempted:([.[].cleanup.attempts.attempted // 0] | add // 0),confirmed:([.[].cleanup.attempts.confirmed // 0] | add // 0),failed:([.[].cleanup.attempts.failed // 0] | add // 0)},resources:{expected:([.[].cleanup.resources.expected // 0] | add // 0),confirmed:([.[].cleanup.resources.confirmed // 0] | add // 0),failed:([.[].cleanup.resources.failed // 0] | add // 0)}},outcome:(if length == $expected_cases and all(.[]; .outcome == "passed") then "passed" else "failed" end),preflight:{project_inventory:"project-preflight.json"},host_metadata:{before:"host-before.json",after:"host-after.json"},cases:.}' \
+  --arg cache_after_outcome "$cache_after_outcome" \
+  --arg project_postflight_outcome "$project_postflight_outcome" \
+  '{schema_version:3,started_at:$started_at,finished_at:$finished_at,target:$target,runtime_revision:$runtime_revision,evidence_class:$evidence_class,cache_state:$cache_state,backend_template:$backend_template,project:$project,configuration:{scenarios:($scenarios | split(" ")),sequential_runs:$sequential_runs,staggered_runs:$staggered_runs,burst_runs:$burst_runs,stagger_interval:$stagger_interval,cooldown_seconds:$cooldown_seconds,io_bytes:$io_bytes,preview_port:$preview_port},expected_cases:$expected_cases,completed_cases:length,passed_cases:([.[] | select(.outcome == "passed")] | length),failed_cases:([.[] | select(.outcome != "passed")] | length),planned_attempts:([.[].runs] | add // 0),requested_attempts:([.[].requested // 0] | add // 0),scheduled_attempts:([.[].scheduled // 0] | add // 0),started_attempts:([.[].started // 0] | add // 0),completed_attempts:([.[].completed // 0] | add // 0),successful_attempts:([.[].succeeded // 0] | add // 0),failed_attempts:([.[].failed // 0] | add // 0),successful_bytes:{written:([.[].successful_bytes.written // 0] | add // 0),read:([.[].successful_bytes.read // 0] | add // 0)},latency_censored:([.[].latency_censored // 0] | add // 0),cleanup:{attempts:{not_required:([.[].cleanup.attempts.not_required // 0] | add // 0),attempted:([.[].cleanup.attempts.attempted // 0] | add // 0),confirmed:([.[].cleanup.attempts.confirmed // 0] | add // 0),failed:([.[].cleanup.attempts.failed // 0] | add // 0)},resources:{expected:([.[].cleanup.resources.expected // 0] | add // 0),confirmed:([.[].cleanup.resources.confirmed // 0] | add // 0),failed:([.[].cleanup.resources.failed // 0] | add // 0)}},outcome:(if length == $expected_cases and all(.[]; .outcome == "passed") and $cache_after_outcome == "passed" and $project_postflight_outcome == "passed" then "passed" else "failed" end),preflight:{project_inventory:"project-preflight.json",engine_cache_policy:"engine-cache-before.json"},postflight:{project_inventory:"project-postflight.json",outcome:$project_postflight_outcome},host_metadata:{before:"host-before.json",after:"host-after.json",engine_cache_before:"engine-cache-before.json",engine_cache_after:"engine-cache-after.json"},cases:.}' \
   "$cases_file" > "$run_dir/summary.json"
 chmod 600 "$run_dir/summary.json" "$cases_file"
 

@@ -56,7 +56,10 @@ prepare() {
   }
   trap cleanup_prepare EXIT HUP INT TERM
   workspace_id=$(cli workspace create host-reboot-recovery | awk 'NR == 1 {print $1}')
-  sandbox_id=$(cli new --template base --workspace "$workspace_id:/workspace" --ttl 7200 | awk 'NR == 1 {print $1}')
+  # The embedded engine accepts sandbox lifetimes up to one hour. The drill only
+  # needs the sandbox to survive a host reboot, so keep the request inside that
+  # enforced boundary rather than relying on an unsupported lease.
+  sandbox_id=$(cli new --template base --workspace "$workspace_id:/workspace" --ttl 3600 | awk 'NR == 1 {print $1}')
   marker=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
   marker_sha256=$(printf %s "$marker" | sha256sum | awk '{print $1}')
   cli exec "$sandbox_id" /bin/sh -lc 'printf %s "$1" > /workspace/host-reboot-drill.txt && sync' runtime-host-reboot "$marker" >/dev/null
@@ -96,7 +99,14 @@ verify() {
 
   if [ "$observed_state" != "running" ]; then
     recovery_mode=workspace_replacement
-    cli sandbox delete "$sandbox_id" >/dev/null
+    # A host restart can reconcile the pre-reboot VM to the terminal `failed`
+    # state when the engine confirms that its ephemeral process is gone. Keep
+    # that immutable failure receipt; only request deletion for non-terminal
+    # states before attaching the durable workspace to a replacement sandbox.
+    case "$observed_state" in
+      failed|deleted) ;;
+      *) cli sandbox delete "$sandbox_id" >/dev/null ;;
+    esac
     recovery_sandbox_id=$(cli new --template base --workspace "$workspace_id:/workspace" --ttl 600 | awk 'NR == 1 {print $1}')
   fi
 

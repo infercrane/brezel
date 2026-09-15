@@ -62,8 +62,8 @@ their own explicit profile and customer evidence before inclusion.
 
 ## Current evidence and boundary
 
-Revision `522c32e` is a private single-host release candidate. It already has a
-meaningful foundation:
+Revision `121d7c6952c5bbc0010c365817ef540a1efbaca6` is a self-hosted
+private-tenant developer preview. It has a meaningful foundation:
 
 - a Firecracker microVM boundary with no release-mode container fallback;
 - create, command, file, preview, pause, resume, filesystem checkpoint,
@@ -76,27 +76,28 @@ meaningful foundation:
 - destructive conformance and benchmark tooling that records the host,
   revision, attempts, failures, percentiles, throughput, and cleanup results.
 
-It does not yet have a public production claim. The node relay is not the
-default byte path, the current revision has not completed fresh Linux/KVM
-qualification, and the single-host state store is not a scalable lifecycle
-ledger.
+It does not have a public-production, hostile-multitenant, cluster, or
+high-availability claim. The node relay is the default command, file, and
+preview byte path, and SQLite is the single-host lifecycle ledger. Both paths
+completed named Linux/KVM qualification at the revision above, including a
+paired run on two separately administered single-host installations. SQLite
+remains an embedded single-controller authority, not a fleet-scale ledger.
 
-Local benchmarks on an Apple M4 on 2026-09-14 exposed the first concrete
-control-path bottleneck:
+Local benchmarks on an Apple M4 on 2026-09-15 compare the current SQLite hot
+paths with the superseded whole-state JSON implementation:
 
 | Operation | Observed range | Allocation |
 | --- | ---: | ---: |
-| Keyed sandbox read at 1,000 resources | 244–263 ns/op | 80 B, 4 allocations |
-| Node capability issue, verify, replay admission, lease, and dispatch | 93.5–101.9 µs/op | ~21.7 KB, 151 allocations |
-| Full state lifecycle update at 1,000 resources | 18.8–19.8 ms/op | ~11.1 MB, ~78,000 allocations |
-| Specialized event append at 1,000 resources | 15.0–17.2 ms/op | ~6.4–8.1 MB, ~35,000 allocations |
+| SQLite keyed read at 10,000 resources | 15.7–18.4 µs/op | See retained benchmark output |
+| SQLite activity transaction at 10,000 resources | 67.2–94.8 µs/op | See retained benchmark output |
+| SQLite event transaction at 10,000 resources | 95.3–107.3 µs/op | See retained benchmark output |
+| Prior JSON whole-state update at 10,000 resources | 18.9–21.9 ms/op | See retained benchmark output |
+| Prior specialized JSON event replacement at 10,000 resources | 15.3–17.8 ms/op | See retained benchmark output |
 
 These are engineering microbenchmarks, not sandbox startup numbers. They show
-that authorization lookup and capability verification are currently small,
-while whole-state clone, validation, serialization, replacement, and `fsync`
-will dominate lifecycle throughput and increase pause/cancel contention. Paid
-KVM testing should follow a lifecycle-store candidate and default relay path,
-not precede them.
+that the resource-scoped SQLite transactions avoid the old whole-state scaling
+cost. They do not predict hosted latency or authorize a competitive claim. The
+exact commands and claim boundary are in [Benchmarking](BENCHMARKING.md).
 
 ## User jobs
 
@@ -527,23 +528,33 @@ candidate with faster p50 but worse p99, success, or cleanup is rejected.
 
 ## Delivery sequence
 
-### Milestone A: publishable single host
+### Milestone A: self-hosted private-tenant developer preview
 
-1. Resource-scoped transactional lifecycle ledger, operation receipts, outbox,
-   migrations, backup, and restore.
-2. Node enrollment, certificate rotation, capability-key rotation, desired-state
-   reconciliation, and safe drain.
-3. Default relay byte path with bounded streaming command, file, and HTTP.
-4. Systemd install, doctor, upgrade, rollback, uninstall, and redacted support
-   bundle.
-5. Real Python and TypeScript SDKs with streaming, cancellation, retries, and
+Delivered at revision `121d7c6952c5bbc0010c365817ef540a1efbaca6`:
+
+1. Resource-scoped SQLite lifecycle ledger with migration from protected legacy
+   state, durable idempotency, events, receipts, and reconciliation.
+2. Desired-state route reconciliation, safe install drain, and default relay
+   byte paths for bounded streaming command, file, and HTTP traffic.
+3. One-command installation with pinned engine inputs and live runtime
+   attestation.
+4. Named-host destructive qualification on two separately administered
+   single-host installations, including simultaneous conformance, confirmed
+   cleanup, namespace-negative checks, and controller/node-relay crash drills.
+
+Still required before the complete-agent-computer milestone can carry a broader
+operational label:
+
+1. Node enrollment, online certificate rotation, capability-key rotation, and
+   service-unit upgrade/rollback packaging.
+2. Real Python and TypeScript SDKs with streaming, cancellation, retries, and
    stable errors.
-6. PTY/SSH and arbitrary OCI-derived environments with signed immutable
+3. PTY/SSH and arbitrary OCI-derived environments with signed immutable
    manifests.
-7. Full single-host failure matrix, two clean destructive qualifications, and
-   current raw benchmarks.
+4. Published full per-host 24-cell benchmark matrices plus reboot, disk-full,
+   interrupted-upgrade, and longer soak evidence.
 
-Release label: **self-hosted private-tenant developer preview**.
+Current release label: **self-hosted private-tenant developer preview**.
 
 ### Milestone B: best persistent agent experience
 
@@ -611,22 +622,25 @@ launch page can show live, revision-bound evidence instead of a static “fastes
 badge: time to interactive, standby resume, success rate, leak count, last
 qualified commit, and the downloadable raw report.
 
-## Paid-host trigger
+## Paid-host qualification protocol
 
-Provision one Scaleway `EM-B130E-NVME` only after the local gates pass. Its NVMe
-storage makes it a more useful cache and snapshot test than the older SATA
-host. Use the approved €8 ceiling:
+Revision `121d7c6952c5bbc0010c365817ef540a1efbaca6` has crossed the first paid-host
+gate on two separately administered Ubuntu 24.04 x86-64 KVM machines. Future
+paid-host runs retain the same protocol:
 
-1. provision a clean Ubuntu 24.04 x86-64 host;
-2. record the offer, region, CPU, memory, storage, kernel, and exact revision;
-3. run preflight and two destructive qualification passes;
-4. run baseline/candidate/candidate/baseline matrices if comparing a change;
-5. run fault injection, reboot recovery, and an initial soak;
+1. provision clean supported hosts and pin SSH host identities;
+2. record provider profile, region, CPU, memory, storage, kernel, and exact
+   revision without publishing hostnames, IP addresses, or machine serials;
+3. verify clean source and the live runtime-attestation manifest before work;
+4. run simultaneous conformance, benchmark, isolation, cleanup, and bounded
+   failure drills appropriate to the intended claim;
+5. use baseline/candidate/candidate/baseline matrices for optimization claims;
 6. download the complete evidence directory and verify checksums; and
-7. delete the server, not merely power it off.
+7. delete rented servers, not merely power them off.
 
-If qualification fails, preserve evidence, reconcile every resource, fix
-locally, and create a fresh host only when the next candidate is ready.
+If qualification fails, preserve checksummed evidence, reconcile every
+resource, and fix locally before allocating another host. A paired-host run does
+not establish a cluster, shared state, automatic failover, or high availability.
 
 ## Sources
 

@@ -255,7 +255,23 @@ func (s *Service) CreateEnvironment(projectID, idempotencyKey string, in CreateE
 	}
 	env.RevisionID = revision
 	op := succeededOperation(projectID, "create_environment", revision, idempotencyKey, now)
-	err = s.store.Update(func(state *store.State) error {
+	admission, err := s.admitEnvironmentCreate(projectID, idempotencyKey, inputDigest, revision)
+	if err != nil {
+		return env, op, err
+	}
+	if admission.Idempotency.Found {
+		return admission.Environment, admission.Idempotency.Operation, nil
+	}
+	if admission.EnvironmentFound {
+		env = admission.Environment
+	} else if admission.CountForProject >= s.limits.MaxEnvironmentsPerProject {
+		return env, op, ErrQuota
+	}
+	err = store.UpdateRows(s.store, store.MutationScope{
+		Environments: []string{store.ScopedKey(projectID, revision)},
+		Operations:   []string{store.ScopedKey(projectID, op.ID)},
+		Idempotency:  []string{store.IdempotencyKey(projectID, "create_environment", idempotencyKey)},
+	}, func(state *store.State) error {
 		if existing, ok := idempotentOperation(*state, projectID, "create_environment", idempotencyKey); ok {
 			if err := requireIdempotencyDigest(*state, projectID, "create_environment", idempotencyKey, inputDigest); err != nil {
 				return err
@@ -275,15 +291,6 @@ func (s *Service) CreateEnvironment(projectID, idempotencyKey string, in CreateE
 			state.Idempotency[store.IdempotencyKey(projectID, "create_environment", idempotencyKey)] = op.ID
 			state.IdempotencyDigests[store.IdempotencyKey(projectID, "create_environment", idempotencyKey)] = inputDigest
 			return nil
-		}
-		count := 0
-		for _, existing := range state.Environments {
-			if existing.ProjectID == projectID {
-				count++
-			}
-		}
-		if count >= s.limits.MaxEnvironmentsPerProject {
-			return ErrQuota
 		}
 		state.Environments[key] = env
 		state.Operations[store.ScopedKey(projectID, op.ID)] = op
@@ -393,74 +400,9 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 	var sourceCheckpoint domain.Checkpoint
 	var workspaceMounts []backend.WorkspaceMount
 	var existingOp domain.Operation
-	err = s.store.View(func(state store.State) error {
-		if op, ok := idempotentOperation(state, projectID, "create_sandbox", idempotencyKey); ok {
-			if err := requireIdempotencyDigest(state, projectID, "create_sandbox", idempotencyKey, inputDigest); err != nil {
-				return err
-			}
-			existingOp = op
-			return nil
-		}
-		active := 0
-		activeTotal := 0
-		for _, existing := range state.Sandboxes {
-			if !terminal(existing.State) {
-				activeTotal++
-				if existing.ProjectID == projectID {
-					active++
-				}
-			}
-		}
-		if active >= s.limits.MaxActiveSandboxesPerProject {
-			return ErrQuota
-		}
-		if activeTotal >= s.limits.MaxActiveSandboxesTotal {
-			return ErrCapacity
-		}
-		var ok bool
-		if in.CheckpointID != "" {
-			sourceCheckpoint, ok = state.Checkpoints[store.ScopedKey(projectID, in.CheckpointID)]
-			if !ok {
-				return store.ErrNotFound
-			}
-			if sourceCheckpoint.Kind != domain.CheckpointFilesystem || sourceCheckpoint.BackendRef == "" {
-				return fmt.Errorf("%w: checkpoint cannot create a new sandbox", ErrDenied)
-			}
-			in.EnvironmentRevision = sourceCheckpoint.EnvironmentRevision
-		}
-		env, ok = state.Environments[store.ScopedKey(projectID, in.EnvironmentRevision)]
-		if !ok {
-			return store.ErrNotFound
-		}
-		for _, revision := range in.ConnectorRevisions {
-			if _, ok := state.Connectors[store.ScopedKey(projectID, revision)]; !ok {
-				return store.ErrNotFound
-			}
-		}
-		for _, mount := range in.WorkspaceMounts {
-			workspace, ok := state.Workspaces[store.ScopedKey(projectID, mount.WorkspaceID)]
-			if !ok {
-				return store.ErrNotFound
-			}
-			if workspace.State != domain.WorkspaceReady || workspace.BackendName == "" {
-				return fmt.Errorf("%w: workspace %s is not ready", ErrConflict, mount.WorkspaceID)
-			}
-			for _, existing := range state.Sandboxes {
-				if existing.ProjectID != projectID || terminal(existing.State) {
-					continue
-				}
-				for _, attached := range existing.WorkspaceMounts {
-					if attached.WorkspaceID == mount.WorkspaceID {
-						return fmt.Errorf("%w: workspace %s is already attached", ErrConflict, mount.WorkspaceID)
-					}
-				}
-			}
-			workspaceMounts = append(workspaceMounts, backend.WorkspaceMount{Name: workspace.BackendName, Path: mount.Path})
-		}
-		return nil
-	})
+	env, sourceCheckpoint, workspaceMounts, existingOp, err = s.admitSandboxCreate(projectID, idempotencyKey, inputDigest, &in)
 	if err != nil {
-		return domain.Sandbox{}, domain.Operation{}, translateStore(err)
+		return domain.Sandbox{}, domain.Operation{}, err
 	}
 	if existingOp.ID != "" {
 		sandbox, err := s.getSandbox(projectID, existingOp.ResourceID)
@@ -509,7 +451,12 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 		backendEnvironment["BREZEL_CONNECTOR_LEASE"] = lease
 	}
 	persistIntentStarted := time.Now()
-	err = s.store.Update(func(state *store.State) error {
+	err = store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{store.ScopedKey(projectID, sandboxID)},
+		Operations:   []string{store.ScopedKey(projectID, opID)},
+		Idempotency:  []string{store.IdempotencyKey(projectID, "create_sandbox", idempotencyKey)},
+		EventStreams: []store.EventStream{{ProjectID: projectID, ResourceID: sandboxID}},
+	}, func(state *store.State) error {
 		if existing, ok := idempotentOperation(*state, projectID, "create_sandbox", idempotencyKey); ok {
 			if err := requireIdempotencyDigest(*state, projectID, "create_sandbox", idempotencyKey, inputDigest); err != nil {
 				return err
@@ -560,7 +507,11 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 		sandbox.State, sandbox.Failure, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxUnknown, failure, now, sandbox.Revision+1
 		op.State, op.Failure, op.UpdatedAt = domain.OperationFailed, failure, now
 		persistResultStarted := time.Now()
-		persistErr := s.store.Update(func(state *store.State) error {
+		persistErr := store.UpdateRows(s.store, store.MutationScope{
+			Sandboxes:    []string{store.ScopedKey(projectID, sandbox.ID)},
+			Operations:   []string{store.ScopedKey(projectID, op.ID)},
+			EventStreams: []store.EventStream{{ProjectID: projectID, ResourceID: sandbox.ID}},
+		}, func(state *store.State) error {
 			state.Sandboxes[store.ScopedKey(projectID, sandbox.ID)] = sandbox
 			state.Operations[store.ScopedKey(projectID, op.ID)] = op
 			appendEvent(state, eventFor(sandbox, op.ID, "sandbox.unknown", now, map[string]any{"code": failure.Code}))
@@ -589,7 +540,11 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 		sandbox.State, sandbox.Failure, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxUnknown, failure, now, sandbox.Revision+1
 		op.State, op.Failure, op.UpdatedAt = domain.OperationFailed, failure, now
 		persistResultStarted := time.Now()
-		persistErr := s.store.Update(func(state *store.State) error {
+		persistErr := store.UpdateRows(s.store, store.MutationScope{
+			Sandboxes:    []string{store.ScopedKey(projectID, sandbox.ID)},
+			Operations:   []string{store.ScopedKey(projectID, op.ID)},
+			EventStreams: []store.EventStream{{ProjectID: projectID, ResourceID: sandbox.ID}},
+		}, func(state *store.State) error {
 			state.Sandboxes[store.ScopedKey(projectID, sandbox.ID)] = sandbox
 			state.Operations[store.ScopedKey(projectID, op.ID)] = op
 			appendEvent(state, eventFor(sandbox, op.ID, "sandbox.unknown", now, map[string]any{"code": failure.Code}))
@@ -603,7 +558,11 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 	sandbox.UpdatedAt = now
 	op.State, op.UpdatedAt = domain.OperationSucceeded, now
 	persistResultStarted := time.Now()
-	err = s.store.Update(func(state *store.State) error {
+	err = store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{store.ScopedKey(projectID, sandbox.ID)},
+		Operations:   []string{store.ScopedKey(projectID, op.ID)},
+		EventStreams: []store.EventStream{{ProjectID: projectID, ResourceID: sandbox.ID}},
+	}, func(state *store.State) error {
 		state.Sandboxes[store.ScopedKey(projectID, sandbox.ID)] = sandbox
 		state.Operations[store.ScopedKey(projectID, op.ID)] = op
 		appendEvent(state, eventFor(sandbox, op.ID, "sandbox.running", now, nil))
@@ -616,6 +575,10 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 func (s *Service) GetEnvironment(projectID, revision string) (domain.Environment, error) {
 	if err := domain.ValidateProjectID(projectID); err != nil {
 		return domain.Environment{}, ErrInvalid
+	}
+	if reader, ok := s.store.(store.EnvironmentReader); ok {
+		environment, err := reader.GetEnvironment(projectID, revision)
+		return environment, translateStore(err)
 	}
 	var out domain.Environment
 	err := s.store.View(func(state store.State) error {
@@ -684,7 +647,10 @@ func (s *Service) GetSandbox(ctx context.Context, projectID, id string) (domain.
 	if remote.State != sandbox.State {
 		now := s.now()
 		sandbox.State, sandbox.UpdatedAt, sandbox.Revision, sandbox.Failure = remote.State, now, sandbox.Revision+1, nil
-		_ = s.store.Update(func(state *store.State) error {
+		_ = store.UpdateRows(s.store, store.MutationScope{
+			Sandboxes:    []string{store.ScopedKey(projectID, id)},
+			EventStreams: []store.EventStream{{ProjectID: projectID, ResourceID: id}},
+		}, func(state *store.State) error {
 			state.Sandboxes[store.ScopedKey(projectID, id)] = sandbox
 			appendEvent(state, eventFor(sandbox, "", "sandbox.observed", now, nil))
 			return nil
@@ -897,7 +863,10 @@ func (s *Service) Checkpoint(ctx context.Context, projectID, sandboxID, idempote
 	now := s.now()
 	op := domain.Operation{ID: opID, ProjectID: projectID, Kind: kindKey, ResourceID: sandboxID, State: domain.OperationRunning, IdempotencyKey: idempotencyKey, CreatedAt: now, UpdatedAt: now}
 	persistIntentStarted := time.Now()
-	if err := s.store.Update(func(state *store.State) error {
+	if err := store.UpdateRows(s.store, store.MutationScope{
+		Operations:  []string{store.ScopedKey(projectID, op.ID)},
+		Idempotency: []string{store.IdempotencyKey(projectID, kindKey, idempotencyKey)},
+	}, func(state *store.State) error {
 		state.Operations[store.ScopedKey(projectID, op.ID)] = op
 		idempotencyIndex := store.IdempotencyKey(projectID, kindKey, idempotencyKey)
 		state.Idempotency[idempotencyIndex] = op.ID
@@ -921,7 +890,10 @@ func (s *Service) Checkpoint(ctx context.Context, projectID, sandboxID, idempote
 		failure := &domain.Failure{Code: "backend_checkpoint_failed", Message: "sandbox backend could not create the checkpoint", Retryable: true}
 		op.State, op.Failure, op.UpdatedAt = domain.OperationFailed, failure, s.now()
 		persistResultStarted := time.Now()
-		persistErr := s.store.Update(func(state *store.State) error { state.Operations[store.ScopedKey(projectID, op.ID)] = op; return nil })
+		persistErr := store.UpdateRows(s.store, store.MutationScope{Operations: []string{store.ScopedKey(projectID, op.ID)}}, func(state *store.State) error {
+			state.Operations[store.ScopedKey(projectID, op.ID)] = op
+			return nil
+		})
 		telemetry.Observe(s.observer, telemetry.OperationSandboxCheckpoint, telemetry.PhasePersistResult, persistResultStarted, persistErr)
 		return domain.Checkpoint{}, op, fmt.Errorf("%w: create checkpoint", ErrBackend)
 	}
@@ -929,7 +901,11 @@ func (s *Service) Checkpoint(ctx context.Context, projectID, sandboxID, idempote
 	checkpoint := domain.Checkpoint{ID: checkpointID, ProjectID: projectID, SourceSandboxID: sandboxID, EnvironmentRevision: sandbox.EnvironmentRevision, Backend: sandbox.Backend, BackendRef: remote.Ref, Kind: remote.Kind, CreatedAt: s.now()}
 	op.ResourceID, op.State, op.UpdatedAt = checkpointID, domain.OperationSucceeded, s.now()
 	persistResultStarted := time.Now()
-	persistErr := s.store.Update(func(state *store.State) error {
+	persistErr := store.UpdateRows(s.store, store.MutationScope{
+		Operations:   []string{store.ScopedKey(projectID, op.ID)},
+		Checkpoints:  []string{store.ScopedKey(projectID, checkpointID)},
+		EventStreams: []store.EventStream{{ProjectID: projectID, ResourceID: sandbox.ID}},
+	}, func(state *store.State) error {
 		state.Checkpoints[store.ScopedKey(projectID, checkpointID)] = checkpoint
 		state.Operations[store.ScopedKey(projectID, op.ID)] = op
 		appendEvent(state, eventFor(sandbox, op.ID, "checkpoint.created", op.UpdatedAt, map[string]any{"checkpoint_id": checkpointID, "kind": kind}))
@@ -966,7 +942,10 @@ func (s *Service) DeleteCheckpoint(ctx context.Context, projectID, checkpointID,
 		ID: opID, ProjectID: projectID, Kind: kind, ResourceID: checkpointID,
 		State: domain.OperationRunning, IdempotencyKey: idempotencyKey, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.store.Update(func(state *store.State) error {
+	if err := store.UpdateRows(s.store, store.MutationScope{
+		Operations:  []string{store.ScopedKey(projectID, op.ID)},
+		Idempotency: []string{store.IdempotencyKey(projectID, kind, idempotencyKey)},
+	}, func(state *store.State) error {
 		state.Operations[store.ScopedKey(projectID, op.ID)] = op
 		state.Idempotency[store.IdempotencyKey(projectID, kind, idempotencyKey)] = op.ID
 		return nil
@@ -977,7 +956,7 @@ func (s *Service) DeleteCheckpoint(ctx context.Context, projectID, checkpointID,
 	if err := s.backend.DeleteCheckpoint(ctx, checkpoint.BackendRef); err != nil && !errors.Is(err, backend.ErrNotFound) {
 		failure := &domain.Failure{Code: "backend_checkpoint_delete_unconfirmed", Message: "sandbox engine did not confirm checkpoint cleanup", Retryable: true}
 		op.State, op.Failure, op.UpdatedAt = domain.OperationFailed, failure, s.now()
-		_ = s.store.Update(func(state *store.State) error {
+		_ = store.UpdateRows(s.store, store.MutationScope{Operations: []string{store.ScopedKey(projectID, op.ID)}}, func(state *store.State) error {
 			state.Operations[store.ScopedKey(projectID, op.ID)] = op
 			return nil
 		})
@@ -985,7 +964,12 @@ func (s *Service) DeleteCheckpoint(ctx context.Context, projectID, checkpointID,
 	}
 
 	op.State, op.UpdatedAt = domain.OperationSucceeded, s.now()
-	err = s.store.Update(func(state *store.State) error {
+	err = store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{store.ScopedKey(projectID, checkpoint.SourceSandboxID)},
+		Operations:   []string{store.ScopedKey(projectID, op.ID)},
+		Checkpoints:  []string{store.ScopedKey(projectID, checkpointID)},
+		EventStreams: []store.EventStream{{ProjectID: projectID, ResourceID: checkpoint.SourceSandboxID}},
+	}, func(state *store.State) error {
 		delete(state.Checkpoints, store.ScopedKey(projectID, checkpointID))
 		state.Operations[store.ScopedKey(projectID, op.ID)] = op
 		if sandbox, ok := state.Sandboxes[store.ScopedKey(projectID, checkpoint.SourceSandboxID)]; ok {
@@ -1327,7 +1311,12 @@ func (s *Service) beginTransitionLocked(sandbox domain.Sandbox, idempotencyKey, 
 	}
 	op := domain.Operation{ID: opID, ProjectID: sandbox.ProjectID, Kind: kind, ResourceID: sandbox.ID, State: domain.OperationRunning, IdempotencyKey: idempotencyKey, CreatedAt: now, UpdatedAt: now}
 	sandbox.State, sandbox.UpdatedAt, sandbox.Revision, sandbox.Failure = target, now, sandbox.Revision+1, nil
-	err = s.store.Update(func(state *store.State) error {
+	err = store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{store.ScopedKey(sandbox.ProjectID, sandbox.ID)},
+		Operations:   []string{store.ScopedKey(sandbox.ProjectID, op.ID)},
+		Idempotency:  []string{store.IdempotencyKey(sandbox.ProjectID, kind, idempotencyKey)},
+		EventStreams: []store.EventStream{{ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID}},
+	}, func(state *store.State) error {
 		state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
 		state.Operations[store.ScopedKey(sandbox.ProjectID, op.ID)] = op
 		state.Idempotency[store.IdempotencyKey(sandbox.ProjectID, kind, idempotencyKey)] = op.ID
@@ -1348,7 +1337,11 @@ func (s *Service) completeTransitionLocked(sandbox domain.Sandbox, op domain.Ope
 		s.recentActivity[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = now
 	}
 	op.State, op.UpdatedAt, op.Failure = domain.OperationSucceeded, now, nil
-	err := s.store.Update(func(state *store.State) error {
+	err := store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{store.ScopedKey(sandbox.ProjectID, sandbox.ID)},
+		Operations:   []string{store.ScopedKey(sandbox.ProjectID, op.ID)},
+		EventStreams: []store.EventStream{{ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID}},
+	}, func(state *store.State) error {
 		state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
 		state.Operations[store.ScopedKey(sandbox.ProjectID, op.ID)] = op
 		appendEvent(state, eventFor(sandbox, op.ID, "sandbox."+string(target), now, nil))
@@ -1413,7 +1406,11 @@ func (s *Service) failTransitionLocked(sandbox domain.Sandbox, op domain.Operati
 	failure := &domain.Failure{Code: code, Message: "sandbox backend did not confirm the requested transition", Retryable: true}
 	sandbox.State, sandbox.UpdatedAt, sandbox.Revision, sandbox.Failure = domain.SandboxUnknown, now, sandbox.Revision+1, failure
 	op.State, op.UpdatedAt, op.Failure = domain.OperationFailed, now, failure
-	_ = s.store.Update(func(state *store.State) error {
+	_ = store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{store.ScopedKey(sandbox.ProjectID, sandbox.ID)},
+		Operations:   []string{store.ScopedKey(sandbox.ProjectID, op.ID)},
+		EventStreams: []store.EventStream{{ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID}},
+	}, func(state *store.State) error {
 		state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
 		state.Operations[store.ScopedKey(sandbox.ProjectID, op.ID)] = op
 		appendEvent(state, eventFor(sandbox, op.ID, "sandbox.unknown", now, map[string]any{"code": code}))
@@ -1430,7 +1427,10 @@ func (s *Service) expireLocked(ctx context.Context, sandbox domain.Sandbox) (dom
 		}
 		now := s.now()
 		sandbox.State, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxDeleting, now, sandbox.Revision+1
-		_ = s.store.Update(func(state *store.State) error {
+		_ = store.UpdateRows(s.store, store.MutationScope{
+			Sandboxes:    []string{store.ScopedKey(sandbox.ProjectID, sandbox.ID)},
+			EventStreams: []store.EventStream{{ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID}},
+		}, func(state *store.State) error {
 			state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
 			appendEvent(state, eventFor(sandbox, "", "sandbox.expiring", now, nil))
 			return nil
@@ -1483,7 +1483,10 @@ func (s *Service) markMissingLocked(sandbox domain.Sandbox) (domain.Sandbox, err
 	now := s.now()
 	sandbox.State, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxFailed, now, sandbox.Revision+1
 	sandbox.Failure = &domain.Failure{Code: "backend_resource_missing", Message: "backend confirmed the sandbox resource is absent", Retryable: false}
-	err := s.store.Update(func(state *store.State) error {
+	err := store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{store.ScopedKey(sandbox.ProjectID, sandbox.ID)},
+		EventStreams: []store.EventStream{{ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID}},
+	}, func(state *store.State) error {
 		state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
 		appendEvent(state, eventFor(sandbox, "", "sandbox.failed", now, map[string]any{"code": sandbox.Failure.Code}))
 		return nil
@@ -1495,7 +1498,10 @@ func (s *Service) markUnknownLocked(sandbox domain.Sandbox, code string) (domain
 	now := s.now()
 	sandbox.State, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxUnknown, now, sandbox.Revision+1
 	sandbox.Failure = &domain.Failure{Code: code, Message: "backend state could not be confirmed", Retryable: true}
-	err := s.store.Update(func(state *store.State) error {
+	err := store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{store.ScopedKey(sandbox.ProjectID, sandbox.ID)},
+		EventStreams: []store.EventStream{{ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID}},
+	}, func(state *store.State) error {
 		state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
 		appendEvent(state, eventFor(sandbox, "", "sandbox.unknown", now, map[string]any{"code": code}))
 		return nil
@@ -1521,6 +1527,13 @@ func (s *Service) getSandbox(projectID, id string) (domain.Sandbox, error) {
 }
 
 func (s *Service) lookupIdempotency(projectID, kind, key string) (domain.Operation, bool) {
+	if reader, ok := s.store.(store.IdempotencyReader); ok {
+		lookup, err := reader.LookupIdempotency(projectID, kind, key)
+		if err == nil && lookup.Found {
+			return lookup.Operation, true
+		}
+		return domain.Operation{}, false
+	}
 	var operation domain.Operation
 	_ = s.store.View(func(state store.State) error {
 		operation, _ = idempotentOperation(state, projectID, kind, key)
@@ -1530,6 +1543,19 @@ func (s *Service) lookupIdempotency(projectID, kind, key string) (domain.Operati
 }
 
 func (s *Service) lookupIdempotencyInput(projectID, kind, key, digest string) (domain.Operation, bool, error) {
+	if reader, ok := s.store.(store.IdempotencyReader); ok {
+		lookup, err := reader.LookupIdempotency(projectID, kind, key)
+		if err != nil {
+			return domain.Operation{}, false, err
+		}
+		if !lookup.Found {
+			return domain.Operation{}, false, nil
+		}
+		if lookup.Digest != "" && lookup.Digest != digest {
+			return domain.Operation{}, false, fmt.Errorf("%w: Idempotency-Key was already used with a different request", ErrConflict)
+		}
+		return lookup.Operation, true, nil
+	}
 	var operation domain.Operation
 	var lookupErr error
 	err := s.store.View(func(state store.State) error {

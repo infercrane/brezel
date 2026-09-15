@@ -287,6 +287,45 @@ func BenchmarkSQLiteStoreHotPath(b *testing.B) {
 	}
 }
 
+func BenchmarkSQLiteStoreLifecycleMutationWithUnrelatedHistory(b *testing.B) {
+	for _, resources := range []int{100, 1000, 10000} {
+		for _, benchmark := range []struct {
+			name   string
+			update func(*SQLiteStore, string) error
+		}{
+			{name: "whole-ledger", update: func(store *SQLiteStore, key string) error {
+				return store.Update(func(state *State) error {
+					sandbox := state.Sandboxes[key]
+					sandbox.Revision++
+					state.Sandboxes[key] = sandbox
+					return nil
+				})
+			}},
+			{name: "row-scoped", update: func(store *SQLiteStore, key string) error {
+				return store.UpdateRows(MutationScope{Sandboxes: []string{key}}, func(state *State) error {
+					sandbox := state.Sandboxes[key]
+					sandbox.Revision++
+					state.Sandboxes[key] = sandbox
+					return nil
+				})
+			}},
+		} {
+			b.Run(fmt.Sprintf("resources=%d/%s", resources, benchmark.name), func(b *testing.B) {
+				store := benchmarkSQLiteStore(b, resources)
+				defer store.Close()
+				key := ScopedKey("project-bench", "sbx-000000")
+				b.ReportAllocs()
+				b.ResetTimer()
+				for range b.N {
+					if err := benchmark.update(store, key); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func benchmarkSQLiteStore(b *testing.B, resources int) *SQLiteStore {
 	b.Helper()
 	store, err := OpenSQLite(privateTestPath(b, "state.db"), "")

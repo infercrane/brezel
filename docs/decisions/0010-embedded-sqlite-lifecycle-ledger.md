@@ -1,6 +1,6 @@
 # ADR 0010: Use an embedded SQLite lifecycle ledger for the single-host profile
 
-- Status: accepted; implemented, host qualification pending
+- Status: accepted; implemented and qualified at revision `121d7c6952c5bbc0010c365817ef540a1efbaca6`
 - Date: 2026-09-15
 
 ## Context
@@ -50,3 +50,9 @@ symlinks, failed integrity checks, or concurrent controller ownership.
   event ordering, and non-destructive migration semantics.
 - Local microbenchmarks do not establish sandbox startup or production
   performance. Linux/KVM qualification and failure tests remain mandatory.
+
+The integrated ledger completed the named-host destructive workflow at revision
+`121d7c6952c5bbc0010c365817ef540a1efbaca6`; see [Qualification
+2026-09-15](../QUALIFICATION-2026-09-15.md). This records evidence for the
+single-controller private-tenant profile and does not qualify SQLite as a
+multi-node authority.

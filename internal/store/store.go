@@ -69,6 +69,44 @@ type Store interface {
 	Update(func(*State) error) error
 }
 
+// MutationScope declares the exact ledger rows a callback may change. Resource
+// keys are the same project-scoped keys used by State maps. EventStreams make
+// only the current stream tail visible, which is sufficient for appendEvent
+// style mutations while keeping work independent of the stream's history.
+type MutationScope struct {
+	Environments []string
+	Sandboxes    []string
+	Operations   []string
+	Checkpoints  []string
+	Workspaces   []string
+	Connectors   []string
+	Idempotency  []string
+	EventStreams []EventStream
+}
+
+type EventStream struct {
+	ProjectID  string
+	ResourceID string
+}
+
+// RowScopedUpdater is an optional extension for transactional mutations whose
+// read/write set is known in advance. Implementations must reject changes
+// outside scope and commit the declared resource, idempotency, and event rows
+// atomically.
+type RowScopedUpdater interface {
+	UpdateRows(MutationScope, func(*State) error) error
+}
+
+// UpdateRows uses a row-scoped transaction when the store supports one. The
+// FileStore fallback deliberately retains its existing whole-state atomic
+// replacement semantics.
+func UpdateRows(target Store, scope MutationScope, fn func(*State) error) error {
+	if updater, ok := target.(RowScopedUpdater); ok {
+		return updater.UpdateRows(scope, fn)
+	}
+	return target.Update(fn)
+}
+
 // SandboxReader is an optional read-optimized extension implemented by stores
 // that can return one sandbox without copying their entire control state.
 // Callers must still treat the returned value as an isolated snapshot.
@@ -591,7 +629,7 @@ func validateState(state State) error {
 			return errors.New("idempotency index contains an invalid key")
 		}
 		operation, ok := state.Operations[ScopedKey(parts[0], operationID)]
-		if !ok || operation.ProjectID != parts[0] || operation.IdempotencyKey != parts[2] {
+		if !ok || operation.ProjectID != parts[0] || operation.Kind != parts[1] || operation.IdempotencyKey != parts[2] {
 			return errors.New("idempotency index refers to an inconsistent operation")
 		}
 	}

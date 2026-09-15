@@ -10,6 +10,11 @@ database record. This keeps long-lived key material out of ordinary container
 environment variables and lets a cleanup failure remain visible and
 retryable. The second patch pins the API builder and runtime base images by
 manifest digest, removes a moving package-upgrade step, and replaces the
-build-time `make` download with a direct Go build.
+build-time `make` download with a direct Go build. The third patch delays a
+successful sandbox-delete acknowledgement until Firecracker, NBD, network,
+and lazy-memory resources have been reclaimed. The fourth patch makes the
+recoverable snapshot-diff cache retention configurable, adds physical-byte
+and local disk high-water eviction, and emits content-free cache pressure
+metrics. Cache pressure never evicts an active or unsealed diff.
 
 Upstream source: <https://github.com/e2b-dev/runtime>

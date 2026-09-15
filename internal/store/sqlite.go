@@ -155,6 +155,18 @@ func (s *SQLiteStore) initialize(legacyJSONPath string) error {
 			operation_id TEXT NOT NULL,
 			digest TEXT NOT NULL DEFAULT ''
 		) WITHOUT ROWID`,
+		`CREATE TABLE IF NOT EXISTS sandbox_capacity (
+			project_id TEXT PRIMARY KEY,
+			active_count INTEGER NOT NULL CHECK (active_count >= 0)
+		) WITHOUT ROWID`,
+		`CREATE TABLE IF NOT EXISTS workspace_capacity (
+			project_id TEXT PRIMARY KEY,
+			active_count INTEGER NOT NULL CHECK (active_count >= 0)
+		) WITHOUT ROWID`,
+		`CREATE TABLE IF NOT EXISTS environment_capacity (
+			project_id TEXT PRIMARY KEY,
+			resource_count INTEGER NOT NULL CHECK (resource_count >= 0)
+		) WITHOUT ROWID`,
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize state database schema: %w", err)
@@ -166,6 +178,20 @@ func (s *SQLiteStore) initialize(legacyJSONPath string) error {
 		return fmt.Errorf("begin state database initialization: %w", err)
 	}
 	defer tx.Rollback()
+	// Active workspace mounts are a derived index, so recreation is the
+	// migration path from the earlier composite primary key. DDL and the later
+	// rebuild share this transaction: an interrupted open retains the previous
+	// usable index instead of exposing a half-migrated table.
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS active_workspace_mounts;
+		CREATE TABLE active_workspace_mounts (
+			project_id TEXT NOT NULL,
+			workspace_id TEXT NOT NULL,
+			sandbox_key BLOB NOT NULL,
+			PRIMARY KEY (project_id, workspace_id)
+		) WITHOUT ROWID;
+		CREATE INDEX active_workspace_mounts_sandbox ON active_workspace_mounts(sandbox_key)`); err != nil {
+		return fmt.Errorf("migrate active workspace attachment index: %w", err)
+	}
 	var versionText string
 	err = tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key = 'schema_version'`).Scan(&versionText)
 	switch {
@@ -193,6 +219,12 @@ func (s *SQLiteStore) initialize(legacyJSONPath string) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key, value) VALUES ('schema_version', ?), ('state_schema_version', ?)`, strconv.Itoa(sqliteSchemaVersion), strconv.Itoa(CurrentSchemaVersion)); err != nil {
 			return fmt.Errorf("record state database schema version: %w", err)
 		}
+	}
+	// Admission indexes are derived from authoritative sandbox rows. Rebuilding
+	// them while opening also backfills databases created by earlier releases
+	// without changing the durable public state schema.
+	if err := rebuildSandboxAdmissionIndexesTx(ctx, tx); err != nil {
+		return fmt.Errorf("validate stored state while rebuilding sandbox admission indexes: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit state database initialization: %w", err)
@@ -507,12 +539,28 @@ func encodeState(state State) (encodedState, error) {
 }
 
 func syncEncodedState(ctx context.Context, tx *sql.Tx, before, after encodedState) error {
+	type sandboxIndexChange struct {
+		key           string
+		before, after []byte
+	}
+	var sandboxIndexChanges []sandboxIndexChange
+	type resourceIndexChange struct {
+		kind          string
+		key           string
+		before, after []byte
+	}
+	var admissionIndexChanges []resourceIndexChange
 	for kind, afterRows := range after.resources {
 		beforeRows := before.resources[kind]
 		for key := range beforeRows {
 			if _, exists := afterRows[key]; !exists {
 				if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE kind = ? AND resource_key = ?`, kind, []byte(key)); err != nil {
 					return err
+				}
+				if kind == resourceSandbox {
+					sandboxIndexChanges = append(sandboxIndexChanges, sandboxIndexChange{key: key, before: beforeRows[key]})
+				} else if kind == resourceWorkspace || kind == resourceEnvironment {
+					admissionIndexChanges = append(admissionIndexChanges, resourceIndexChange{kind: kind, key: key, before: beforeRows[key]})
 				}
 			}
 		}
@@ -523,6 +571,35 @@ func syncEncodedState(ctx context.Context, tx *sql.Tx, before, after encodedStat
 			if _, err := tx.ExecContext(ctx, `INSERT INTO resources(kind, resource_key, payload) VALUES (?, ?, ?) ON CONFLICT(kind, resource_key) DO UPDATE SET payload = excluded.payload`, kind, []byte(key), payload); err != nil {
 				return err
 			}
+			if kind == resourceSandbox {
+				sandboxIndexChanges = append(sandboxIndexChanges, sandboxIndexChange{key: key, before: beforeRows[key], after: payload})
+			} else if kind == resourceWorkspace || kind == resourceEnvironment {
+				admissionIndexChanges = append(admissionIndexChanges, resourceIndexChange{kind: kind, key: key, before: beforeRows[key], after: payload})
+			}
+		}
+	}
+	for _, change := range admissionIndexChanges {
+		if err := removeResourceAdmissionIndexTx(ctx, tx, change.kind, change.key, change.before); err != nil {
+			return err
+		}
+	}
+	for _, change := range admissionIndexChanges {
+		if err := addResourceAdmissionIndexTx(ctx, tx, change.kind, change.key, change.after); err != nil {
+			return err
+		}
+	}
+	// Workspace ownership handoffs can legitimately remove one active owner and
+	// add another in one state transaction. Remove every changed before-owner
+	// first, then insert after-owners, so Go map iteration order cannot create a
+	// transient uniqueness failure.
+	for _, change := range sandboxIndexChanges {
+		if err := removeSandboxAdmissionIndexesTx(ctx, tx, change.key, change.before); err != nil {
+			return err
+		}
+	}
+	for _, change := range sandboxIndexChanges {
+		if err := addSandboxAdmissionIndexesTx(ctx, tx, change.key, change.after); err != nil {
+			return err
 		}
 	}
 	for key := range before.events {
@@ -574,7 +651,7 @@ func replaceStateTx(ctx context.Context, tx *sql.Tx, state State) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM resources; DELETE FROM sandbox_events; DELETE FROM idempotency`); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM resources; DELETE FROM sandbox_events; DELETE FROM idempotency; DELETE FROM sandbox_capacity; DELETE FROM workspace_capacity; DELETE FROM environment_capacity; DELETE FROM active_workspace_mounts`); err != nil {
 		return err
 	}
 	return syncEncodedState(ctx, tx, encodedState{resources: map[string]map[string][]byte{}, events: map[string][]byte{}, idempotency: map[string]idempotencyRow{}}, encoded)

@@ -32,22 +32,13 @@ func (s *Service) CreateWorkspace(ctx context.Context, projectID, idempotencyKey
 	if err != nil {
 		return domain.Workspace{}, domain.Operation{}, err
 	}
-	if existing, ok, lookupErr := s.lookupIdempotencyInput(projectID, "create_workspace", idempotencyKey, inputDigest); lookupErr != nil {
-		return domain.Workspace{}, domain.Operation{}, lookupErr
-	} else if ok {
+	existing, active, err := s.admitWorkspaceCreate(projectID, idempotencyKey, inputDigest)
+	if err != nil {
+		return domain.Workspace{}, domain.Operation{}, err
+	}
+	if existing.ID != "" {
 		workspace, err := s.getWorkspace(projectID, existing.ResourceID)
 		return workspace, existing, err
-	}
-	active := 0
-	if err := s.store.View(func(state store.State) error {
-		for _, workspace := range state.Workspaces {
-			if workspace.ProjectID == projectID && !terminalWorkspace(workspace.State) {
-				active++
-			}
-		}
-		return nil
-	}); err != nil {
-		return domain.Workspace{}, domain.Operation{}, err
 	}
 	if active >= s.limits.MaxWorkspacesPerProject {
 		return domain.Workspace{}, domain.Operation{}, ErrQuota
@@ -70,7 +61,11 @@ func (s *Service) CreateWorkspace(ctx context.Context, projectID, idempotencyKey
 		ID: opID, ProjectID: projectID, Kind: "create_workspace", ResourceID: workspaceID,
 		State: domain.OperationRunning, IdempotencyKey: idempotencyKey, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.store.Update(func(state *store.State) error {
+	if err := store.UpdateRows(s.store, store.MutationScope{
+		Workspaces:  []string{store.ScopedKey(projectID, workspaceID)},
+		Operations:  []string{store.ScopedKey(projectID, opID)},
+		Idempotency: []string{store.IdempotencyKey(projectID, "create_workspace", idempotencyKey)},
+	}, func(state *store.State) error {
 		if existing, ok := idempotentOperation(*state, projectID, "create_workspace", idempotencyKey); ok {
 			if err := requireIdempotencyDigest(*state, projectID, "create_workspace", idempotencyKey, inputDigest); err != nil {
 				return err
@@ -101,7 +96,10 @@ func (s *Service) CreateWorkspace(ctx context.Context, projectID, idempotencyKey
 		now = s.now()
 		workspace.State, workspace.Failure, workspace.UpdatedAt = domain.WorkspaceUnknown, failure, now
 		op.State, op.Failure, op.UpdatedAt = domain.OperationFailed, failure, now
-		_ = s.store.Update(func(state *store.State) error {
+		_ = store.UpdateRows(s.store, store.MutationScope{
+			Workspaces: []string{store.ScopedKey(projectID, workspace.ID)},
+			Operations: []string{store.ScopedKey(projectID, op.ID)},
+		}, func(state *store.State) error {
 			state.Workspaces[store.ScopedKey(projectID, workspace.ID)] = workspace
 			state.Operations[store.ScopedKey(projectID, op.ID)] = op
 			return nil
@@ -113,7 +111,10 @@ func (s *Service) CreateWorkspace(ctx context.Context, projectID, idempotencyKey
 		now = s.now()
 		workspace.State, workspace.Failure, workspace.UpdatedAt = domain.WorkspaceUnknown, failure, now
 		op.State, op.Failure, op.UpdatedAt = domain.OperationFailed, failure, now
-		_ = s.store.Update(func(state *store.State) error {
+		_ = store.UpdateRows(s.store, store.MutationScope{
+			Workspaces: []string{store.ScopedKey(projectID, workspace.ID)},
+			Operations: []string{store.ScopedKey(projectID, op.ID)},
+		}, func(state *store.State) error {
 			state.Workspaces[store.ScopedKey(projectID, workspace.ID)] = workspace
 			state.Operations[store.ScopedKey(projectID, op.ID)] = op
 			return nil
@@ -124,7 +125,10 @@ func (s *Service) CreateWorkspace(ctx context.Context, projectID, idempotencyKey
 	now = s.now()
 	workspace.BackendID, workspace.State, workspace.UpdatedAt, workspace.Failure = remote.ID, domain.WorkspaceReady, now, nil
 	op.State, op.UpdatedAt, op.Failure = domain.OperationSucceeded, now, nil
-	err = s.store.Update(func(state *store.State) error {
+	err = store.UpdateRows(s.store, store.MutationScope{
+		Workspaces: []string{store.ScopedKey(projectID, workspace.ID)},
+		Operations: []string{store.ScopedKey(projectID, op.ID)},
+	}, func(state *store.State) error {
 		state.Workspaces[store.ScopedKey(projectID, workspace.ID)] = workspace
 		state.Operations[store.ScopedKey(projectID, op.ID)] = op
 		return nil
@@ -186,7 +190,11 @@ func (s *Service) DeleteWorkspace(ctx context.Context, projectID, id, idempotenc
 	if terminalWorkspace(workspace.State) {
 		return workspace, domain.Operation{}, fmt.Errorf("%w: workspace is already terminal", ErrConflict)
 	}
-	if s.workspaceAttachedLocked(projectID, id) {
+	attached, err := s.workspaceAttachedLocked(projectID, id)
+	if err != nil {
+		return workspace, domain.Operation{}, err
+	}
+	if attached {
 		return workspace, domain.Operation{}, fmt.Errorf("%w: workspace is attached to an active sandbox", ErrConflict)
 	}
 
@@ -200,7 +208,11 @@ func (s *Service) DeleteWorkspace(ctx context.Context, projectID, id, idempotenc
 		ID: opID, ProjectID: projectID, Kind: kind, ResourceID: id, State: domain.OperationRunning,
 		IdempotencyKey: idempotencyKey, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.store.Update(func(state *store.State) error {
+	if err := store.UpdateRows(s.store, store.MutationScope{
+		Workspaces:  []string{store.ScopedKey(projectID, id)},
+		Operations:  []string{store.ScopedKey(projectID, opID)},
+		Idempotency: []string{store.IdempotencyKey(projectID, kind, idempotencyKey)},
+	}, func(state *store.State) error {
 		state.Workspaces[store.ScopedKey(projectID, id)] = workspace
 		state.Operations[store.ScopedKey(projectID, opID)] = op
 		state.Idempotency[store.IdempotencyKey(projectID, kind, idempotencyKey)] = opID
@@ -244,7 +256,9 @@ func (s *Service) reconcileWorkspacesLocked(ctx context.Context) error {
 				workspace.Failure = &domain.Failure{Code: "backend_workspace_reconcile_failed", Message: "workspace engine state could not be confirmed", Retryable: true}
 			}
 			workspace.UpdatedAt = now
-			_ = s.store.Update(func(state *store.State) error {
+			_ = store.UpdateRows(s.store, store.MutationScope{
+				Workspaces: []string{store.ScopedKey(workspace.ProjectID, workspace.ID)},
+			}, func(state *store.State) error {
 				state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
 				return nil
 			})
@@ -284,15 +298,23 @@ func (s *Service) reconcileWorkspaceCleanupLocked(ctx context.Context, runtime b
 	if op.ID != "" {
 		op.State, op.UpdatedAt, op.Failure = domain.OperationSucceeded, now, nil
 	}
-	err := s.store.Update(func(state *store.State) error {
-		state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
-		if op.ID != "" {
+	var err error
+	if op.ID != "" {
+		err = store.UpdateRows(s.store, store.MutationScope{
+			Workspaces: []string{store.ScopedKey(workspace.ProjectID, workspace.ID)},
+			Operations: []string{store.ScopedKey(op.ProjectID, op.ID)},
+		}, func(state *store.State) error {
+			state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
 			state.Operations[store.ScopedKey(op.ProjectID, op.ID)] = op
-		} else {
+			return nil
+		})
+	} else {
+		err = s.store.Update(func(state *store.State) error {
+			state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
 			completeLatestOperation(state, workspace.ProjectID, workspace.ID, "delete_workspace:", now)
-		}
-		return nil
-	})
+			return nil
+		})
+	}
 	return workspace, op, err
 }
 
@@ -303,17 +325,29 @@ func (s *Service) failWorkspaceCleanupLocked(workspace domain.Workspace, op doma
 	if op.ID != "" {
 		op.State, op.UpdatedAt, op.Failure = domain.OperationFailed, now, failure
 	}
-	_ = s.store.Update(func(state *store.State) error {
-		state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
-		if op.ID != "" {
+	if op.ID != "" {
+		_ = store.UpdateRows(s.store, store.MutationScope{
+			Workspaces: []string{store.ScopedKey(workspace.ProjectID, workspace.ID)},
+			Operations: []string{store.ScopedKey(op.ProjectID, op.ID)},
+		}, func(state *store.State) error {
+			state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
 			state.Operations[store.ScopedKey(op.ProjectID, op.ID)] = op
-		}
-		return nil
-	})
+			return nil
+		})
+	} else {
+		_ = s.store.Update(func(state *store.State) error {
+			state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
+			return nil
+		})
+	}
 	return workspace, op, fmt.Errorf("%w: delete workspace", ErrBackend)
 }
 
 func (s *Service) getWorkspace(projectID, id string) (domain.Workspace, error) {
+	if reader, ok := s.store.(store.WorkspaceReader); ok {
+		workspace, err := reader.GetWorkspace(projectID, id)
+		return workspace, translateStore(err)
+	}
 	var out domain.Workspace
 	err := s.store.View(func(state store.State) error {
 		var ok bool
@@ -326,9 +360,12 @@ func (s *Service) getWorkspace(projectID, id string) (domain.Workspace, error) {
 	return out, translateStore(err)
 }
 
-func (s *Service) workspaceAttachedLocked(projectID, workspaceID string) bool {
+func (s *Service) workspaceAttachedLocked(projectID, workspaceID string) (bool, error) {
+	if reader, ok := s.store.(store.WorkspaceAttachmentReader); ok {
+		return reader.WorkspaceAttached(projectID, workspaceID)
+	}
 	attached := false
-	_ = s.store.View(func(state store.State) error {
+	err := s.store.View(func(state store.State) error {
 		for _, sandbox := range state.Sandboxes {
 			if sandbox.ProjectID != projectID || terminal(sandbox.State) {
 				continue
@@ -342,7 +379,49 @@ func (s *Service) workspaceAttachedLocked(projectID, workspaceID string) bool {
 		}
 		return nil
 	})
-	return attached
+	return attached, err
+}
+
+func (s *Service) admitWorkspaceCreate(projectID, idempotencyKey, inputDigest string) (domain.Operation, int, error) {
+	const kind = "create_workspace"
+	if reader, ok := s.store.(store.WorkspaceAdmissionReader); ok {
+		snapshot, err := reader.ReadWorkspaceAdmission(store.WorkspaceAdmissionQuery{
+			ProjectID: projectID, IdempotencyKind: kind, IdempotencyKey: idempotencyKey,
+		})
+		if err != nil {
+			return domain.Operation{}, 0, err
+		}
+		if snapshot.Idempotency.Found {
+			if snapshot.Idempotency.Digest != "" && snapshot.Idempotency.Digest != inputDigest {
+				return domain.Operation{}, 0, fmt.Errorf("%w: Idempotency-Key was already used with a different request", ErrConflict)
+			}
+			return snapshot.Idempotency.Operation, 0, nil
+		}
+		return domain.Operation{}, snapshot.ActiveForProject, nil
+	}
+	var existing domain.Operation
+	active := 0
+	var lookupErr error
+	err := s.store.View(func(state store.State) error {
+		existing, _ = idempotentOperation(state, projectID, kind, idempotencyKey)
+		if existing.ID != "" {
+			lookupErr = requireIdempotencyDigest(state, projectID, kind, idempotencyKey, inputDigest)
+			return nil
+		}
+		for _, workspace := range state.Workspaces {
+			if workspace.ProjectID == projectID && !terminalWorkspace(workspace.State) {
+				active++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.Operation{}, 0, err
+	}
+	if lookupErr != nil {
+		return domain.Operation{}, 0, lookupErr
+	}
+	return existing, active, nil
 }
 
 func (s *Service) latestOperationLocked(projectID, resourceID, kindPrefix string) domain.Operation {

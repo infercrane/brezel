@@ -353,11 +353,11 @@ measurements.
 6. Ask the selected microVM worker to create or resume the Firecracker VM.
 7. Install routing and egress policy before returning a usable endpoint.
 8. Mark `running` only after the guest health check and policy report succeed.
-9. Authorize process, filesystem, terminal, and port requests without exposing
-   the guest credential. In the target path, issue one-operation capabilities
-   so command, file, and application-port bytes travel through the node relay
-   rather than the durable API process. The current default path still proxies
-   them through the API-side engine adapter.
+9. Authorize process, filesystem, and port requests without exposing the guest
+   credential. The current single-host path issues one-operation capabilities so
+   command, file, and application-port bytes travel through the node relay rather
+   than the durable API process. Terminal transport remains unimplemented;
+   lifecycle operations continue through the durable API authority.
 10. Refresh activity through a bounded, coalesced lifecycle signal; the relay
     hot path must not fsync durable activity state for every byte operation, and
     activity does not extend absolute expiration.

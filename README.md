@@ -23,10 +23,13 @@ public CLI and HTTP API cover commands, files, temporary HTTP previews,
 persistent workspaces, checkpoints, and lifecycle.
 
 > [!WARNING]
-> **Private developer preview.** The supported evaluation profile is one
+> **Self-hosted private-tenant developer preview.** The supported profile is one
 > organization on one dedicated Ubuntu 24.04 x86-64 host with KVM and
-> `/dev/net/tun`. Brezel is not yet qualified for hostile shared multitenancy or
-> production availability. See the exact [claim boundary](docs/STATUS.md).
+> `/dev/net/tun`. Revision `121d7c6952c5bbc0010c365817ef540a1efbaca6` completed
+> destructive qualification on two separately administered hosts, each as an
+> independent single-host deployment. Brezel is not qualified for a cluster,
+> high availability, hostile shared multitenancy, or public production. See the
+> exact [claim boundary](docs/STATUS.md).
 
 ## First sandbox
 
@@ -148,20 +151,26 @@ require an E2B API key.
 The single-host distribution sends command, file, and preview traffic through
 a separate node relay. It uses mTLS identities, one-operation Ed25519
 capabilities, replay defense, durable route generations, and bounded protocols.
-The API remains the lifecycle authority. This integrated path passes repository
-tests but still requires fresh Linux/KVM failure qualification before it can
-carry a stronger release label.
+The API remains the lifecycle authority. At revision
+`121d7c6952c5bbc0010c365817ef540a1efbaca6`, this integrated path completed
+destructive qualification on each of two separately administered Linux/KVM
+hosts, including simultaneous conformance and controller/node-relay crash
+containment. This evidence does not establish a multi-node product topology.
 
 ## Readiness boundary
 
-**Current label:** private single-host release candidate.
+**Current label:** self-hosted private-tenant developer preview.
 
 - The repository test suite exercises contracts, races, authorization denial,
   restart behavior, cleanup, and security-negative cases.
-- A previous revision passed destructive qualification on a named four-core
-  Xeon host. That historical run does not qualify the current commit.
-- The current revision needs a fresh Linux/KVM qualification and benchmark
-  matrix. Brezel makes no portable startup-latency claim.
+- Revision `121d7c6952c5bbc0010c365817ef540a1efbaca6` passed the destructive
+  workflow on each of two independent Ubuntu 24.04 x86-64 KVM hosts. See the
+  [dated qualification report](docs/QUALIFICATION-2026-09-15.md).
+- The complete pre-optimization matrices finished with 24 of 24 cells passing
+  on a clean host and 22 of 24 on a long-lived host. The two failures were
+  concurrent filesystem restores; all expected resource cleanup succeeded.
+  See the exact [dated evidence](docs/QUALIFICATION-2026-09-15.md). Brezel makes
+  no portable startup-latency or competitive performance claim.
 
 <details>
 <summary><strong>Not implemented yet</strong></summary>

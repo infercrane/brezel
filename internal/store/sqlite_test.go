@@ -279,6 +279,232 @@ func TestSQLiteStoreReadyFailsAfterClose(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreUpdateRowsCommitsDeclaredRowsAndEvent(t *testing.T) {
+	s, err := OpenSQLite(privateTestPath(t, "state.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sandbox := sqliteTestSandbox()
+	unrelated := sandbox
+	unrelated.ID = "sbx-unrelated"
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Sandboxes[ScopedKey(unrelated.ProjectID, unrelated.ID)] = unrelated
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendSandboxEvent(domain.Event{ID: "evt-existing", ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID, Type: "sandbox.running", At: sandbox.CreatedAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	op := domain.Operation{
+		ID: "op-pause", ProjectID: sandbox.ProjectID, Kind: "pause_sandbox:" + sandbox.ID,
+		ResourceID: sandbox.ID, State: domain.OperationRunning, IdempotencyKey: "request-one",
+		CreatedAt: sandbox.CreatedAt, UpdatedAt: sandbox.UpdatedAt,
+	}
+	idempotency := IdempotencyKey(sandbox.ProjectID, op.Kind, op.IdempotencyKey)
+	sandbox.State = domain.SandboxPausing
+	sandbox.Revision++
+	if err := s.UpdateRows(MutationScope{
+		Sandboxes:    []string{ScopedKey(sandbox.ProjectID, sandbox.ID)},
+		Operations:   []string{ScopedKey(op.ProjectID, op.ID)},
+		Idempotency:  []string{idempotency},
+		EventStreams: []EventStream{{ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID}},
+	}, func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Operations[ScopedKey(op.ProjectID, op.ID)] = op
+		state.Idempotency[idempotency] = op.ID
+		state.Events = append(state.Events, domain.Event{
+			ID: "evt-pausing", Sequence: nextSandboxEventSequence(state.Events, sandbox.ProjectID, sandbox.ID),
+			ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID, OperationID: op.ID,
+			Type: "sandbox.pausing", State: sandbox.State, At: sandbox.UpdatedAt,
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.View(func(state State) error {
+		if got := state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)]; !reflect.DeepEqual(got, sandbox) {
+			t.Fatalf("sandbox mismatch: %#v", got)
+		}
+		if got := state.Sandboxes[ScopedKey(unrelated.ProjectID, unrelated.ID)]; !reflect.DeepEqual(got, unrelated) {
+			t.Fatalf("unrelated row changed: %#v", got)
+		}
+		if state.Idempotency[idempotency] != op.ID || !reflect.DeepEqual(state.Operations[ScopedKey(op.ProjectID, op.ID)], op) {
+			t.Fatal("operation and idempotency claim were not committed atomically")
+		}
+		if len(state.Events) != 2 || state.Events[1].Sequence != 2 {
+			t.Fatalf("events=%#v", state.Events)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSQLiteStoreUpdateRowsRollsBackAndRejectsUndeclaredChanges(t *testing.T) {
+	s, err := OpenSQLite(privateTestPath(t, "state.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sandbox := sqliteTestSandbox()
+	key := ScopedKey(sandbox.ProjectID, sandbox.ID)
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[key] = sandbox
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("stop")
+	if err := s.UpdateRows(MutationScope{Sandboxes: []string{key}}, func(state *State) error {
+		changed := state.Sandboxes[key]
+		changed.Revision++
+		state.Sandboxes[key] = changed
+		return wantErr
+	}); !errors.Is(err, wantErr) {
+		t.Fatalf("rollback error=%v", err)
+	}
+	undeclaredKey := ScopedKey(sandbox.ProjectID, "sbx-undeclared")
+	if err := s.UpdateRows(MutationScope{Sandboxes: []string{key}}, func(state *State) error {
+		changed := sandbox
+		changed.ID = "sbx-undeclared"
+		state.Sandboxes[undeclaredKey] = changed
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "undeclared resource") {
+		t.Fatalf("undeclared mutation error=%v", err)
+	}
+	if err := s.View(func(state State) error {
+		if state.Sandboxes[key].Revision != sandbox.Revision {
+			t.Fatal("rolled-back change persisted")
+		}
+		if _, ok := state.Sandboxes[undeclaredKey]; ok {
+			t.Fatal("undeclared row persisted")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSQLiteStoreUpdateRowsLoadsIdempotencyReplayDependencies(t *testing.T) {
+	s, err := OpenSQLite(privateTestPath(t, "state.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sandbox := sqliteTestSandbox()
+	op := domain.Operation{
+		ID: "op-existing", ProjectID: sandbox.ProjectID, Kind: "create_sandbox", ResourceID: sandbox.ID,
+		State: domain.OperationSucceeded, IdempotencyKey: "same-request", CreatedAt: sandbox.CreatedAt, UpdatedAt: sandbox.UpdatedAt,
+	}
+	idempotency := IdempotencyKey(sandbox.ProjectID, op.Kind, op.IdempotencyKey)
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Operations[ScopedKey(op.ProjectID, op.ID)] = op
+		state.Idempotency[idempotency] = op.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var gotOperation domain.Operation
+	var gotSandbox domain.Sandbox
+	if err := s.UpdateRows(MutationScope{
+		Sandboxes:   []string{ScopedKey(sandbox.ProjectID, "sbx-new")},
+		Operations:  []string{ScopedKey(op.ProjectID, "op-new")},
+		Idempotency: []string{idempotency},
+	}, func(state *State) error {
+		operationID := state.Idempotency[idempotency]
+		gotOperation = state.Operations[ScopedKey(sandbox.ProjectID, operationID)]
+		gotSandbox = state.Sandboxes[ScopedKey(sandbox.ProjectID, gotOperation.ResourceID)]
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotOperation, op) || !reflect.DeepEqual(gotSandbox, sandbox) {
+		t.Fatalf("replay dependencies missing: op=%#v sandbox=%#v", gotOperation, gotSandbox)
+	}
+}
+
+func TestSQLiteStoreUpdateRowsSerializesConcurrentMutations(t *testing.T) {
+	s, err := OpenSQLite(privateTestPath(t, "state.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sandbox := sqliteTestSandbox()
+	key := ScopedKey(sandbox.ProjectID, sandbox.ID)
+	if err := s.Update(func(state *State) error { state.Sandboxes[key] = sandbox; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	const workers = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- s.UpdateRows(MutationScope{Sandboxes: []string{key}}, func(state *State) error {
+				current := state.Sandboxes[key]
+				current.Revision++
+				state.Sandboxes[key] = current
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.GetSandbox(sandbox.ProjectID, sandbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != sandbox.Revision+workers {
+		t.Fatalf("revision=%d want=%d", got.Revision, sandbox.Revision+workers)
+	}
+}
+
+func TestSQLiteStoreUpdateRowsDoesNotMaterializeUnrelatedHistory(t *testing.T) {
+	s, err := OpenSQLite(privateTestPath(t, "state.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const unrelated = 2000
+	state := makeBenchmarkState(unrelated)
+	if err := s.Update(func(next *State) error {
+		*next = state
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := ScopedKey("project-bench", "sbx-000000")
+	if err := s.UpdateRows(MutationScope{Sandboxes: []string{key}}, func(scoped *State) error {
+		if len(scoped.Sandboxes) != 1 || len(scoped.Environments) != 0 || len(scoped.Operations) != 0 || len(scoped.Events) != 0 {
+			t.Fatalf("scoped callback materialized unrelated rows: sandboxes=%d environments=%d operations=%d events=%d", len(scoped.Sandboxes), len(scoped.Environments), len(scoped.Operations), len(scoped.Events))
+		}
+		sandbox := scoped.Sandboxes[key]
+		sandbox.Revision++
+		scoped.Sandboxes[key] = sandbox
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var sandboxCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM resources WHERE kind = ?`, resourceSandbox).Scan(&sandboxCount); err != nil {
+		t.Fatal(err)
+	}
+	if sandboxCount != unrelated {
+		t.Fatalf("sandbox rows=%d want=%d", sandboxCount, unrelated)
+	}
+}
+
 func sqliteTestSandbox() domain.Sandbox {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	return domain.Sandbox{

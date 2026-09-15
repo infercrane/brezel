@@ -132,6 +132,12 @@ services:
         condition: service_completed_successfully
     environment:
       BREZEL_ENGINE_ORCHESTRATOR_SHA256: ${BREZEL_ENGINE_ORCHESTRATOR_SHA256:?set the verified source-built orchestrator digest}
+      # Snapshot diffs are a recoverable performance cache, not durable
+      # workspace state. Keep their retention and physical allocation bounded
+      # independently of the host filesystem's last-resort pressure gate.
+      BUILD_CACHE_TTL: ${BREZEL_BUILD_CACHE_TTL:?set the audited build cache TTL}
+      BUILD_CACHE_MAX_BYTES: ${BREZEL_BUILD_CACHE_MAX_BYTES:?set the audited build cache byte high water}
+      BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT: ${BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT:?set the audited build cache disk high water}
       # The upstream launcher enters the host mount namespace before starting
       # the orchestrator. Pass the protected absolute host path rather than a
       # container mount target. The engine exposes workspace contents only

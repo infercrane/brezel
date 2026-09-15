@@ -1,16 +1,16 @@
 # ADR 0009: Establish an authenticated node-relay trust boundary
 
-- Status: accepted; single-host integration implemented, host qualification pending
+- Status: accepted; single-host integration qualified at revision `121d7c6952c5bbc0010c365817ef540a1efbaca6`
 - Date: 2026-09-14
 
 ## Context
 
-The current single-host server authorizes tenant operations and then calls the
-private engine through an in-process adapter. Command output, file contents,
-and preview traffic therefore traverse the same durable API process that owns
-lifecycle state. That couples the high-volume byte path to the durable
-authority, exposes engine integration concerns to a larger process, and makes
-multi-node routing harder to fence safely.
+Before this decision was integrated, the single-host server authorized tenant
+operations and called the private engine through an in-process adapter. Command
+output, file contents, and preview traffic therefore traversed the same durable
+API process that owned lifecycle state. That coupled the high-volume byte path
+to the durable authority, exposed engine integration concerns to a larger
+process, and made multi-node routing harder to fence safely.
 
 Moving bytes to a worker is not sufficient by itself. A relay must reject a
 valid request addressed to the wrong node, a VM assignment that has since been
@@ -88,7 +88,11 @@ Lifecycle engine calls intentionally continue through the durable service.
 This removes customer byte traffic from that process without distributing
 lifecycle authority. Dynamic node enrollment, online certificate and signing
 key rotation, durable node-operation receipts, fleet placement, failover, and
-Linux/KVM qualification remain outside the completed integration.
+cluster operation remain outside the completed integration. The default relay
+path completed named-host Linux/KVM qualification at revision
+`121d7c6952c5bbc0010c365817ef540a1efbaca6`; see
+[Qualification 2026-09-15](../QUALIFICATION-2026-09-15.md). That result covers
+independent single-host operation, not a fleet or availability profile.
 
 ## Limits and non-decisions
 
@@ -112,8 +116,8 @@ Linux/KVM qualification remain outside the completed integration.
   assigned node.
 - A stale route or reassigned sandbox fails closed through node, boot, route,
   generation, project, sandbox, operation, digest, and replay checks.
-- The future command, file, and application-port byte path can bypass the
-  durable API without moving lifecycle authority to the worker.
+- The command, file, and application-port byte path bypasses the durable API
+  without moving lifecycle authority to the worker.
 - Operators must provision and rotate two independent trust systems: mTLS
   identities and capability-signing keys.
 - Node restart and route-rebind behavior becomes a release-critical security
