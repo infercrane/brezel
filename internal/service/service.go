@@ -32,6 +32,8 @@ var (
 	ErrQuota    = errors.New("project quota exceeded")
 	ErrCapacity = errors.New("runtime capacity exhausted")
 	ErrBackend  = errors.New("backend failure")
+
+	errReconcileObservationSuperseded = errors.New("reconcile observation superseded")
 )
 
 var safeIdempotencyKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$`)
@@ -57,20 +59,21 @@ var DefaultLimits = Limits{
 }
 
 type Service struct {
-	mu                      sync.Mutex
-	store                   store.Store
-	backend                 backend.Backend
-	dataPlane               node.DataPlane
-	routeAdmin              NodeRouteAdministrator
-	broker                  *connector.Broker
-	signer                  *receipt.Signer
-	now                     func() time.Time
-	activeGuestOps          map[string]map[string]context.CancelFunc
-	activeGuestOpsByProject map[string]int
-	activeBackendMutations  map[string]struct{}
-	recentActivity          map[string]time.Time
-	limits                  Limits
-	observer                telemetry.Observer
+	mu                       sync.Mutex
+	store                    store.Store
+	backend                  backend.Backend
+	dataPlane                node.DataPlane
+	routeAdmin               NodeRouteAdministrator
+	broker                   *connector.Broker
+	signer                   *receipt.Signer
+	now                      func() time.Time
+	activeGuestOps           map[string]map[string]context.CancelFunc
+	activeGuestOpsByProject  map[string]int
+	activeBackendMutations   map[string]struct{}
+	activeWorkspaceMutations map[string]struct{}
+	recentActivity           map[string]time.Time
+	limits                   Limits
+	observer                 telemetry.Observer
 }
 
 // NodeRouteAdministrator is the private lifecycle authority for a configured
@@ -130,16 +133,17 @@ func New(st store.Store, be backend.Backend, signer *receipt.Signer, options ...
 		return nil, errors.New("release backend must enforce hostile-code isolation")
 	}
 	s := &Service{
-		store:                   st,
-		backend:                 be,
-		dataPlane:               node.NewBackendDataPlane(be),
-		signer:                  signer,
-		now:                     func() time.Time { return time.Now().UTC() },
-		activeGuestOps:          make(map[string]map[string]context.CancelFunc),
-		activeGuestOpsByProject: make(map[string]int),
-		activeBackendMutations:  make(map[string]struct{}),
-		recentActivity:          make(map[string]time.Time),
-		limits:                  DefaultLimits,
+		store:                    st,
+		backend:                  be,
+		dataPlane:                node.NewBackendDataPlane(be),
+		signer:                   signer,
+		now:                      func() time.Time { return time.Now().UTC() },
+		activeGuestOps:           make(map[string]map[string]context.CancelFunc),
+		activeGuestOpsByProject:  make(map[string]int),
+		activeBackendMutations:   make(map[string]struct{}),
+		activeWorkspaceMutations: make(map[string]struct{}),
+		recentActivity:           make(map[string]time.Time),
+		limits:                   DefaultLimits,
 	}
 	for _, option := range options {
 		option(s)
@@ -1053,90 +1057,358 @@ func (s *Service) Receipt(projectID, sandboxID string) (receipt.Envelope, error)
 }
 
 func (s *Service) Reconcile(ctx context.Context) error {
-	if err := s.reconcileBackendState(ctx); err != nil {
-		return err
+	backendErr := s.reconcileBackendState(ctx)
+	if err := ctx.Err(); err != nil {
+		return errors.Join(backendErr, err)
 	}
-	return s.reconcileAutoStandby(ctx)
+	standbyErr := s.reconcileAutoStandby(ctx)
+	return errors.Join(backendErr, standbyErr)
 }
 
 func (s *Service) reconcileBackendState(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.reconcileWorkspacesLocked(ctx); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	var sandboxes []domain.Sandbox
-	if err := s.store.View(func(state store.State) error {
-		for _, sandbox := range state.Sandboxes {
-			if !terminal(sandbox.State) {
-				sandboxes = append(sandboxes, sandbox)
-			}
-		}
-		return nil
-	}); err != nil {
+	operations, err := store.ListLifecycleOperationsForReconcile(s.store)
+	if err != nil {
 		return err
+	}
+	operationsByResource := indexReconcileOperations(operations)
+	reconcileErr := s.reconcileWorkspaces(ctx, operationsByResource)
+	sandboxes, err := store.ListSandboxesForReconcile(s.store)
+	if err != nil {
+		return errors.Join(reconcileErr, err)
 	}
 	for _, sandbox := range sandboxes {
-		if _, active := s.activeBackendMutations[store.ScopedKey(sandbox.ProjectID, sandbox.ID)]; active {
-			// This process has already durably admitted the create and is waiting
-			// for its backend result. A controller restart clears this in-memory
-			// guard, allowing the normal Find-based recovery path to take over.
-			continue
+		if err := ctx.Err(); err != nil {
+			return errors.Join(reconcileErr, err)
 		}
-		if sandbox.CleanupTarget == domain.SandboxDeleted || sandbox.CleanupTarget == domain.SandboxExpired {
-			_, _ = s.reconcileCleanupLocked(ctx, sandbox)
-			continue
+		key := store.ScopedKey(sandbox.ProjectID, sandbox.ID)
+		if err := s.reconcileSandboxBackendState(ctx, sandbox.ProjectID, sandbox.ID, operationsByResource[key]); err != nil {
+			reconcileErr = errors.Join(reconcileErr, err)
 		}
-		if !s.now().Before(sandbox.ExpiresAt) {
-			s.cancelActiveGuestOperationsLocked(sandbox.ProjectID, sandbox.ID)
-			_, _ = s.expireLocked(ctx, sandbox)
-			continue
-		}
-		if s.hasActiveGuestOperationsLocked(sandbox.ProjectID, sandbox.ID) {
-			// Inspect can advance the durable revision. A node data-plane binding
-			// admitted for the current revision must remain valid for the whole
-			// active stream, so ordinary observation waits for its lease to end.
-			continue
-		}
-		var remote backend.Sandbox
-		var err error
-		if sandbox.BackendID == "" {
-			remote, err = s.backend.Find(ctx, sandbox.ID, sandbox.ProjectID)
-		} else {
-			remote, err = s.backend.Inspect(ctx, sandbox.BackendID)
-		}
-		if err != nil {
-			if errors.Is(err, backend.ErrNotFound) {
-				_, _ = s.markMissingLocked(sandbox)
-			} else {
-				_, _ = s.markUnknownLocked(sandbox, "backend_reconcile_failed")
-			}
-			continue
-		}
-		now := s.now()
-		sandbox.BackendID = remote.ID
-		routed, routeErr := s.reconcileNodeRoute(ctx, sandbox, remote.State)
-		sandbox = routed
-		if routeErr != nil {
-			_, _ = s.markUnknownLocked(sandbox, "node_route_reconcile_failed")
-			continue
-		}
-		sandbox.State, sandbox.UpdatedAt, sandbox.Revision, sandbox.Failure = remote.State, now, sandbox.Revision+1, nil
-		_ = s.store.Update(func(state *store.State) error {
-			state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
-			switch sandbox.State {
-			case domain.SandboxRunning:
-				completeLatestOperation(state, sandbox.ProjectID, sandbox.ID, "create_sandbox", now)
-				completeLatestOperation(state, sandbox.ProjectID, sandbox.ID, "resume_sandbox:", now)
-			case domain.SandboxStandby:
-				completeLatestOperation(state, sandbox.ProjectID, sandbox.ID, "pause_sandbox:", now)
-				completeLatestOperation(state, sandbox.ProjectID, sandbox.ID, "auto_pause_sandbox:", now)
-			}
-			appendEvent(state, eventFor(sandbox, "", "sandbox.reconciled", now, nil))
-			return nil
-		})
 	}
-	return nil
+	return reconcileErr
+}
+
+func indexReconcileOperations(operations []domain.Operation) map[string][]domain.Operation {
+	indexed := make(map[string][]domain.Operation)
+	for _, operation := range operations {
+		key := store.ScopedKey(operation.ProjectID, operation.ResourceID)
+		indexed[key] = append(indexed[key], operation)
+	}
+	return indexed
+}
+
+// reconcileSandboxBackendState observes the engine without holding the
+// service-wide lifecycle lock. The observation is applied only after the
+// current durable revision and all admission fences are checked again under
+// that lock. Route transitions remain fenced because they mutate node state.
+func (s *Service) reconcileSandboxBackendState(ctx context.Context, projectID, sandboxID string, operationCandidates []domain.Operation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	sandbox, err := s.getSandbox(projectID, sandboxID)
+	if err != nil || terminal(sandbox.State) {
+		s.mu.Unlock()
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	mutationKey := store.ScopedKey(projectID, sandboxID)
+	if _, active := s.activeBackendMutations[mutationKey]; active {
+		// This process has already durably admitted the create and is waiting
+		// for its backend result. A controller restart clears this in-memory
+		// guard, allowing the normal Find-based recovery path to take over.
+		s.mu.Unlock()
+		return nil
+	}
+	if sandbox.CleanupTarget == domain.SandboxDeleted || sandbox.CleanupTarget == domain.SandboxExpired {
+		s.mu.Unlock()
+		return s.reconcileSandboxCleanup(ctx, projectID, sandboxID, operationCandidates)
+	}
+	if !s.now().Before(sandbox.ExpiresAt) {
+		s.cancelActiveGuestOperationsLocked(projectID, sandboxID)
+		if _, err := s.beginExpirationLocked(sandbox); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		s.mu.Unlock()
+		return s.reconcileSandboxCleanup(ctx, projectID, sandboxID, operationCandidates)
+	}
+	if s.hasActiveGuestOperationsLocked(projectID, sandboxID) {
+		// Observation must not change the revision while a guest stream holds a
+		// revision-bound route lease.
+		s.mu.Unlock()
+		return nil
+	}
+	expectedRevision := sandbox.Revision
+	backendID := sandbox.BackendID
+	s.mu.Unlock()
+
+	var remote backend.Sandbox
+	if backendID == "" {
+		remote, err = s.backend.Find(ctx, sandboxID, projectID)
+	} else {
+		remote, err = s.backend.Inspect(ctx, backendID)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	s.mu.Lock()
+	current, currentErr := s.getSandbox(projectID, sandboxID)
+	if currentErr != nil {
+		s.mu.Unlock()
+		if errors.Is(currentErr, ErrNotFound) {
+			return nil
+		}
+		return currentErr
+	}
+	if current.Revision != expectedRevision || terminal(current.State) {
+		s.mu.Unlock()
+		return nil
+	}
+	if _, active := s.activeBackendMutations[mutationKey]; active || s.hasActiveGuestOperationsLocked(projectID, sandboxID) {
+		s.mu.Unlock()
+		return nil
+	}
+	if current.CleanupTarget == domain.SandboxDeleted || current.CleanupTarget == domain.SandboxExpired {
+		s.mu.Unlock()
+		return nil
+	}
+	if !s.now().Before(current.ExpiresAt) {
+		s.cancelActiveGuestOperationsLocked(projectID, sandboxID)
+		if _, err := s.beginExpirationLocked(current); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		s.mu.Unlock()
+		return s.reconcileSandboxCleanup(ctx, projectID, sandboxID, operationCandidates)
+	}
+	if err != nil {
+		if errors.Is(err, backend.ErrNotFound) {
+			s.mu.Unlock()
+			return s.reconcileMissingSandbox(ctx, current, operationCandidates)
+		}
+		persistErr := s.markUnknownObservationLocked(current, current, "backend_reconcile_failed")
+		s.mu.Unlock()
+		return errors.Join(fmt.Errorf("%w: inspect sandbox: %v", ErrBackend, err), persistErr)
+	}
+	if remote.ID == "" || (backendID != "" && remote.ID != backendID) {
+		persistErr := s.markUnknownObservationLocked(current, current, "backend_identity_mismatch")
+		s.mu.Unlock()
+		return errors.Join(fmt.Errorf("%w: backend returned a mismatched sandbox identity", ErrBackend), persistErr)
+	}
+
+	routeExpected := current
+	observed := current
+	observed.BackendID = remote.ID
+	s.mu.Unlock()
+	routed, routeMutationRequired, routeErr := s.observeNodeRoute(ctx, observed, remote.State)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	s.mu.Lock()
+	current, currentErr = s.getSandbox(projectID, sandboxID)
+	if currentErr != nil {
+		s.mu.Unlock()
+		if errors.Is(currentErr, ErrNotFound) {
+			return nil
+		}
+		return currentErr
+	}
+	if !sameSandboxReconcileVersion(current, routeExpected) || terminal(current.State) ||
+		current.CleanupTarget == domain.SandboxDeleted || current.CleanupTarget == domain.SandboxExpired {
+		s.mu.Unlock()
+		return nil
+	}
+	if _, active := s.activeBackendMutations[mutationKey]; active || s.hasActiveGuestOperationsLocked(projectID, sandboxID) {
+		s.mu.Unlock()
+		return nil
+	}
+	if routeErr != nil {
+		persistErr := s.markUnknownObservationLocked(current, routed, "node_route_reconcile_failed")
+		s.mu.Unlock()
+		return errors.Join(fmt.Errorf("%w: reconcile node route: %v", ErrBackend, routeErr), persistErr)
+	}
+	if routeMutationRequired {
+		s.activeBackendMutations[mutationKey] = struct{}{}
+		s.mu.Unlock()
+		routed, routeErr = s.reconcileNodeRoute(ctx, routed, remote.State)
+		s.mu.Lock()
+		delete(s.activeBackendMutations, mutationKey)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			s.mu.Unlock()
+			return ctxErr
+		}
+		current, currentErr = s.getSandbox(projectID, sandboxID)
+		if currentErr != nil {
+			s.mu.Unlock()
+			if errors.Is(currentErr, ErrNotFound) {
+				return nil
+			}
+			return currentErr
+		}
+		if !sameSandboxReconcileVersion(current, routeExpected) || terminal(current.State) ||
+			current.CleanupTarget == domain.SandboxDeleted || current.CleanupTarget == domain.SandboxExpired ||
+			s.hasActiveGuestOperationsLocked(projectID, sandboxID) {
+			s.mu.Unlock()
+			return nil
+		}
+		if routeErr != nil {
+			persistErr := s.markUnknownObservationLocked(current, routed, "node_route_reconcile_failed")
+			s.mu.Unlock()
+			return errors.Join(fmt.Errorf("%w: reconcile node route: %v", ErrBackend, routeErr), persistErr)
+		}
+	}
+	observed = routed
+	observed.State, observed.Failure = remote.State, nil
+	operations := latestReconcileOperations(operationCandidates, observed.State)
+	if sameReconcileObservation(current, observed) && len(operations) == 0 {
+		// A successful health observation is not a lifecycle transition. Do not
+		// inflate revisions or event history merely because the timer fired.
+		s.mu.Unlock()
+		return nil
+	}
+
+	now := s.now()
+	scope := store.MutationScope{
+		Operations: operationScope(operations),
+	}
+	observationChanged := !sameReconcileObservation(current, observed)
+	if observationChanged {
+		observed.UpdatedAt, observed.Revision = now, current.Revision+1
+		scope.Sandboxes = []string{mutationKey}
+		scope.EventStreams = []store.EventStream{{ProjectID: projectID, ResourceID: sandboxID}}
+	}
+	persistErr := store.UpdateRows(s.store, scope, func(state *store.State) error {
+		if observationChanged {
+			persisted, ok := state.Sandboxes[mutationKey]
+			if !ok || !sameSandboxReconcileVersion(persisted, current) {
+				return errReconcileObservationSuperseded
+			}
+			state.Sandboxes[mutationKey] = observed
+		}
+		for _, operation := range operations {
+			persisted, ok := state.Operations[store.ScopedKey(projectID, operation.ID)]
+			if !ok || !sameOperationVersion(persisted, operation) {
+				return errReconcileObservationSuperseded
+			}
+			operation.State, operation.UpdatedAt, operation.Failure = domain.OperationSucceeded, now, nil
+			state.Operations[store.ScopedKey(projectID, operation.ID)] = operation
+		}
+		if observationChanged {
+			appendEvent(state, eventFor(observed, "", "sandbox.reconciled", now, nil))
+		}
+		return nil
+	})
+	s.mu.Unlock()
+	if errors.Is(persistErr, errReconcileObservationSuperseded) {
+		return nil
+	}
+	return persistErr
+}
+
+func sameSandboxReconcileVersion(current, expected domain.Sandbox) bool {
+	return current.Revision == expected.Revision &&
+		current.BackendID == expected.BackendID &&
+		current.NodeID == expected.NodeID &&
+		current.NodeRouteID == expected.NodeRouteID &&
+		current.NodeGeneration == expected.NodeGeneration
+}
+
+func sameReconcileObservation(left, right domain.Sandbox) bool {
+	return left.BackendID == right.BackendID &&
+		left.State == right.State &&
+		left.NodeID == right.NodeID &&
+		left.NodeRouteID == right.NodeRouteID &&
+		left.NodeGeneration == right.NodeGeneration &&
+		sameFailure(left.Failure, right.Failure)
+}
+
+func sameFailure(left, right *domain.Failure) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Code == right.Code && left.Message == right.Message && left.Retryable == right.Retryable
+}
+
+func (s *Service) markUnknownObservationLocked(current, observed domain.Sandbox, code string) error {
+	observed.State = domain.SandboxUnknown
+	observed.Failure = &domain.Failure{Code: code, Message: "backend state could not be confirmed", Retryable: true}
+	if sameReconcileObservation(current, observed) {
+		return nil
+	}
+	_, err := s.markUnknownLocked(observed, code)
+	return err
+}
+
+func latestReconcileOperations(candidates []domain.Operation, state domain.SandboxState) []domain.Operation {
+	var prefixes []string
+	switch state {
+	case domain.SandboxRunning:
+		prefixes = []string{"create_sandbox", "resume_sandbox:"}
+	case domain.SandboxStandby:
+		prefixes = []string{"pause_sandbox:", "auto_pause_sandbox:"}
+	default:
+		return nil
+	}
+	selected := make([]domain.Operation, len(prefixes))
+	for _, operation := range candidates {
+		for index, prefix := range prefixes {
+			if !strings.HasPrefix(operation.Kind, prefix) {
+				continue
+			}
+			if selected[index].ID == "" || selected[index].UpdatedAt.Before(operation.UpdatedAt) {
+				selected[index] = operation
+			}
+		}
+	}
+	operations := make([]domain.Operation, 0, len(selected))
+	for _, operation := range selected {
+		if operation.ID != "" && operation.State != domain.OperationSucceeded {
+			operations = append(operations, operation)
+		}
+	}
+	return operations
+}
+
+func operationScope(operations []domain.Operation) []string {
+	scope := make([]string, 0, len(operations))
+	for _, operation := range operations {
+		scope = append(scope, store.ScopedKey(operation.ProjectID, operation.ID))
+	}
+	return scope
+}
+
+func sameOperationVersion(current, expected domain.Operation) bool {
+	return current.ID == expected.ID && current.ProjectID == expected.ProjectID &&
+		current.ResourceID == expected.ResourceID && current.Kind == expected.Kind &&
+		current.State == expected.State && current.UpdatedAt.Equal(expected.UpdatedAt)
+}
+
+func latestIncompleteOperations(candidates []domain.Operation, prefixes ...string) []domain.Operation {
+	selected := make([]domain.Operation, len(prefixes))
+	for _, operation := range candidates {
+		for index, prefix := range prefixes {
+			if !strings.HasPrefix(operation.Kind, prefix) {
+				continue
+			}
+			if selected[index].ID == "" || selected[index].UpdatedAt.Before(operation.UpdatedAt) {
+				selected[index] = operation
+			}
+		}
+	}
+	operations := make([]domain.Operation, 0, len(selected))
+	for _, operation := range selected {
+		if operation.ID != "" && operation.State != domain.OperationSucceeded {
+			operations = append(operations, operation)
+		}
+	}
+	return operations
 }
 
 // reconcileAutoStandby applies the product-owned inactivity policy after
@@ -1146,15 +1418,14 @@ func (s *Service) reconcileBackendState(ctx context.Context) error {
 // service releases that lock and asks the engine to pause.
 func (s *Service) reconcileAutoStandby(ctx context.Context) error {
 	var candidates []struct{ projectID, sandboxID string }
-	if err := s.store.View(func(state store.State) error {
-		for _, sandbox := range state.Sandboxes {
-			if sandbox.State == domain.SandboxRunning && sandbox.Lifecycle.StandbyAfterSeconds > 0 {
-				candidates = append(candidates, struct{ projectID, sandboxID string }{sandbox.ProjectID, sandbox.ID})
-			}
-		}
-		return nil
-	}); err != nil {
+	sandboxes, err := store.ListSandboxesForReconcile(s.store)
+	if err != nil {
 		return err
+	}
+	for _, sandbox := range sandboxes {
+		if sandbox.State == domain.SandboxRunning && sandbox.Lifecycle.StandbyAfterSeconds > 0 {
+			candidates = append(candidates, struct{ projectID, sandboxID string }{sandbox.ProjectID, sandbox.ID})
+		}
 	}
 	var reconcileErr error
 	for _, candidate := range candidates {
@@ -1420,23 +1691,257 @@ func (s *Service) failTransitionLocked(sandbox domain.Sandbox, op domain.Operati
 }
 
 func (s *Service) expireLocked(ctx context.Context, sandbox domain.Sandbox) (domain.Sandbox, error) {
-	sandbox.CleanupTarget = domain.SandboxExpired
+	sandbox, err := s.beginExpirationLocked(sandbox)
+	if err != nil {
+		return sandbox, err
+	}
+	return s.reconcileCleanupLocked(ctx, sandbox)
+}
+
+// beginExpirationLocked establishes durable cleanup intent before any
+// destructive backend or route operation is allowed to run.
+func (s *Service) beginExpirationLocked(sandbox domain.Sandbox) (domain.Sandbox, error) {
+	if sandbox.CleanupTarget == domain.SandboxDeleted {
+		return sandbox, fmt.Errorf("%w: sandbox deletion is already in progress", ErrConflict)
+	}
+	if sandbox.State == domain.SandboxDeleting && sandbox.CleanupTarget == domain.SandboxExpired {
+		return sandbox, nil
+	}
 	if sandbox.State != domain.SandboxDeleting {
 		if !domain.CanTransition(sandbox.State, domain.SandboxDeleting) {
 			return sandbox, fmt.Errorf("%w: cannot expire sandbox from %s", ErrConflict, sandbox.State)
 		}
-		now := s.now()
-		sandbox.State, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxDeleting, now, sandbox.Revision+1
-		_ = store.UpdateRows(s.store, store.MutationScope{
-			Sandboxes:    []string{store.ScopedKey(sandbox.ProjectID, sandbox.ID)},
-			EventStreams: []store.EventStream{{ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID}},
-		}, func(state *store.State) error {
-			state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
-			appendEvent(state, eventFor(sandbox, "", "sandbox.expiring", now, nil))
-			return nil
-		})
 	}
-	return s.reconcileCleanupLocked(ctx, sandbox)
+	now := s.now()
+	sandbox.CleanupTarget = domain.SandboxExpired
+	sandbox.State, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxDeleting, now, sandbox.Revision+1
+	if err := store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{store.ScopedKey(sandbox.ProjectID, sandbox.ID)},
+		EventStreams: []store.EventStream{{ProjectID: sandbox.ProjectID, ResourceID: sandbox.ID}},
+	}, func(state *store.State) error {
+		state.Sandboxes[store.ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		appendEvent(state, eventFor(sandbox, "", "sandbox.expiring", now, nil))
+		return nil
+	}); err != nil {
+		return sandbox, err
+	}
+	return sandbox, nil
+}
+
+// reconcileSandboxCleanup executes destructive backend and node operations
+// without holding the service-wide lock. Cleanup intent is already durable;
+// the result is committed only if the same sandbox revision and route
+// generation are still current.
+func (s *Service) reconcileSandboxCleanup(ctx context.Context, projectID, sandboxID string, operationCandidates []domain.Operation) error {
+	key := store.ScopedKey(projectID, sandboxID)
+	s.mu.Lock()
+	current, err := s.getSandbox(projectID, sandboxID)
+	if err != nil {
+		s.mu.Unlock()
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if terminal(current.State) || (current.CleanupTarget != domain.SandboxDeleted && current.CleanupTarget != domain.SandboxExpired) {
+		s.mu.Unlock()
+		return nil
+	}
+	if _, active := s.activeBackendMutations[key]; active || s.hasActiveGuestOperationsLocked(projectID, sandboxID) {
+		s.mu.Unlock()
+		return nil
+	}
+	expected := current
+	s.activeBackendMutations[key] = struct{}{}
+	s.mu.Unlock()
+
+	routed, failureCode, externalErr := s.cleanupSandboxOutsideLock(ctx, current)
+
+	s.mu.Lock()
+	delete(s.activeBackendMutations, key)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		s.mu.Unlock()
+		return ctxErr
+	}
+	current, err = s.getSandbox(projectID, sandboxID)
+	if err != nil {
+		s.mu.Unlock()
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if !sameSandboxReconcileVersion(current, expected) || terminal(current.State) || current.CleanupTarget != expected.CleanupTarget {
+		s.mu.Unlock()
+		return nil
+	}
+	if externalErr != nil {
+		persistErr := s.markUnknownObservationLocked(current, routed, failureCode)
+		s.mu.Unlock()
+		return errors.Join(fmt.Errorf("%w: %s: %v", ErrBackend, failureCode, externalErr), persistErr)
+	}
+	err = s.completeReconciledCleanupLocked(current, routed, operationCandidates)
+	s.mu.Unlock()
+	return err
+}
+
+func (s *Service) cleanupSandboxOutsideLock(ctx context.Context, sandbox domain.Sandbox) (domain.Sandbox, string, error) {
+	if sandbox.BackendID == "" {
+		remote, err := s.backend.Find(ctx, sandbox.ID, sandbox.ProjectID)
+		switch {
+		case err == nil && remote.ID != "":
+			sandbox.BackendID = remote.ID
+		case err == nil:
+			return sandbox, "backend_cleanup_identity_invalid", errors.New("backend returned an empty sandbox identity")
+		case errors.Is(err, backend.ErrNotFound):
+			// Durable cleanup intent makes confirmed absence a successful cleanup.
+		default:
+			return sandbox, "backend_cleanup_recovery_failed", err
+		}
+	}
+	routed, err := s.prepareNodeRoutePause(ctx, sandbox)
+	if err != nil {
+		return routed, "node_route_cleanup_fence_failed", err
+	}
+	sandbox = routed
+	if sandbox.BackendID != "" {
+		if err := s.backend.Delete(ctx, sandbox.BackendID); err != nil && !errors.Is(err, backend.ErrNotFound) {
+			return sandbox, "backend_cleanup_failed", err
+		}
+	}
+	routed, err = s.removeNodeRoute(ctx, sandbox)
+	if err != nil {
+		return routed, "node_route_cleanup_failed", err
+	}
+	return routed, "", nil
+}
+
+func (s *Service) completeReconciledCleanupLocked(current, routed domain.Sandbox, operationCandidates []domain.Operation) error {
+	now := s.now()
+	key := store.ScopedKey(current.ProjectID, current.ID)
+	completed := routed
+	completed.State, completed.UpdatedAt, completed.Revision, completed.Failure = current.CleanupTarget, now, current.Revision+1, nil
+	var operations []domain.Operation
+	if current.CleanupTarget == domain.SandboxDeleted {
+		operations = latestIncompleteOperations(operationCandidates, "delete_sandbox:")
+	}
+	err := store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{key},
+		Operations:   operationScope(operations),
+		EventStreams: []store.EventStream{{ProjectID: current.ProjectID, ResourceID: current.ID}},
+	}, func(state *store.State) error {
+		persisted, ok := state.Sandboxes[key]
+		if !ok || !sameSandboxReconcileVersion(persisted, current) || persisted.CleanupTarget != current.CleanupTarget {
+			return errReconcileObservationSuperseded
+		}
+		state.Sandboxes[key] = completed
+		for _, operation := range operations {
+			operationKey := store.ScopedKey(operation.ProjectID, operation.ID)
+			persistedOperation, ok := state.Operations[operationKey]
+			if !ok || !sameOperationVersion(persistedOperation, operation) {
+				return errReconcileObservationSuperseded
+			}
+			operation.State, operation.UpdatedAt, operation.Failure = domain.OperationSucceeded, now, nil
+			state.Operations[operationKey] = operation
+		}
+		appendEvent(state, eventFor(completed, "", "sandbox."+string(completed.State), now, nil))
+		return nil
+	})
+	if errors.Is(err, errReconcileObservationSuperseded) {
+		return nil
+	}
+	return err
+}
+
+func (s *Service) reconcileMissingSandbox(ctx context.Context, expected domain.Sandbox, operationCandidates []domain.Operation) error {
+	key := store.ScopedKey(expected.ProjectID, expected.ID)
+	s.mu.Lock()
+	current, err := s.getSandbox(expected.ProjectID, expected.ID)
+	if err != nil {
+		s.mu.Unlock()
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if !sameSandboxReconcileVersion(current, expected) || terminal(current.State) ||
+		current.CleanupTarget == domain.SandboxDeleted || current.CleanupTarget == domain.SandboxExpired ||
+		s.hasActiveGuestOperationsLocked(current.ProjectID, current.ID) {
+		s.mu.Unlock()
+		return nil
+	}
+	if _, active := s.activeBackendMutations[key]; active {
+		s.mu.Unlock()
+		return nil
+	}
+	s.activeBackendMutations[key] = struct{}{}
+	s.mu.Unlock()
+
+	routed, routeErr := s.removeNodeRoute(ctx, current)
+
+	s.mu.Lock()
+	delete(s.activeBackendMutations, key)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		s.mu.Unlock()
+		return ctxErr
+	}
+	latest, err := s.getSandbox(expected.ProjectID, expected.ID)
+	if err != nil {
+		s.mu.Unlock()
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if !sameSandboxReconcileVersion(latest, current) || terminal(latest.State) ||
+		latest.CleanupTarget == domain.SandboxDeleted || latest.CleanupTarget == domain.SandboxExpired {
+		s.mu.Unlock()
+		return nil
+	}
+	if routeErr != nil {
+		persistErr := s.markUnknownObservationLocked(latest, routed, "node_route_missing_backend_cleanup_failed")
+		s.mu.Unlock()
+		return errors.Join(fmt.Errorf("%w: remove stale node route: %v", ErrBackend, routeErr), persistErr)
+	}
+	err = s.markReconciledMissingLocked(latest, routed, operationCandidates)
+	s.mu.Unlock()
+	return err
+}
+
+func (s *Service) markReconciledMissingLocked(current, routed domain.Sandbox, operationCandidates []domain.Operation) error {
+	now := s.now()
+	key := store.ScopedKey(current.ProjectID, current.ID)
+	failure := &domain.Failure{Code: "backend_resource_missing", Message: "backend confirmed the sandbox resource is absent", Retryable: false}
+	failed := routed
+	failed.State, failed.UpdatedAt, failed.Revision, failed.Failure = domain.SandboxFailed, now, current.Revision+1, failure
+	operations := latestIncompleteOperations(operationCandidates,
+		"create_sandbox", "resume_sandbox:", "pause_sandbox:", "auto_pause_sandbox:", "delete_sandbox:")
+	err := store.UpdateRows(s.store, store.MutationScope{
+		Sandboxes:    []string{key},
+		Operations:   operationScope(operations),
+		EventStreams: []store.EventStream{{ProjectID: current.ProjectID, ResourceID: current.ID}},
+	}, func(state *store.State) error {
+		persisted, ok := state.Sandboxes[key]
+		if !ok || !sameSandboxReconcileVersion(persisted, current) {
+			return errReconcileObservationSuperseded
+		}
+		state.Sandboxes[key] = failed
+		for _, operation := range operations {
+			operationKey := store.ScopedKey(operation.ProjectID, operation.ID)
+			persistedOperation, ok := state.Operations[operationKey]
+			if !ok || !sameOperationVersion(persistedOperation, operation) {
+				return errReconcileObservationSuperseded
+			}
+			operation.State, operation.UpdatedAt, operation.Failure = domain.OperationFailed, now, failure
+			state.Operations[operationKey] = operation
+		}
+		appendEvent(state, eventFor(failed, "", "sandbox.failed", now, map[string]any{"code": failure.Code}))
+		return nil
+	})
+	if errors.Is(err, errReconcileObservationSuperseded) {
+		return nil
+	}
+	return err
 }
 
 func (s *Service) reconcileCleanupLocked(ctx context.Context, sandbox domain.Sandbox) (domain.Sandbox, error) {

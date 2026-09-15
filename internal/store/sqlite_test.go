@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -503,6 +505,505 @@ func TestSQLiteStoreUpdateRowsDoesNotMaterializeUnrelatedHistory(t *testing.T) {
 	if sandboxCount != unrelated {
 		t.Fatalf("sandbox rows=%d want=%d", sandboxCount, unrelated)
 	}
+}
+
+func TestSQLiteReconcileScanDoesNotMaterializeEventOrIdempotencyLedger(t *testing.T) {
+	path := privateTestPath(t, "state.db")
+	s, err := OpenSQLite(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sandbox := sqliteTestSandbox()
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 2_000; index++ {
+		resourceID := fmt.Sprintf("unrelated-%04d", index)
+		if _, err := tx.Exec(`INSERT INTO sandbox_events(project_id, resource_id, sequence, event_id, payload) VALUES (?, ?, ?, ?, ?)`, "project-a", resourceID, 1, "event-"+resourceID, []byte("{")); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(`INSERT INTO idempotency(idempotency_key, operation_id, digest) VALUES (?, ?, ?)`, []byte(fmt.Sprintf("project-a\x00operation\x00key-%04d", index)), "missing-operation", "digest"); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.View(func(State) error { return nil }); err == nil {
+		t.Fatal("whole-state view unexpectedly accepted deliberately unreadable unrelated history")
+	}
+	sandboxes, err := s.ListSandboxesForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sandboxes) != 1 || sandboxes[0].ID != sandbox.ID {
+		t.Fatalf("reconcile scan = %#v", sandboxes)
+	}
+}
+
+func TestSQLiteLifecycleOperationHeadsAreBoundedAndSettledHeadSuppressesHistory(t *testing.T) {
+	path := privateTestPath(t, "state.db")
+	s, err := OpenSQLite(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	sandbox := sqliteTestSandbox()
+	oldIncomplete := sqliteLifecycleOperation("op-create-old", sandbox.ID, "create_sandbox", domain.OperationRunning, now)
+	settledHead := sqliteLifecycleOperation("op-create-settled", sandbox.ID, "create_sandbox", domain.OperationSucceeded, now.Add(time.Second))
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Operations[ScopedKey(oldIncomplete.ProjectID, oldIncomplete.ID)] = oldIncomplete
+		state.Operations[ScopedKey(settledHead.ProjectID, settledHead.ID)] = settledHead
+		for index := 0; index < 500; index++ {
+			guest := sqliteLifecycleOperation(fmt.Sprintf("op-guest-%04d", index), sandbox.ID, "run_command", domain.OperationSucceeded, now.Add(time.Duration(index)*time.Millisecond))
+			state.Operations[ScopedKey(guest.ProjectID, guest.ID)] = guest
+			historical := sqliteLifecycleOperation(fmt.Sprintf("op-create-history-%04d", index), sandbox.ID, "create_sandbox", domain.OperationRunning, now.Add(-time.Duration(index+1)*time.Second))
+			state.Operations[ScopedKey(historical.ProjectID, historical.ID)] = historical
+		}
+		nearPrefix := sqliteLifecycleOperation("op-near-prefix", sandbox.ID, "create_sandbox_extra", domain.OperationRunning, now.Add(3*time.Second))
+		state.Operations[ScopedKey(nearPrefix.ProjectID, nearPrefix.ID)] = nearPrefix
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err := s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 0 {
+		t.Fatalf("settled head did not suppress older incomplete operations: %#v", operations)
+	}
+	var heads int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM lifecycle_operation_heads`).Scan(&heads); err != nil {
+		t.Fatal(err)
+	}
+	if heads != 1 {
+		t.Fatalf("head rows=%d want=1 for 502 lifecycle/guest operations", heads)
+	}
+
+	failedResume := sqliteLifecycleOperation("op-resume-failed", sandbox.ID, "resume_sandbox:"+sandbox.ID, domain.OperationFailed, now.Add(2*time.Second))
+	if err := s.UpdateRows(MutationScope{Operations: []string{ScopedKey(failedResume.ProjectID, failedResume.ID)}}, func(state *State) error {
+		state.Operations[ScopedKey(failedResume.ProjectID, failedResume.ID)] = failedResume
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != failedResume.ID {
+		t.Fatalf("recoverable heads=%#v", operations)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM lifecycle_operation_heads`).Scan(&heads); err != nil {
+		t.Fatal(err)
+	}
+	if heads != 2 {
+		t.Fatalf("head rows=%d want=2 families", heads)
+	}
+	rollbackErr := errors.New("rollback projection")
+	deleteAttempt := sqliteLifecycleOperation("op-delete-rollback", sandbox.ID, "delete_sandbox:"+sandbox.ID, domain.OperationRunning, now.Add(4*time.Second))
+	if err := s.UpdateRows(MutationScope{Operations: []string{ScopedKey(deleteAttempt.ProjectID, deleteAttempt.ID)}}, func(state *State) error {
+		state.Operations[ScopedKey(deleteAttempt.ProjectID, deleteAttempt.ID)] = deleteAttempt
+		return rollbackErr
+	}); !errors.Is(err, rollbackErr) {
+		t.Fatalf("rollback error=%v", err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM lifecycle_operation_heads`).Scan(&heads); err != nil {
+		t.Fatal(err)
+	}
+	if heads != 2 {
+		t.Fatalf("rolled-back projection changed head rows to %d", heads)
+	}
+}
+
+func TestSQLiteLifecycleOperationHeadsMigrateRebuildAndChooseDeterministically(t *testing.T) {
+	path := privateTestPath(t, "state.db")
+	s, err := OpenSQLite(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	sandbox := sqliteTestSandbox()
+	olderCreated := sqliteLifecycleOperation("op-z", sandbox.ID, "create_sandbox", domain.OperationRunning, now)
+	olderCreated.CreatedAt = now.Add(-time.Second)
+	newerCreated := sqliteLifecycleOperation("op-a", sandbox.ID, "create_sandbox", domain.OperationFailed, now)
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Operations[ScopedKey(olderCreated.ProjectID, olderCreated.ID)] = olderCreated
+		state.Operations[ScopedKey(newerCreated.ProjectID, newerCreated.ID)] = newerCreated
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE lifecycle_operation_heads`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenSQLite(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	operations, err := reopened.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != newerCreated.ID {
+		t.Fatalf("rebuilt deterministic head=%#v", operations)
+	}
+	var operationID string
+	if err := reopened.db.QueryRow(`SELECT operation_id FROM lifecycle_operation_heads`).Scan(&operationID); err != nil {
+		t.Fatal(err)
+	}
+	if operationID != newerCreated.ID {
+		t.Fatalf("operation head=%q want=%q", operationID, newerCreated.ID)
+	}
+}
+
+func TestSQLiteLifecycleOperationHeadPreservesInsertionOrderAcrossClockRegressionAndReopen(t *testing.T) {
+	path := privateTestPath(t, "state.db")
+	s, err := OpenSQLite(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	sandbox := sqliteTestSandbox()
+	older := sqliteLifecycleOperation("op-pause-older", sandbox.ID, "pause_sandbox:"+sandbox.ID, domain.OperationFailed, now.Add(time.Hour))
+	newer := sqliteLifecycleOperation("op-pause-newer", sandbox.ID, "pause_sandbox:"+sandbox.ID, domain.OperationRunning, now)
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Operations[ScopedKey(older.ProjectID, older.ID)] = older
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRows(MutationScope{Operations: []string{ScopedKey(newer.ProjectID, newer.ID)}}, func(state *State) error {
+		state.Operations[ScopedKey(newer.ProjectID, newer.ID)] = newer
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Updating an older non-head after the new attempt was admitted must not
+	// reorder the family, even when its wall-clock timestamp moves farther ahead.
+	older.UpdatedAt = now.Add(2 * time.Hour)
+	older.Failure = &domain.Failure{Code: "older_attempt", Message: "historical failure", Retryable: true}
+	if err := s.UpdateRows(MutationScope{Operations: []string{ScopedKey(older.ProjectID, older.ID)}}, func(state *State) error {
+		state.Operations[ScopedKey(older.ProjectID, older.ID)] = older
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err := s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != newer.ID {
+		t.Fatalf("clock-regressed insertion head=%#v", operations)
+	}
+	var projectionVersion string
+	if err := s.db.QueryRow(`SELECT value FROM metadata WHERE key = ?`, lifecycleOperationHeadsProjectionMetadataKey).Scan(&projectionVersion); err != nil {
+		t.Fatal(err)
+	}
+	if projectionVersion != strconv.Itoa(lifecycleOperationHeadsProjectionVersion) {
+		t.Fatalf("projection version=%q", projectionVersion)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenSQLite(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	operations, err = reopened.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != newer.ID {
+		t.Fatalf("ordinary reopen rebuilt insertion-ordered head using wall clock: %#v", operations)
+	}
+	var operationID string
+	if err := reopened.db.QueryRow(`SELECT operation_id FROM lifecycle_operation_heads`).Scan(&operationID); err != nil {
+		t.Fatal(err)
+	}
+	if operationID != newer.ID {
+		t.Fatalf("durable operation head=%q want=%q", operationID, newer.ID)
+	}
+}
+
+func TestSQLiteLifecycleOperationHeadsRebuildWhenProjectionMarkerIsMissing(t *testing.T) {
+	path := privateTestPath(t, "state.db")
+	s, err := OpenSQLite(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	sandbox := sqliteTestSandbox()
+	older := sqliteLifecycleOperation("op-pause-older", sandbox.ID, "pause_sandbox:"+sandbox.ID, domain.OperationRunning, now)
+	newer := sqliteLifecycleOperation("op-pause-newer", sandbox.ID, "pause_sandbox:"+sandbox.ID, domain.OperationFailed, now.Add(time.Second))
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Operations[ScopedKey(older.ProjectID, older.ID)] = older
+		state.Operations[ScopedKey(newer.ProjectID, newer.ID)] = newer
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM metadata WHERE key = ?`, lifecycleOperationHeadsProjectionMetadataKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenSQLite(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	operations, err := reopened.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != newer.ID {
+		t.Fatalf("marker-loss rebuild head=%#v", operations)
+	}
+	var projectionVersion string
+	if err := reopened.db.QueryRow(`SELECT value FROM metadata WHERE key = ?`, lifecycleOperationHeadsProjectionMetadataKey).Scan(&projectionVersion); err != nil {
+		t.Fatal(err)
+	}
+	if projectionVersion != strconv.Itoa(lifecycleOperationHeadsProjectionVersion) {
+		t.Fatalf("rebuilt projection version=%q", projectionVersion)
+	}
+}
+
+func TestSQLiteLifecycleOperationHeadsTrackUpdatesDeletionAndTerminalOwners(t *testing.T) {
+	s, err := OpenSQLite(privateTestPath(t, "state.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	sandbox := sqliteTestSandbox()
+	workspace := domain.Workspace{ID: sandbox.ID, ProjectID: sandbox.ProjectID, Name: "workspace", BackendName: "workspace", State: domain.WorkspacePreparing, CreatedAt: now, UpdatedAt: now}
+	oldCreate := sqliteLifecycleOperation("op-create-old", sandbox.ID, "create_sandbox", domain.OperationRunning, now)
+	newCreate := sqliteLifecycleOperation("op-create-new", sandbox.ID, "create_sandbox", domain.OperationRunning, now.Add(time.Second))
+	workspaceCreate := sqliteLifecycleOperation("op-workspace-create", workspace.ID, "create_workspace", domain.OperationRunning, now)
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Workspaces[ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
+		for _, operation := range []domain.Operation{oldCreate, newCreate, workspaceCreate} {
+			state.Operations[ScopedKey(operation.ProjectID, operation.ID)] = operation
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	newCreate.State = domain.OperationSucceeded
+	if err := s.UpdateRows(MutationScope{Operations: []string{ScopedKey(newCreate.ProjectID, newCreate.ID)}}, func(state *State) error {
+		state.Operations[ScopedKey(newCreate.ProjectID, newCreate.ID)] = newCreate
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err := s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != workspaceCreate.ID {
+		t.Fatalf("state-only settled head update did not suppress old sandbox operation: %#v", operations)
+	}
+
+	if err := s.Update(func(state *State) error {
+		delete(state.Operations, ScopedKey(newCreate.ProjectID, newCreate.ID))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !operationIDsEqual(operations, oldCreate.ID, workspaceCreate.ID) {
+		t.Fatalf("deleting current head did not promote runner-up: %#v", operations)
+	}
+
+	if err := s.Update(func(state *State) error {
+		current := state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)]
+		current.State = domain.SandboxFailed
+		state.Sandboxes[ScopedKey(current.ProjectID, current.ID)] = current
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != workspaceCreate.ID {
+		t.Fatalf("terminal sandbox removed wrong-owner heads: %#v", operations)
+	}
+
+	if err := s.Update(func(state *State) error {
+		current := state.Workspaces[ScopedKey(workspace.ProjectID, workspace.ID)]
+		current.State = domain.WorkspaceReady
+		state.Workspaces[ScopedKey(current.ProjectID, current.ID)] = current
+		settled := state.Operations[ScopedKey(workspaceCreate.ProjectID, workspaceCreate.ID)]
+		settled.State = domain.OperationSucceeded
+		state.Operations[ScopedKey(settled.ProjectID, settled.ID)] = settled
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 0 {
+		t.Fatalf("ready workspace retained recovery head: %#v", operations)
+	}
+
+	deleteWorkspace := sqliteLifecycleOperation("op-workspace-delete", workspace.ID, "delete_workspace:"+workspace.ID, domain.OperationRunning, now.Add(2*time.Second))
+	if err := s.Update(func(state *State) error {
+		current := state.Workspaces[ScopedKey(workspace.ProjectID, workspace.ID)]
+		current.State = domain.WorkspaceDeleting
+		state.Workspaces[ScopedKey(current.ProjectID, current.ID)] = current
+		state.Operations[ScopedKey(deleteWorkspace.ProjectID, deleteWorkspace.ID)] = deleteWorkspace
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != deleteWorkspace.ID {
+		t.Fatalf("workspace re-entry did not rebuild delete head: %#v", operations)
+	}
+	if err := s.Update(func(state *State) error {
+		current := state.Workspaces[ScopedKey(workspace.ProjectID, workspace.ID)]
+		current.State = domain.WorkspaceDeleted
+		state.Workspaces[ScopedKey(current.ProjectID, current.ID)] = current
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operations, err = s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 0 {
+		t.Fatalf("terminal workspace retained recovery head: %#v", operations)
+	}
+	var heads int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM lifecycle_operation_heads`).Scan(&heads); err != nil {
+		t.Fatal(err)
+	}
+	if heads != 0 {
+		t.Fatalf("terminal owners retained %d projection rows", heads)
+	}
+}
+
+func TestSQLiteLifecycleOperationScanDoesNotDecodeUnrelatedOperationHistory(t *testing.T) {
+	s, err := OpenSQLite(privateTestPath(t, "state.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	sandbox := sqliteTestSandbox()
+	operation := sqliteLifecycleOperation("op-resume", sandbox.ID, "resume_sandbox:"+sandbox.ID, domain.OperationRunning, now)
+	if err := s.Update(func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Operations[ScopedKey(operation.ProjectID, operation.ID)] = operation
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO resources(kind, resource_key, payload) VALUES (?, ?, ?)`, resourceOperation, []byte(ScopedKey("project-a", "op-corrupt-unrelated")), []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+	operations, err := s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != operation.ID {
+		t.Fatalf("lifecycle heads=%#v", operations)
+	}
+	if err := s.View(func(State) error { return nil }); err == nil {
+		t.Fatal("whole-state view unexpectedly accepted corrupt unrelated operation history")
+	}
+}
+
+func TestSQLiteLifecycleHeadAdmissionDoesNotDecodeUnrelatedOperationHistory(t *testing.T) {
+	s, err := OpenSQLite(privateTestPath(t, "state.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`INSERT INTO resources(kind, resource_key, payload) VALUES (?, ?, ?)`, resourceOperation, []byte(ScopedKey("project-a", "op-corrupt-unrelated")), []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Unix(1_700_000_000, 0).UTC()
+	sandbox := sqliteTestSandbox()
+	operation := sqliteLifecycleOperation("op-create", sandbox.ID, "create_sandbox", domain.OperationRunning, now)
+	if err := s.UpdateRows(MutationScope{
+		Sandboxes:  []string{ScopedKey(sandbox.ProjectID, sandbox.ID)},
+		Operations: []string{ScopedKey(operation.ProjectID, operation.ID)},
+	}, func(state *State) error {
+		state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+		state.Operations[ScopedKey(operation.ProjectID, operation.ID)] = operation
+		return nil
+	}); err != nil {
+		t.Fatalf("create admission decoded unrelated operation history: %v", err)
+	}
+	operations, err := s.ListLifecycleOperationsForReconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].ID != operation.ID {
+		t.Fatalf("lifecycle heads=%#v", operations)
+	}
+}
+
+func sqliteLifecycleOperation(id, resourceID, kind string, state domain.OperationState, updatedAt time.Time) domain.Operation {
+	return domain.Operation{ID: id, ProjectID: "project-a", ResourceID: resourceID, Kind: kind, State: state, CreatedAt: updatedAt, UpdatedAt: updatedAt}
+}
+
+func operationIDsEqual(operations []domain.Operation, expected ...string) bool {
+	if len(operations) != len(expected) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(operations))
+	for _, operation := range operations {
+		seen[operation.ID] = struct{}{}
+	}
+	for _, id := range expected {
+		if _, exists := seen[id]; !exists {
+			return false
+		}
+	}
+	return true
 }
 
 func sqliteTestSandbox() domain.Sandbox {

@@ -187,6 +187,9 @@ func (s *Service) DeleteWorkspace(ctx context.Context, projectID, id, idempotenc
 	if existing, ok := s.lookupIdempotency(projectID, kind, idempotencyKey); ok {
 		return workspace, existing, nil
 	}
+	if _, active := s.activeWorkspaceMutations[store.ScopedKey(projectID, id)]; active {
+		return workspace, domain.Operation{}, fmt.Errorf("%w: workspace has an active backend mutation", ErrConflict)
+	}
 	if terminalWorkspace(workspace.State) {
 		return workspace, domain.Operation{}, fmt.Errorf("%w: workspace is already terminal", ErrConflict)
 	}
@@ -223,57 +226,187 @@ func (s *Service) DeleteWorkspace(ctx context.Context, projectID, id, idempotenc
 	return s.reconcileWorkspaceCleanupLocked(ctx, runtime, workspace, op)
 }
 
-func (s *Service) reconcileWorkspacesLocked(ctx context.Context) error {
+func (s *Service) reconcileWorkspaces(ctx context.Context, operationsByResource map[string][]domain.Operation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	runtime, ok := s.backend.(backend.WorkspaceRuntime)
 	if !ok || !s.Capabilities().DurableWorkspaces {
 		return nil
 	}
-	var workspaces []domain.Workspace
-	if err := s.store.View(func(state store.State) error {
-		for _, workspace := range state.Workspaces {
-			if !terminalWorkspace(workspace.State) && workspace.State != domain.WorkspaceReady {
-				workspaces = append(workspaces, workspace)
-			}
-		}
-		return nil
-	}); err != nil {
+	workspaces, err := store.ListWorkspacesForReconcile(s.store)
+	if err != nil {
 		return err
 	}
+	var reconcileErr error
 	for _, workspace := range workspaces {
-		if workspace.CleanupTarget == domain.WorkspaceDeleted || workspace.State == domain.WorkspaceDeleting {
-			op := s.latestOperationLocked(workspace.ProjectID, workspace.ID, "delete_workspace:")
-			_, _, _ = s.reconcileWorkspaceCleanupLocked(ctx, runtime, workspace, op)
-			continue
+		if err := ctx.Err(); err != nil {
+			return errors.Join(reconcileErr, err)
 		}
-		remote, err := runtime.FindWorkspace(ctx, workspace.BackendName)
-		if err != nil {
-			now := s.now()
-			if errors.Is(err, backend.ErrNotFound) {
-				workspace.State = domain.WorkspaceFailed
-				workspace.Failure = &domain.Failure{Code: "backend_workspace_missing", Message: "workspace engine confirmed the resource is absent", Retryable: false}
-			} else {
-				workspace.State = domain.WorkspaceUnknown
-				workspace.Failure = &domain.Failure{Code: "backend_workspace_reconcile_failed", Message: "workspace engine state could not be confirmed", Retryable: true}
-			}
-			workspace.UpdatedAt = now
-			_ = store.UpdateRows(s.store, store.MutationScope{
-				Workspaces: []string{store.ScopedKey(workspace.ProjectID, workspace.ID)},
-			}, func(state *store.State) error {
-				state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
-				return nil
-			})
-			continue
+		key := store.ScopedKey(workspace.ProjectID, workspace.ID)
+		if err := s.reconcileWorkspace(ctx, runtime, workspace.ProjectID, workspace.ID, operationsByResource[key]); err != nil {
+			reconcileErr = errors.Join(reconcileErr, err)
 		}
-		now := s.now()
-		workspace.BackendID, workspace.BackendName = remote.ID, remote.Name
-		workspace.State, workspace.UpdatedAt, workspace.Failure = domain.WorkspaceReady, now, nil
-		_ = s.store.Update(func(state *store.State) error {
-			state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
-			completeLatestOperation(state, workspace.ProjectID, workspace.ID, "create_workspace", now)
-			return nil
-		})
 	}
-	return nil
+	return reconcileErr
+}
+
+func (s *Service) reconcileWorkspace(ctx context.Context, runtime backend.WorkspaceRuntime, projectID, workspaceID string, operationCandidates []domain.Operation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key := store.ScopedKey(projectID, workspaceID)
+	s.mu.Lock()
+	current, err := s.getWorkspace(projectID, workspaceID)
+	if err != nil {
+		s.mu.Unlock()
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if terminalWorkspace(current.State) {
+		s.mu.Unlock()
+		return nil
+	}
+	if _, active := s.activeWorkspaceMutations[key]; active {
+		s.mu.Unlock()
+		return nil
+	}
+	expected := current
+	s.activeWorkspaceMutations[key] = struct{}{}
+	s.mu.Unlock()
+
+	cleanup := expected.CleanupTarget == domain.WorkspaceDeleted || expected.State == domain.WorkspaceDeleting
+	observed := expected
+	failureCode := ""
+	var backendErr error
+	if cleanup {
+		if observed.BackendID == "" {
+			remote, findErr := runtime.FindWorkspace(ctx, observed.BackendName)
+			switch {
+			case findErr == nil && validWorkspaceIdentity(observed, remote):
+				observed.BackendID = remote.ID
+			case findErr == nil:
+				failureCode, backendErr = "backend_workspace_identity_invalid", errors.New("workspace backend returned an invalid identity")
+			case errors.Is(findErr, backend.ErrNotFound):
+				// Durable deletion intent makes confirmed absence successful.
+			default:
+				failureCode, backendErr = "backend_workspace_cleanup_recovery_failed", findErr
+			}
+		}
+		if backendErr == nil && observed.BackendID != "" {
+			if deleteErr := runtime.DeleteWorkspace(ctx, observed.BackendID); deleteErr != nil && !errors.Is(deleteErr, backend.ErrNotFound) {
+				failureCode, backendErr = "backend_workspace_delete_unconfirmed", deleteErr
+			}
+		}
+	} else {
+		remote, findErr := runtime.FindWorkspace(ctx, observed.BackendName)
+		switch {
+		case findErr == nil && validWorkspaceIdentity(observed, remote):
+			observed.BackendID, observed.BackendName = remote.ID, remote.Name
+		case findErr == nil:
+			failureCode, backendErr = "backend_workspace_identity_invalid", errors.New("workspace backend returned an invalid identity")
+		case errors.Is(findErr, backend.ErrNotFound):
+			failureCode, backendErr = "backend_workspace_missing", backend.ErrNotFound
+		default:
+			failureCode, backendErr = "backend_workspace_reconcile_failed", findErr
+		}
+	}
+
+	s.mu.Lock()
+	delete(s.activeWorkspaceMutations, key)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		s.mu.Unlock()
+		return ctxErr
+	}
+	latest, err := s.getWorkspace(projectID, workspaceID)
+	if err != nil {
+		s.mu.Unlock()
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if !sameWorkspaceReconcileVersion(latest, expected) || terminalWorkspace(latest.State) {
+		s.mu.Unlock()
+		return nil
+	}
+
+	now := s.now()
+	var operations []domain.Operation
+	var operationState domain.OperationState
+	switch {
+	case cleanup && backendErr == nil:
+		observed.State, observed.UpdatedAt, observed.Failure = domain.WorkspaceDeleted, now, nil
+		operations = latestIncompleteOperations(operationCandidates, "delete_workspace:")
+		operationState = domain.OperationSucceeded
+	case cleanup:
+		failure := &domain.Failure{Code: failureCode, Message: "workspace engine did not confirm cleanup", Retryable: true}
+		observed.State, observed.UpdatedAt, observed.Failure = domain.WorkspaceUnknown, now, failure
+		operations = latestIncompleteOperations(operationCandidates, "delete_workspace:")
+		operationState = domain.OperationFailed
+	case errors.Is(backendErr, backend.ErrNotFound):
+		failure := &domain.Failure{Code: failureCode, Message: "workspace engine confirmed the resource is absent", Retryable: false}
+		observed.State, observed.UpdatedAt, observed.Failure = domain.WorkspaceFailed, now, failure
+		operations = latestIncompleteOperations(operationCandidates, "create_workspace")
+		operationState = domain.OperationFailed
+	case backendErr != nil:
+		failure := &domain.Failure{Code: failureCode, Message: "workspace engine state could not be confirmed", Retryable: true}
+		observed.State, observed.UpdatedAt, observed.Failure = domain.WorkspaceUnknown, now, failure
+	case backendErr == nil:
+		observed.State, observed.UpdatedAt, observed.Failure = domain.WorkspaceReady, now, nil
+		operations = latestIncompleteOperations(operationCandidates, "create_workspace")
+		operationState = domain.OperationSucceeded
+	}
+	persistErr := s.persistWorkspaceObservationLocked(latest, observed, operations, operationState)
+	s.mu.Unlock()
+	if errors.Is(persistErr, errReconcileObservationSuperseded) {
+		return nil
+	}
+	if backendErr != nil && !errors.Is(backendErr, backend.ErrNotFound) {
+		return errors.Join(fmt.Errorf("%w: %s: %v", ErrBackend, failureCode, backendErr), persistErr)
+	}
+	return persistErr
+}
+
+func validWorkspaceIdentity(expected domain.Workspace, remote backend.Workspace) bool {
+	return remote.ID != "" && remote.Name == expected.BackendName
+}
+
+func sameWorkspaceReconcileVersion(current, expected domain.Workspace) bool {
+	return current.ID == expected.ID && current.ProjectID == expected.ProjectID &&
+		current.BackendID == expected.BackendID && current.BackendName == expected.BackendName &&
+		current.State == expected.State && current.CleanupTarget == expected.CleanupTarget &&
+		current.UpdatedAt.Equal(expected.UpdatedAt) && sameFailure(current.Failure, expected.Failure)
+}
+
+func (s *Service) persistWorkspaceObservationLocked(current, observed domain.Workspace, operations []domain.Operation, operationState domain.OperationState) error {
+	key := store.ScopedKey(current.ProjectID, current.ID)
+	return store.UpdateRows(s.store, store.MutationScope{
+		Workspaces: []string{key}, Operations: operationScope(operations),
+	}, func(state *store.State) error {
+		persisted, ok := state.Workspaces[key]
+		if !ok || !sameWorkspaceReconcileVersion(persisted, current) {
+			return errReconcileObservationSuperseded
+		}
+		state.Workspaces[key] = observed
+		for _, operation := range operations {
+			operationKey := store.ScopedKey(operation.ProjectID, operation.ID)
+			persistedOperation, ok := state.Operations[operationKey]
+			if !ok || !sameOperationVersion(persistedOperation, operation) {
+				return errReconcileObservationSuperseded
+			}
+			operation.State, operation.UpdatedAt = operationState, observed.UpdatedAt
+			if operationState == domain.OperationSucceeded {
+				operation.Failure = nil
+			} else {
+				operation.Failure = observed.Failure
+			}
+			state.Operations[operationKey] = operation
+		}
+		return nil
+	})
 }
 
 func (s *Service) reconcileWorkspaceCleanupLocked(ctx context.Context, runtime backend.WorkspaceRuntime, workspace domain.Workspace, op domain.Operation) (domain.Workspace, domain.Operation, error) {
@@ -325,8 +458,9 @@ func (s *Service) failWorkspaceCleanupLocked(workspace domain.Workspace, op doma
 	if op.ID != "" {
 		op.State, op.UpdatedAt, op.Failure = domain.OperationFailed, now, failure
 	}
+	var persistErr error
 	if op.ID != "" {
-		_ = store.UpdateRows(s.store, store.MutationScope{
+		persistErr = store.UpdateRows(s.store, store.MutationScope{
 			Workspaces: []string{store.ScopedKey(workspace.ProjectID, workspace.ID)},
 			Operations: []string{store.ScopedKey(op.ProjectID, op.ID)},
 		}, func(state *store.State) error {
@@ -335,12 +469,12 @@ func (s *Service) failWorkspaceCleanupLocked(workspace domain.Workspace, op doma
 			return nil
 		})
 	} else {
-		_ = s.store.Update(func(state *store.State) error {
+		persistErr = s.store.Update(func(state *store.State) error {
 			state.Workspaces[store.ScopedKey(workspace.ProjectID, workspace.ID)] = workspace
 			return nil
 		})
 	}
-	return workspace, op, fmt.Errorf("%w: delete workspace", ErrBackend)
+	return workspace, op, errors.Join(fmt.Errorf("%w: delete workspace", ErrBackend), persistErr)
 }
 
 func (s *Service) getWorkspace(projectID, id string) (domain.Workspace, error) {

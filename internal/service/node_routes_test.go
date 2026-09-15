@@ -69,12 +69,15 @@ func TestNodeRouteResolveRejectsCrossSandboxAssignment(t *testing.T) {
 }
 
 type memoryRouteAdmin struct {
-	mu       sync.Mutex
-	nodeID   string
-	route    nodeledger.Route
-	engine   string
-	removed  bool
-	readyErr error
+	mu             sync.Mutex
+	nodeID         string
+	route          nodeledger.Route
+	engine         string
+	removed        bool
+	readyErr       error
+	resolveStarted chan struct{}
+	releaseResolve chan struct{}
+	resolveOnce    sync.Once
 }
 
 func (a *memoryRouteAdmin) Ready(context.Context) error { return a.readyErr }
@@ -83,7 +86,17 @@ func (a *memoryRouteAdmin) result() node.RouteAdminResult {
 	return node.RouteAdminResult{NodeID: a.nodeID, Route: a.route}
 }
 
-func (a *memoryRouteAdmin) Resolve(_ context.Context, routeID string) (node.RouteAdminResult, error) {
+func (a *memoryRouteAdmin) Resolve(ctx context.Context, routeID string) (node.RouteAdminResult, error) {
+	if a.resolveStarted != nil {
+		a.resolveOnce.Do(func() { close(a.resolveStarted) })
+	}
+	if a.releaseResolve != nil {
+		select {
+		case <-a.releaseResolve:
+		case <-ctx.Done():
+			return node.RouteAdminResult{}, ctx.Err()
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.removed || a.route.RouteID != routeID {

@@ -192,6 +192,13 @@ func (s *SQLiteStore) initialize(legacyJSONPath string) error {
 		CREATE INDEX active_workspace_mounts_sandbox ON active_workspace_mounts(sandbox_key)`); err != nil {
 		return fmt.Errorf("migrate active workspace attachment index: %w", err)
 	}
+	// Lifecycle heads preserve operation insertion order across ordinary opens.
+	// Databases without the derived-index marker (or whose table was lost) are
+	// rebuilt once in this same initialization transaction.
+	rebuildLifecycleHeads, err := ensureLifecycleOperationHeadsTx(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("migrate lifecycle operation recovery index: %w", err)
+	}
 	var versionText string
 	err = tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key = 'schema_version'`).Scan(&versionText)
 	switch {
@@ -225,6 +232,14 @@ func (s *SQLiteStore) initialize(legacyJSONPath string) error {
 	// without changing the durable public state schema.
 	if err := rebuildSandboxAdmissionIndexesTx(ctx, tx); err != nil {
 		return fmt.Errorf("validate stored state while rebuilding sandbox admission indexes: %w", err)
+	}
+	if rebuildLifecycleHeads {
+		if err := rebuildLifecycleOperationHeadsTx(ctx, tx); err != nil {
+			return fmt.Errorf("validate stored state while rebuilding lifecycle operation recovery index: %w", err)
+		}
+		if err := recordLifecycleOperationHeadsVersionTx(ctx, tx); err != nil {
+			return fmt.Errorf("record lifecycle operation recovery index version: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit state database initialization: %w", err)
@@ -379,6 +394,112 @@ func (s *SQLiteStore) GetSandbox(projectID, sandboxID string) (domain.Sandbox, e
 		return domain.Sandbox{}, fmt.Errorf("decode sandbox: %w", err)
 	}
 	return cloneSandbox(sandbox), nil
+}
+
+// ListSandboxesForReconcile scans only sandbox resource rows. Periodic
+// observation must not decode the operation, idempotency, or event ledgers,
+// whose size is unrelated to the amount of recovery work due this tick.
+func (s *SQLiteStore) ListSandboxesForReconcile() ([]domain.Sandbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errors.New("state store is closed")
+	}
+	rows, err := s.db.Query(`SELECT payload FROM resources WHERE kind = ?`, resourceSandbox)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sandboxes := make([]domain.Sandbox, 0)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var sandbox domain.Sandbox
+		if err := json.Unmarshal(payload, &sandbox); err != nil {
+			return nil, fmt.Errorf("decode sandbox: %w", err)
+		}
+		if sandbox.State == domain.SandboxDeleted || sandbox.State == domain.SandboxExpired || sandbox.State == domain.SandboxFailed {
+			continue
+		}
+		sandboxes = append(sandboxes, sandbox)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return sandboxes, nil
+}
+
+func (s *SQLiteStore) ListWorkspacesForReconcile() ([]domain.Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errors.New("state store is closed")
+	}
+	rows, err := s.db.Query(`SELECT payload FROM resources WHERE kind = ?`, resourceWorkspace)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	workspaces := make([]domain.Workspace, 0)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var workspace domain.Workspace
+		if err := json.Unmarshal(payload, &workspace); err != nil {
+			return nil, fmt.Errorf("decode workspace: %w", err)
+		}
+		if workspace.State == domain.WorkspaceReady || workspace.State == domain.WorkspaceDeleted || workspace.State == domain.WorkspaceFailed {
+			continue
+		}
+		workspaces = append(workspaces, workspace)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return workspaces, nil
+}
+
+func (s *SQLiteStore) ListLifecycleOperationsForReconcile() ([]domain.Operation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errors.New("state store is closed")
+	}
+	rows, err := s.db.Query(`SELECT resources.payload, heads.project_id, heads.owner_kind, heads.resource_id, heads.family, heads.operation_id
+		FROM lifecycle_operation_heads AS heads
+		JOIN resources ON resources.kind = heads.operation_resource_kind AND resources.resource_key = heads.operation_key
+		ORDER BY heads.project_id, heads.owner_kind, heads.resource_id, heads.family`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	operations := make([]domain.Operation, 0)
+	for rows.Next() {
+		var payload []byte
+		var projectID, ownerKind, resourceID, family, operationID string
+		if err := rows.Scan(&payload, &projectID, &ownerKind, &resourceID, &family, &operationID); err != nil {
+			return nil, err
+		}
+		var operation domain.Operation
+		if err := json.Unmarshal(payload, &operation); err != nil {
+			return nil, fmt.Errorf("decode lifecycle operation head: %w", err)
+		}
+		key, lifecycle := lifecycleHeadForOperation(operation)
+		if !lifecycle || key.projectID != projectID || key.ownerKind != ownerKind || key.resourceID != resourceID || key.family != family || operation.ID != operationID {
+			return nil, errors.New("lifecycle operation recovery index is inconsistent")
+		}
+		if operation.State != domain.OperationSucceeded {
+			operations = append(operations, operation)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return operations, nil
 }
 
 func (s *SQLiteStore) RecordSandboxActivity(projectID, sandboxID string, at time.Time) (domain.Sandbox, error) {
@@ -550,6 +671,8 @@ func syncEncodedState(ctx context.Context, tx *sql.Tx, before, after encodedStat
 		before, after []byte
 	}
 	var admissionIndexChanges []resourceIndexChange
+	var lifecycleOperationChanges []lifecycleProjectionChange
+	var lifecycleOwnerChanges []lifecycleProjectionChange
 	for kind, afterRows := range after.resources {
 		beforeRows := before.resources[kind]
 		for key := range beforeRows {
@@ -561,6 +684,11 @@ func syncEncodedState(ctx context.Context, tx *sql.Tx, before, after encodedStat
 					sandboxIndexChanges = append(sandboxIndexChanges, sandboxIndexChange{key: key, before: beforeRows[key]})
 				} else if kind == resourceWorkspace || kind == resourceEnvironment {
 					admissionIndexChanges = append(admissionIndexChanges, resourceIndexChange{kind: kind, key: key, before: beforeRows[key]})
+				}
+				if kind == resourceOperation {
+					lifecycleOperationChanges = append(lifecycleOperationChanges, lifecycleProjectionChange{kind: kind, key: key, before: beforeRows[key]})
+				} else if kind == resourceSandbox || kind == resourceWorkspace {
+					lifecycleOwnerChanges = append(lifecycleOwnerChanges, lifecycleProjectionChange{kind: kind, key: key, before: beforeRows[key]})
 				}
 			}
 		}
@@ -576,7 +704,15 @@ func syncEncodedState(ctx context.Context, tx *sql.Tx, before, after encodedStat
 			} else if kind == resourceWorkspace || kind == resourceEnvironment {
 				admissionIndexChanges = append(admissionIndexChanges, resourceIndexChange{kind: kind, key: key, before: beforeRows[key], after: payload})
 			}
+			if kind == resourceOperation {
+				lifecycleOperationChanges = append(lifecycleOperationChanges, lifecycleProjectionChange{kind: kind, key: key, before: beforeRows[key], after: payload})
+			} else if kind == resourceSandbox || kind == resourceWorkspace {
+				lifecycleOwnerChanges = append(lifecycleOwnerChanges, lifecycleProjectionChange{kind: kind, key: key, before: beforeRows[key], after: payload})
+			}
 		}
+	}
+	if err := syncLifecycleOperationHeadsTx(ctx, tx, lifecycleOperationChanges, lifecycleOwnerChanges); err != nil {
+		return err
 	}
 	for _, change := range admissionIndexChanges {
 		if err := removeResourceAdmissionIndexTx(ctx, tx, change.kind, change.key, change.before); err != nil {
@@ -651,7 +787,7 @@ func replaceStateTx(ctx context.Context, tx *sql.Tx, state State) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM resources; DELETE FROM sandbox_events; DELETE FROM idempotency; DELETE FROM sandbox_capacity; DELETE FROM workspace_capacity; DELETE FROM environment_capacity; DELETE FROM active_workspace_mounts`); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM resources; DELETE FROM sandbox_events; DELETE FROM idempotency; DELETE FROM sandbox_capacity; DELETE FROM workspace_capacity; DELETE FROM environment_capacity; DELETE FROM active_workspace_mounts; DELETE FROM lifecycle_operation_heads`); err != nil {
 		return err
 	}
 	return syncEncodedState(ctx, tx, encodedState{resources: map[string]map[string][]byte{}, events: map[string][]byte{}, idempotency: map[string]idempotencyRow{}}, encoded)

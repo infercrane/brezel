@@ -98,6 +98,44 @@ func (s *Service) reconcileNodeRoute(ctx context.Context, sandbox domain.Sandbox
 	}
 }
 
+// observeNodeRoute performs the read-only half of route reconciliation. A
+// healthy route must remain available to guest operations while the node
+// lookup is in flight; callers establish the backend-mutation fence only when
+// this observation proves that a route transition or repair is required.
+func (s *Service) observeNodeRoute(ctx context.Context, sandbox domain.Sandbox, remoteState domain.SandboxState) (domain.Sandbox, bool, error) {
+	if s.routeAdmin == nil {
+		return sandbox, false, nil
+	}
+	if sandbox.NodeRouteID == "" || sandbox.NodeGeneration == 0 || sandbox.NodeID == "" {
+		clearNodeAssignment(&sandbox)
+		return sandbox, true, nil
+	}
+	resolved, err := s.resolveNodeRoute(ctx, sandbox)
+	if err != nil {
+		var remoteErr *node.RouteAdminError
+		if errors.As(err, &remoteErr) && remoteErr.StatusCode == http.StatusNotFound {
+			clearNodeAssignment(&sandbox)
+			return sandbox, true, nil
+		}
+		return sandbox, false, err
+	}
+	observed, err := assignmentFromResolved(sandbox, resolved)
+	if err != nil {
+		return sandbox, false, err
+	}
+	if resolved.Route.State == nodeledger.StateReleased {
+		return observed, true, nil
+	}
+	switch remoteState {
+	case domain.SandboxRunning:
+		return observed, resolved.Route.State != nodeledger.StateReady, nil
+	case domain.SandboxStandby:
+		return observed, resolved.Route.State != nodeledger.StateStandby, nil
+	default:
+		return observed, false, nil
+	}
+}
+
 // prepareNodeRoutePause closes admission before the engine is paused. It also
 // completes an interrupted attach deterministically so the route state machine
 // never needs an unsafe force transition.

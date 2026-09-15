@@ -14,6 +14,7 @@ import (
 var benchmarkStateSink State
 var benchmarkBytesSink []byte
 var benchmarkSandboxSink domain.Sandbox
+var benchmarkOperationsSink []domain.Operation
 
 func BenchmarkCloneState(b *testing.B) {
 	for _, resources := range []int{100, 1000} {
@@ -323,6 +324,103 @@ func BenchmarkSQLiteStoreLifecycleMutationWithUnrelatedHistory(b *testing.B) {
 				}
 			})
 		}
+	}
+}
+
+func BenchmarkSQLiteLifecycleOperationReconcileScan(b *testing.B) {
+	for _, history := range []int{0, 1_000, 10_000} {
+		b.Run(fmt.Sprintf("historical-guest-and-lifecycle=%d", history*2), func(b *testing.B) {
+			store, err := OpenSQLite(privateTestPath(b, "state.db"), "")
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer store.Close()
+			now := time.Unix(1_700_000_000, 0).UTC()
+			sandbox := sqliteTestSandbox()
+			state := NewState()
+			state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+			settled := sqliteLifecycleOperation("op-create-settled", sandbox.ID, "create_sandbox", domain.OperationSucceeded, now)
+			recoverable := sqliteLifecycleOperation("op-resume-recoverable", sandbox.ID, "resume_sandbox:"+sandbox.ID, domain.OperationFailed, now)
+			state.Operations[ScopedKey(settled.ProjectID, settled.ID)] = settled
+			state.Operations[ScopedKey(recoverable.ProjectID, recoverable.ID)] = recoverable
+			for index := 0; index < history; index++ {
+				updatedAt := now.Add(-time.Duration(index+1) * time.Second)
+				guest := sqliteLifecycleOperation(fmt.Sprintf("op-guest-%06d", index), sandbox.ID, "run_command", domain.OperationSucceeded, updatedAt)
+				lifecycle := sqliteLifecycleOperation(fmt.Sprintf("op-create-%06d", index), sandbox.ID, "create_sandbox", domain.OperationRunning, updatedAt)
+				state.Operations[ScopedKey(guest.ProjectID, guest.ID)] = guest
+				state.Operations[ScopedKey(lifecycle.ProjectID, lifecycle.ID)] = lifecycle
+			}
+			if err := store.Update(func(next *State) error {
+				*next = state
+				return nil
+			}); err != nil {
+				b.Fatal(err)
+			}
+			var heads int
+			if err := store.db.QueryRow(`SELECT COUNT(*) FROM lifecycle_operation_heads`).Scan(&heads); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportMetric(float64(heads), "head-rows")
+			b.ReportMetric(float64(history*2), "historical-operations")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				operations, err := store.ListLifecycleOperationsForReconcile()
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(operations) != 1 || operations[0].ID != recoverable.ID {
+					b.Fatalf("recovery heads=%#v", operations)
+				}
+				benchmarkOperationsSink = operations
+			}
+		})
+	}
+}
+
+func BenchmarkSQLiteLifecycleHeadAdmissionWithUnrelatedHistory(b *testing.B) {
+	for _, history := range []int{0, 10_000} {
+		b.Run(fmt.Sprintf("historical-operations=%d", history), func(b *testing.B) {
+			store, err := OpenSQLite(privateTestPath(b, "state.db"), "")
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer store.Close()
+			if history > 0 {
+				state := NewState()
+				now := time.Unix(1_700_000_000, 0).UTC()
+				for index := 0; index < history; index++ {
+					operation := sqliteLifecycleOperation(fmt.Sprintf("op-history-%06d", index), "old-sandbox", "run_command", domain.OperationSucceeded, now)
+					state.Operations[ScopedKey(operation.ProjectID, operation.ID)] = operation
+				}
+				if err := store.Update(func(next *State) error {
+					*next = state
+					return nil
+				}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportMetric(float64(history), "historical-operations")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for index := range b.N {
+				sandbox := sqliteTestSandbox()
+				sandbox.ID = fmt.Sprintf("sandbox-bench-%06d", index)
+				sandbox.BackendID = "backend-" + sandbox.ID
+				operation := sqliteLifecycleOperation("op-create-"+sandbox.ID, sandbox.ID, "create_sandbox", domain.OperationRunning, sandbox.UpdatedAt)
+				err := store.UpdateRows(MutationScope{
+					Sandboxes:  []string{ScopedKey(sandbox.ProjectID, sandbox.ID)},
+					Operations: []string{ScopedKey(operation.ProjectID, operation.ID)},
+				}, func(state *State) error {
+					state.Sandboxes[ScopedKey(sandbox.ProjectID, sandbox.ID)] = sandbox
+					state.Operations[ScopedKey(operation.ProjectID, operation.ID)] = operation
+					return nil
+				})
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

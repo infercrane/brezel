@@ -114,6 +114,89 @@ type SandboxReader interface {
 	GetSandbox(projectID, sandboxID string) (domain.Sandbox, error)
 }
 
+// SandboxReconcileReader is an optional read-optimized extension for the
+// controller's periodic recovery scan. Implementations return only
+// non-terminal sandboxes and must not materialize unrelated operation or event
+// history. Each value is an isolated snapshot; lifecycle code must re-read and
+// validate the revision before applying an observation.
+type SandboxReconcileReader interface {
+	ListSandboxesForReconcile() ([]domain.Sandbox, error)
+}
+
+// WorkspaceReconcileReader is the workspace counterpart to
+// SandboxReconcileReader. Ready and terminal workspaces do not require a
+// periodic recovery observation.
+type WorkspaceReconcileReader interface {
+	ListWorkspacesForReconcile() ([]domain.Workspace, error)
+}
+
+// LifecycleOperationReconcileReader returns the small operation subset needed
+// to recover interrupted sandbox and workspace lifecycle transitions. A
+// materialized implementation may omit a succeeded family head, but it must
+// preserve that head as a suppressor so an older incomplete attempt is never
+// returned as current recovery work.
+type LifecycleOperationReconcileReader interface {
+	ListLifecycleOperationsForReconcile() ([]domain.Operation, error)
+}
+
+// ListSandboxesForReconcile uses the narrow recovery scan when the store
+// supports one. The whole-state fallback keeps third-party Store
+// implementations source compatible.
+func ListSandboxesForReconcile(target Store) ([]domain.Sandbox, error) {
+	if reader, ok := target.(SandboxReconcileReader); ok {
+		return reader.ListSandboxesForReconcile()
+	}
+	var sandboxes []domain.Sandbox
+	err := target.View(func(state State) error {
+		for _, sandbox := range state.Sandboxes {
+			if sandbox.State == domain.SandboxDeleted || sandbox.State == domain.SandboxExpired || sandbox.State == domain.SandboxFailed {
+				continue
+			}
+			sandboxes = append(sandboxes, sandbox)
+		}
+		return nil
+	})
+	return sandboxes, err
+}
+
+func ListWorkspacesForReconcile(target Store) ([]domain.Workspace, error) {
+	if reader, ok := target.(WorkspaceReconcileReader); ok {
+		return reader.ListWorkspacesForReconcile()
+	}
+	var workspaces []domain.Workspace
+	err := target.View(func(state State) error {
+		for _, workspace := range state.Workspaces {
+			if workspace.State == domain.WorkspaceReady || workspace.State == domain.WorkspaceDeleted || workspace.State == domain.WorkspaceFailed {
+				continue
+			}
+			workspaces = append(workspaces, workspace)
+		}
+		return nil
+	})
+	return workspaces, err
+}
+
+func ListLifecycleOperationsForReconcile(target Store) ([]domain.Operation, error) {
+	if reader, ok := target.(LifecycleOperationReconcileReader); ok {
+		return reader.ListLifecycleOperationsForReconcile()
+	}
+	var operations []domain.Operation
+	err := target.View(func(state State) error {
+		for _, operation := range state.Operations {
+			if isReconciledLifecycleOperation(operation) {
+				operations = append(operations, operation)
+			}
+		}
+		return nil
+	})
+	return operations, err
+}
+
+func isReconciledLifecycleOperation(operation domain.Operation) bool {
+	_, lifecycle := lifecycleHeadForOperation(operation)
+	return lifecycle
+}
+
 // SandboxEventAppender is an optional write-optimized extension for durable,
 // content-free sandbox events. It preserves FileStore's atomic replacement and
 // fsync boundary without cloning and validating unrelated control records.
@@ -288,6 +371,55 @@ func (s *FileStore) GetSandbox(projectID, sandboxID string) (domain.Sandbox, err
 		return domain.Sandbox{}, ErrNotFound
 	}
 	return cloneSandbox(sandbox), nil
+}
+
+// ListSandboxesForReconcile copies only live sandbox records. In particular it
+// avoids cloning the event ledger on every controller tick.
+func (s *FileStore) ListSandboxesForReconcile() ([]domain.Sandbox, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, errors.New("state store is closed")
+	}
+	sandboxes := make([]domain.Sandbox, 0)
+	for _, sandbox := range s.state.Sandboxes {
+		if sandbox.State == domain.SandboxDeleted || sandbox.State == domain.SandboxExpired || sandbox.State == domain.SandboxFailed {
+			continue
+		}
+		sandboxes = append(sandboxes, cloneSandbox(sandbox))
+	}
+	return sandboxes, nil
+}
+
+func (s *FileStore) ListWorkspacesForReconcile() ([]domain.Workspace, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, errors.New("state store is closed")
+	}
+	workspaces := make([]domain.Workspace, 0)
+	for _, workspace := range s.state.Workspaces {
+		if workspace.State == domain.WorkspaceReady || workspace.State == domain.WorkspaceDeleted || workspace.State == domain.WorkspaceFailed {
+			continue
+		}
+		workspaces = append(workspaces, workspace)
+	}
+	return workspaces, nil
+}
+
+func (s *FileStore) ListLifecycleOperationsForReconcile() ([]domain.Operation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, errors.New("state store is closed")
+	}
+	operations := make([]domain.Operation, 0)
+	for _, operation := range s.state.Operations {
+		if isReconciledLifecycleOperation(operation) {
+			operations = append(operations, operation)
+		}
+	}
+	return operations, nil
 }
 
 // AppendSandboxEvent durably appends one event for an existing sandbox. The

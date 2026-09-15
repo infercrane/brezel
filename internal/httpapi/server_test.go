@@ -68,6 +68,8 @@ type testBackend struct {
 	pauseFailures              int
 	checkpointStarted          chan struct{}
 	releaseCheckpoint          chan struct{}
+	inspectStarted             chan string
+	releaseInspect             chan struct{}
 }
 
 func newTestBackend() *testBackend {
@@ -123,12 +125,28 @@ func (b *testBackend) Find(_ context.Context, local, project string) (backend.Sa
 	}
 	return b.sandboxes[id], nil
 }
-func (b *testBackend) Inspect(_ context.Context, id string) (backend.Sandbox, error) {
+func (b *testBackend) Inspect(ctx context.Context, id string) (backend.Sandbox, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	value, ok := b.sandboxes[id]
+	inspectStarted := b.inspectStarted
+	releaseInspect := b.releaseInspect
+	b.mu.Unlock()
 	if !ok {
 		return backend.Sandbox{}, backend.ErrNotFound
+	}
+	if inspectStarted != nil {
+		select {
+		case inspectStarted <- id:
+		case <-ctx.Done():
+			return backend.Sandbox{}, ctx.Err()
+		}
+	}
+	if releaseInspect != nil {
+		select {
+		case <-releaseInspect:
+		case <-ctx.Done():
+			return backend.Sandbox{}, ctx.Err()
+		}
 	}
 	return value, nil
 }
@@ -912,6 +930,169 @@ func TestAutomaticStandbyReleasesServiceLockDuringBackendPause(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("automatic standby did not complete")
+	}
+}
+
+func TestReconcileUnchangedObservationDoesNotChurnRevisionOrEvents(t *testing.T) {
+	h := newHarness(t)
+	defer h.close()
+	environment, _, err := h.service.CreateEnvironment("project-a", "reconcile-noop-environment-0001", service.CreateEnvironmentInput{Name: "reconcile-noop", Template: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox, _, err := h.service.CreateSandbox(context.Background(), "project-a", "reconcile-noop-sandbox-0001", service.CreateSandboxInput{
+		EnvironmentRevision: environment.RevisionID,
+		Lifecycle:           domain.Lifecycle{ExpiresAfterSeconds: 600},
+		Network:             domain.NetworkPolicy{AllowInternet: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := h.service.Events("project-a", sandbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := h.service.GetSandbox(context.Background(), "project-a", sandbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := h.service.Events("project-a", sandbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != sandbox.Revision || !after.UpdatedAt.Equal(sandbox.UpdatedAt) {
+		t.Fatalf("no-op observation mutated sandbox: before revision=%d updated=%s, after revision=%d updated=%s", sandbox.Revision, sandbox.UpdatedAt, after.Revision, after.UpdatedAt)
+	}
+	if len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("no-op observation appended events: before=%d after=%d", len(beforeEvents), len(afterEvents))
+	}
+}
+
+func TestReconcileBackendObservationDoesNotHoldServiceLock(t *testing.T) {
+	h := newHarness(t)
+	defer h.close()
+	environment, _, err := h.service.CreateEnvironment("project-a", "reconcile-lock-environment-0001", service.CreateEnvironmentInput{Name: "reconcile-lock", Template: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandboxes := make([]domain.Sandbox, 2)
+	for index := range sandboxes {
+		sandbox, _, createErr := h.service.CreateSandbox(context.Background(), "project-a", fmt.Sprintf("reconcile-lock-sandbox-%04d", index), service.CreateSandboxInput{
+			EnvironmentRevision: environment.RevisionID,
+			Lifecycle:           domain.Lifecycle{ExpiresAfterSeconds: 600},
+			Network:             domain.NetworkPolicy{AllowInternet: false},
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		sandboxes[index] = sandbox
+	}
+	h.backend.inspectStarted = make(chan string, 1)
+	h.backend.releaseInspect = make(chan struct{})
+	h.backend.runStarted = make(chan struct{})
+	reconciled := make(chan error, 1)
+	go func() { reconciled <- h.service.Reconcile(context.Background()) }()
+	var observedBackendID string
+	select {
+	case observedBackendID = <-h.backend.inspectStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile did not reach backend inspection")
+	}
+	independent := sandboxes[0]
+	if independent.BackendID == observedBackendID {
+		independent = sandboxes[1]
+	}
+	runResult := make(chan error, 1)
+	go func() {
+		_, runErr := h.service.RunCommand(context.Background(), "project-a", independent.ID, service.RunCommandInput{Argv: []string{"true"}}, func(backend.CommandEvent) error { return nil })
+		runResult <- runErr
+	}()
+	select {
+	case <-h.backend.runStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("independent guest operation waited behind backend inspection")
+	}
+	select {
+	case err := <-runResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("independent guest operation did not finish while inspection was blocked")
+	}
+	close(h.backend.releaseInspect)
+	select {
+	case err := <-reconciled:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile did not finish")
+	}
+}
+
+func TestReconcileDiscardsObservationAfterGuestRevisionAdvances(t *testing.T) {
+	h := newHarness(t)
+	defer h.close()
+	environment, _, err := h.service.CreateEnvironment("project-a", "reconcile-stale-environment-0001", service.CreateEnvironmentInput{Name: "reconcile-stale", Template: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox, _, err := h.service.CreateSandbox(context.Background(), "project-a", "reconcile-stale-sandbox-0001", service.CreateSandboxInput{
+		EnvironmentRevision: environment.RevisionID,
+		Lifecycle:           domain.Lifecycle{StandbyAfterSeconds: 60, StandbyGraceSeconds: 15, ExpiresAfterSeconds: 600},
+		Network:             domain.NetworkPolicy{AllowInternet: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.backend.inspectStarted = make(chan string, 1)
+	h.backend.releaseInspect = make(chan struct{})
+	h.backend.runStarted = make(chan struct{})
+	reconciled := make(chan error, 1)
+	go func() { reconciled <- h.service.Reconcile(context.Background()) }()
+	select {
+	case <-h.backend.inspectStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile did not reach backend inspection")
+	}
+	if _, err := h.service.RunCommand(context.Background(), "project-a", sandbox.ID, service.RunCommandInput{Argv: []string{"true"}}, func(backend.CommandEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	afterGuest, err := h.state.GetSandbox("project-a", sandbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterGuest.Revision <= sandbox.Revision {
+		t.Fatalf("guest activity did not advance revision: before=%d after=%d", sandbox.Revision, afterGuest.Revision)
+	}
+	close(h.backend.releaseInspect)
+	select {
+	case err := <-reconciled:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile did not finish")
+	}
+	afterReconcile, err := h.state.GetSandbox("project-a", sandbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterReconcile.Revision != afterGuest.Revision || !afterReconcile.UpdatedAt.Equal(afterGuest.UpdatedAt) {
+		t.Fatalf("stale observation mutated sandbox: after guest=%#v after reconcile=%#v", afterGuest, afterReconcile)
+	}
+	events, err := h.service.Events("project-a", sandbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == "sandbox.reconciled" {
+			t.Fatal("stale observation appended a reconciliation event")
+		}
 	}
 }
 
