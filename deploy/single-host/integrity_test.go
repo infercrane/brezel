@@ -84,10 +84,19 @@ func TestEngineCapacityUpdateVerifiesEffectiveLimitBeforeCommit(t *testing.T) {
 		t.Fatal("capacity reconciler does not contain one explicit transaction")
 	}
 	transaction := content[begin:commit]
-	update := strings.Index(transaction, "UPDATE public.tiers")
+	seedResolver := strings.Index(transaction, "WHERE name = 'local dev seed token'")
+	update := strings.Index(transaction, "INSERT INTO public.project_limits")
 	effective := strings.LastIndex(transaction, "FROM public.team_limits")
-	if update < 0 || effective <= update || !strings.Contains(transaction[effective:], "RAISE EXCEPTION") {
-		t.Fatal("effective team limit is not asserted after the tier update and before commit")
+	if seedResolver < 0 || update <= seedResolver || effective <= update || !strings.Contains(transaction[effective:], "RAISE EXCEPTION") {
+		t.Fatal("seed-team project limit is not asserted after its update and before commit")
+	}
+	for _, forbidden := range []string{
+		"UPDATE public.tiers",
+		"WHERE team_id IN (SELECT id FROM public.teams)",
+	} {
+		if strings.Contains(transaction, forbidden) {
+			t.Fatalf("capacity reconciler mutates capacity outside the seeded service team: %q", forbidden)
+		}
 	}
 }
 

@@ -57,9 +57,10 @@ SELECT set_config('brezel.expected_free_disk', :'expected_free_disk', true);
 SELECT set_config('brezel.expected_max_free_disk', :'expected_max_free_disk', true);
 DO $brezel$
 DECLARE
-  team_count bigint;
-  non_base_team_count bigint;
-  base_tier_count bigint;
+  seed_team_count bigint;
+  seed_team_id uuid;
+  seed_team_tier text;
+  effective_team_count bigint;
   effective_mismatch_count bigint;
   expected_capacity bigint := current_setting('brezel.expected_capacity')::bigint;
   expected_vcpus bigint := current_setting('brezel.expected_vcpus')::bigint;
@@ -67,40 +68,64 @@ DECLARE
   expected_free_disk bigint := current_setting('brezel.expected_free_disk')::bigint;
   expected_max_free_disk bigint := current_setting('brezel.expected_max_free_disk')::bigint;
 BEGIN
-  SELECT count(*) INTO team_count FROM public.teams;
-  IF team_count <> 1 THEN
-    RAISE EXCEPTION 'Brezel embedded engine requires exactly one seeded team, found %', team_count;
+  SELECT count(*), min(team_id::text)::uuid
+  INTO seed_team_count, seed_team_id
+  FROM (
+    SELECT DISTINCT team_id
+    FROM public.team_api_keys
+    WHERE name = 'local dev seed token'
+  ) AS seed_teams;
+  IF seed_team_count <> 1 OR seed_team_id IS NULL THEN
+    RAISE EXCEPTION 'Brezel embedded engine requires exactly one local seed-key owner, found %', seed_team_count;
   END IF;
 
-  SELECT count(*) INTO non_base_team_count FROM public.teams WHERE tier <> 'base_v1';
-  IF non_base_team_count <> 0 THEN
-    RAISE EXCEPTION 'Brezel embedded engine contains % team(s) outside its base tier', non_base_team_count;
+  SELECT tier INTO seed_team_tier FROM public.teams WHERE id = seed_team_id;
+  IF seed_team_tier IS DISTINCT FROM 'base_v1' THEN
+    RAISE EXCEPTION 'Brezel embedded engine seed-key owner uses unexpected tier %', seed_team_tier;
   END IF;
 
-  SELECT count(*) INTO base_tier_count FROM public.tiers WHERE id = 'base_v1';
-  IF base_tier_count <> 1 THEN
-    RAISE EXCEPTION 'Brezel embedded engine base tier is missing or ambiguous';
+  INSERT INTO public.project_limits (
+    team_id,
+    max_length_hours,
+    concurrent_sandboxes,
+    concurrent_template_builds,
+    max_vcpu,
+    max_ram_mb,
+    disk_mb,
+    events_ttl_days,
+    default_free_disk_size_mb,
+    max_disk_size_mb,
+    max_free_disk_size_mb,
+    updated_at
+  )
+  SELECT
+    seed_team_id,
+    tier.max_length_hours,
+    expected_capacity,
+    tier.concurrent_template_builds,
+    expected_vcpus,
+    expected_memory,
+    expected_free_disk,
+    tier.events_ttl_days,
+    expected_free_disk,
+    expected_max_free_disk,
+    expected_max_free_disk,
+    now()
+  FROM public.tiers AS tier
+  WHERE tier.id = 'base_v1'
+  ON CONFLICT (team_id) DO UPDATE
+  SET concurrent_sandboxes = EXCLUDED.concurrent_sandboxes,
+      max_vcpu = EXCLUDED.max_vcpu,
+      max_ram_mb = EXCLUDED.max_ram_mb,
+      disk_mb = EXCLUDED.disk_mb,
+      default_free_disk_size_mb = EXCLUDED.default_free_disk_size_mb,
+      max_disk_size_mb = EXCLUDED.max_disk_size_mb,
+      max_free_disk_size_mb = EXCLUDED.max_free_disk_size_mb,
+      updated_at = EXCLUDED.updated_at;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Brezel embedded engine base tier is missing';
   END IF;
-
-  UPDATE public.tiers
-  SET concurrent_instances = expected_capacity,
-      max_vcpu = expected_vcpus,
-      max_ram_mb = expected_memory,
-      disk_mb = expected_free_disk,
-      default_free_disk_size_mb = expected_free_disk,
-      max_disk_size_mb = expected_max_free_disk
-  WHERE id = 'base_v1';
-
-  UPDATE public.project_limits
-  SET concurrent_sandboxes = expected_capacity,
-      max_vcpu = expected_vcpus,
-      max_ram_mb = expected_memory,
-      disk_mb = expected_free_disk,
-      default_free_disk_size_mb = expected_free_disk,
-      max_disk_size_mb = expected_max_free_disk,
-      max_free_disk_size_mb = expected_max_free_disk,
-      updated_at = now()
-  WHERE team_id IN (SELECT id FROM public.teams);
 
   SELECT count(*), count(*) FILTER (
     WHERE concurrent_sandboxes <> expected_capacity
@@ -109,9 +134,10 @@ BEGIN
        OR default_free_disk_size_mb <> expected_free_disk
        OR max_free_disk_size_mb <> expected_max_free_disk
   )
-  INTO team_count, effective_mismatch_count
-  FROM public.team_limits;
-  IF team_count < 1 OR effective_mismatch_count <> 0 THEN
+  INTO effective_team_count, effective_mismatch_count
+  FROM public.team_limits
+  WHERE id = seed_team_id;
+  IF effective_team_count <> 1 OR effective_mismatch_count <> 0 THEN
     RAISE EXCEPTION 'Brezel embedded engine effective limits do not match the operator resource contract';
   END IF;
 END
@@ -121,7 +147,7 @@ SQL
 fi
 
 conformant=$(psql -X -v ON_ERROR_STOP=1 -Atc \
-  "SELECT (SELECT count(*) = 1 FROM public.teams) AND count(*) = 1 AND count(*) FILTER (WHERE concurrent_sandboxes <> $EXPECTED OR max_vcpu <> $EXPECTED_VCPUS OR max_ram_mb <> $EXPECTED_MEMORY_MIB OR default_free_disk_size_mb <> $EXPECTED_FREE_DISK_MIB OR max_free_disk_size_mb <> $EXPECTED_MAX_FREE_DISK_MIB) = 0 FROM public.team_limits")
+  "WITH seed_team AS (SELECT DISTINCT team_id FROM public.team_api_keys WHERE name = 'local dev seed token') SELECT (SELECT count(*) = 1 FROM seed_team) AND count(*) = 1 AND count(*) FILTER (WHERE concurrent_sandboxes <> $EXPECTED OR max_vcpu <> $EXPECTED_VCPUS OR max_ram_mb <> $EXPECTED_MEMORY_MIB OR default_free_disk_size_mb <> $EXPECTED_FREE_DISK_MIB OR max_free_disk_size_mb <> $EXPECTED_MAX_FREE_DISK_MIB) = 0 FROM public.team_limits WHERE id IN (SELECT team_id FROM seed_team)")
 [ "$conformant" = t ] || fail "embedded engine effective limits do not match the operator resource contract"
 
 printf '%s\n' \
