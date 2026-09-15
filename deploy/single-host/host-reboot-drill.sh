@@ -108,34 +108,34 @@ cli() {
 create_crash_consistency_corpus() {
   corpus_sandbox_id=$1
   corpus_marker=$2
-  cli exec "$corpus_sandbox_id" /bin/sh -lc '
+  cli exec --env "BREZEL_CORPUS_MARKER=$corpus_marker" "$corpus_sandbox_id" /bin/sh -c '
     set -eu
     root=/workspace/host-reboot-corpus
     mkdir -p "$root/nested"
 
-    printf "%s" "$1" > "$root/small.txt"
+    printf "%s" "$BREZEL_CORPUS_MARKER" > "$root/small.txt"
 
-    printf "before:%s" "$1" > "$root/overwrite.txt"
-    printf "after:%s" "$1" > "$root/overwrite.txt"
+    printf "before:%s" "$BREZEL_CORPUS_MARKER" > "$root/overwrite.txt"
+    printf "after:%s" "$BREZEL_CORPUS_MARKER" > "$root/overwrite.txt"
 
-    printf "truncate:%s:discarded-tail" "$1" > "$root/truncate.txt"
+    printf "truncate:%s:discarded-tail" "$BREZEL_CORPUS_MARKER" > "$root/truncate.txt"
     truncate -s 17 "$root/truncate.txt"
 
-    printf "rename:%s" "$1" > "$root/atomic-rename.pending"
+    printf "rename:%s" "$BREZEL_CORPUS_MARKER" > "$root/atomic-rename.pending"
     mv "$root/atomic-rename.pending" "$root/atomic-rename.txt"
 
-    printf "nested:%s" "$1" > "$root/nested/path.txt"
+    printf "nested:%s" "$BREZEL_CORPUS_MARKER" > "$root/nested/path.txt"
 
     dd if=/dev/zero of="$root/payload-1m.bin" bs=1048576 count=1 2>/dev/null
-    printf "%s" "$1" | dd of="$root/payload-1m.bin" bs=64 count=1 conv=notrunc 2>/dev/null
+    printf "%s" "$BREZEL_CORPUS_MARKER" | dd of="$root/payload-1m.bin" bs=64 count=1 conv=notrunc 2>/dev/null
 
     sync
-  ' runtime-host-reboot-corpus "$corpus_marker" >/dev/null
+  ' >/dev/null
 }
 
 crash_consistency_manifest() {
   manifest_sandbox_id=$1
-  raw_manifest=$(cli exec "$manifest_sandbox_id" /bin/sh -lc '
+  raw_manifest=$(cli exec "$manifest_sandbox_id" /bin/sh -c '
     set -eu
     root=/workspace/host-reboot-corpus
     [ ! -e "$root/atomic-rename.pending" ]
@@ -147,7 +147,7 @@ crash_consistency_manifest() {
       size=$(wc -c < "$file" | tr -d " ")
       printf "%s\t%s\t%s\n" "$path" "$digest" "$size"
     done
-  ' runtime-host-reboot-corpus-manifest) || return 1
+  ') || return 1
 
   manifest=$(printf '%s\n' "$raw_manifest" | jq -Rce '
     [

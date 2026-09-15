@@ -840,6 +840,7 @@ func TestHostRebootDrillRequiresHonestStateAndWorkspaceRecovery(t *testing.T) {
 		"crash_consistency_manifest", "crash_consistency_corpus", "crash_consistency_corpus_missing",
 		"crash_consistency_corpus_changed", "atomic-rename.pending", "atomic-rename.txt", "nested/path.txt",
 		"overwrite.txt", "payload-1m.bin", "small.txt", "truncate.txt", "bs=1048576", "truncate -s 17",
+		`--env "BREZEL_CORPUS_MARKER=$corpus_marker"`, "/bin/sh -c", "$BREZEL_CORPUS_MARKER",
 		"$before == $after",
 	} {
 		if !strings.Contains(drill, required) {
