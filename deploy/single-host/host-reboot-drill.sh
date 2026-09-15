@@ -149,7 +149,7 @@ crash_consistency_manifest() {
     done
   ') || return 1
 
-  manifest=$(printf '%s\n' "$raw_manifest" | jq -Rce '
+  manifest=$(printf '%s\n' "$raw_manifest" | jq -Rsce '
     [
       split("\n")[]
       | select(length > 0)
