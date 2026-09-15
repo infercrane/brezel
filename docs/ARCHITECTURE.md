@@ -400,6 +400,16 @@ forces a fresh guest probe. This bounded lease removes duplicate probes from a
 request burst without allowing an engine metadata row to survive a lost VM as
 a false `running` state.
 
+An optional single-use warm-capacity backend removes VM construction from the
+create path for one exact immutable template and network policy. Its separate
+private SQLite ledger persists reservations and customer claims before
+publication. A claimed slot is never returned to clean capacity: delete
+destroys it and provisions a new slot. Claiming verifies guest readiness and
+resets the engine hard deadline to the remaining duration of the original
+customer TTL, so a retry cannot extend execution. Strict mode is a fixed
+physical budget and rejects nonmatching requests before backend mutation. The
+API does not serve until startup recovery and priming complete.
+
 ### Automatic standby and resume
 
 1. The lifecycle controller observes no qualifying activity for the configured

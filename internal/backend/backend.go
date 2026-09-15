@@ -16,6 +16,10 @@ const DefaultName = "microvm"
 var (
 	ErrNotFound              = errors.New("backend resource not found")
 	ErrCapabilityUnavailable = errors.New("backend capability unavailable")
+	// ErrCapacityUnavailable is returned only when the backend has confirmed
+	// that it did not create a resource. Callers may safely retry elsewhere or
+	// report deterministic capacity exhaustion instead of an unknown state.
+	ErrCapacityUnavailable = errors.New("backend capacity unavailable")
 )
 
 type Capabilities struct {
@@ -144,6 +148,13 @@ type Backend interface {
 // sandbox state transition.
 type ReadinessBackend interface {
 	Ready(context.Context) error
+}
+
+// TimeoutRuntime resets a running sandbox's hard engine deadline. Warm
+// capacity requires this primitive so a claimed slot receives the customer's
+// TTL instead of retaining the longer pool housekeeping lifetime.
+type TimeoutRuntime interface {
+	SetTimeout(context.Context, string, int64) error
 }
 
 func Preflight(c Capabilities, lifecycle domain.Lifecycle, network domain.NetworkPolicy, connectorRevisions []string) error {

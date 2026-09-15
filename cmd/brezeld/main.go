@@ -18,8 +18,11 @@ import (
 	"time"
 
 	"github.com/infercrane/brezel/internal/access"
+	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/backend/e2b"
+	"github.com/infercrane/brezel/internal/backend/warm"
 	"github.com/infercrane/brezel/internal/connector"
+	"github.com/infercrane/brezel/internal/domain"
 	"github.com/infercrane/brezel/internal/httpapi"
 	"github.com/infercrane/brezel/internal/node"
 	"github.com/infercrane/brezel/internal/nodeidentity"
@@ -119,6 +122,21 @@ func run() error {
 		return err
 	}
 	defer state.Close()
+	var runtimeBackend backend.Backend = client
+	warmPool, err := loadWarmPool(runtimeBackend, phaseMetrics)
+	if err != nil {
+		return err
+	}
+	if warmPool != nil {
+		defer warmPool.Close()
+		primeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		err = warmPool.Prime(primeCtx)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("prime single-use warm capacity: %w", err)
+		}
+		runtimeBackend = warmPool
+	}
 	private, err := loadPrivateKey(os.Getenv("BREZEL_RECEIPT_PRIVATE_KEY_FILE"))
 	if err != nil {
 		return err
@@ -156,7 +174,7 @@ func run() error {
 		serviceOptions = append(serviceOptions, service.WithConnectorBroker(broker))
 		apiOptions = append(apiOptions, httpapi.WithConnectorHandler(broker))
 	}
-	svc, err := service.New(state, client, signer, serviceOptions...)
+	svc, err := service.New(state, runtimeBackend, signer, serviceOptions...)
 	if err != nil {
 		return err
 	}
@@ -200,6 +218,22 @@ func run() error {
 		return fmt.Errorf("initial reconciliation: %w", err)
 	}
 	go reconcileLoop(ctx, svc)
+	if warmPool != nil {
+		maintenanceCtx, cancelMaintenance := context.WithCancel(ctx)
+		maintenanceDone := make(chan struct{})
+		go func() {
+			defer close(maintenanceDone)
+			warmPoolLoop(maintenanceCtx, warmPool)
+		}()
+		defer func() {
+			cancelMaintenance()
+			select {
+			case <-maintenanceDone:
+			case <-time.After(10 * time.Second):
+				log.Printf("warm capacity maintenance did not stop before shutdown deadline")
+			}
+		}()
+	}
 
 	httpServer := &http.Server{
 		Addr:              env("BREZEL_LISTEN_ADDR", "127.0.0.1:8080"),
@@ -228,6 +262,48 @@ func run() error {
 		}
 		return err
 	}
+}
+
+func loadWarmPool(inner backend.Backend, observer telemetry.Observer) (*warm.Pool, error) {
+	target, err := parseNonNegativeIntEnv("BREZEL_WARM_POOL_SIZE", 0)
+	if err != nil || target == 0 {
+		return nil, err
+	}
+	primeConcurrency, err := parsePositiveIntEnv("BREZEL_WARM_POOL_PRIME_CONCURRENCY", target)
+	if err != nil {
+		return nil, err
+	}
+	slotTTL, err := parsePositiveIntEnv("BREZEL_WARM_POOL_SLOT_TTL_SECONDS", 4*60*60)
+	if err != nil {
+		return nil, err
+	}
+	maxClaimTTL, err := parsePositiveIntEnv("BREZEL_WARM_POOL_MAX_CLAIM_TTL_SECONDS", 60*60)
+	if err != nil {
+		return nil, err
+	}
+	allowInternet, err := parseBoolEnv("BREZEL_WARM_POOL_ALLOW_INTERNET", false)
+	if err != nil {
+		return nil, err
+	}
+	strict, err := parseBoolEnv("BREZEL_WARM_POOL_STRICT", true)
+	if err != nil {
+		return nil, err
+	}
+	configured, err := warm.New(inner, warm.Config{
+		Path:             env("BREZEL_WARM_POOL_DB", "./.brezel/state/warm-pool.db"),
+		Target:           target,
+		TemplateID:       env("BREZEL_WARM_POOL_TEMPLATE", "base"),
+		SlotTTL:          time.Duration(slotTTL) * time.Second,
+		MaxClaimTTL:      time.Duration(maxClaimTTL) * time.Second,
+		PrimeConcurrency: primeConcurrency,
+		Network:          domain.NetworkPolicy{AllowInternet: allowInternet},
+		Strict:           strict,
+		Observer:         observer,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configure single-use warm capacity: %w", err)
+	}
+	return configured, nil
 }
 
 func loadNodeOptions() ([]service.Option, error) {
@@ -341,6 +417,18 @@ func parsePositiveIntEnv(name string, fallback int) (int, error) {
 	return value, nil
 }
 
+func parseNonNegativeIntEnv(name string, fallback int) (int, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	return value, nil
+}
+
 func loadLimits() (service.Limits, error) {
 	limits := service.DefaultLimits
 	var err error
@@ -383,6 +471,23 @@ func reconcileLoop(ctx context.Context, svc *service.Service) {
 			reconcileCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			if err := svc.Reconcile(reconcileCtx); err != nil {
 				log.Printf("reconciliation failed: %v", err)
+			}
+			cancel()
+		}
+	}
+}
+
+func warmPoolLoop(ctx context.Context, pool *warm.Pool) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			maintenanceCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			if err := pool.Maintain(maintenanceCtx); err != nil {
+				log.Printf("warm capacity maintenance failed: %v", err)
 			}
 			cancel()
 		}

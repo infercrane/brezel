@@ -39,6 +39,7 @@ type testBackend struct {
 	byLocal                    map[string]string
 	capabilities               backend.Capabilities
 	createUnconfirmed          bool
+	createError                error
 	deleteFailures             int
 	lastCreate                 backend.CreateRequest
 	lastCommand                backend.CommandRequest
@@ -88,6 +89,7 @@ func (b *testBackend) Create(ctx context.Context, in backend.CreateRequest) (bac
 	b.lastCreate = in
 	id := fmt.Sprintf("remote-%d", b.createCalls)
 	createUnconfirmed := b.createUnconfirmed
+	createError := b.createError
 	createStarted := b.createStarted
 	releaseCreate := b.releaseCreate
 	b.mu.Unlock()
@@ -104,6 +106,9 @@ func (b *testBackend) Create(ctx context.Context, in backend.CreateRequest) (bac
 		case <-ctx.Done():
 			return backend.Sandbox{}, ctx.Err()
 		}
+	}
+	if createError != nil {
+		return backend.Sandbox{}, createError
 	}
 	value := backend.Sandbox{ID: id, State: domain.SandboxRunning}
 	b.mu.Lock()
@@ -1491,6 +1496,30 @@ func TestReconcileRecoversUnconfirmedCreateAndRetriesCleanup(t *testing.T) {
 	resp, got := request(t, h, http.MethodGet, "/v1/sandboxes/"+sandboxID, "project-a", "", nil)
 	if resp.StatusCode != http.StatusOK || got["state"] != "deleted" {
 		t.Fatalf("cleanup was not reconciled: %d %#v", resp.StatusCode, got)
+	}
+}
+
+func TestConfirmedBackendCapacityFailureIsNotRecordedAsUnknown(t *testing.T) {
+	h := newHarness(t)
+	defer h.close()
+	h.backend.createError = backend.ErrCapacityUnavailable
+	envRevision := createEnvironment(t, h, "project-a")
+	body := map[string]any{"environment_revision": envRevision, "lifecycle": map[string]any{"expires_after_seconds": 3600}, "network": map[string]any{"allow_internet": false}}
+	resp, out := request(t, h, http.MethodPost, "/v1/sandboxes", "project-a", "capacity-failure-0001", body)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("capacity response = %d %#v", resp.StatusCode, out)
+	}
+	var persisted domain.Sandbox
+	if err := h.state.View(func(state store.State) error {
+		for _, candidate := range state.Sandboxes {
+			persisted = candidate
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != domain.SandboxFailed || persisted.Failure == nil || persisted.Failure.Code != "backend_capacity_unavailable" {
+		t.Fatalf("persisted capacity failure = %#v", persisted)
 	}
 }
 

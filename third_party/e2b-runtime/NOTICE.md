@@ -22,6 +22,13 @@ remove, and directory operations sync the affected parent directories before
 acknowledgement. A sync failure is returned to the guest instead of becoming
 a false durability promise. The sixth patch bounds simultaneous local sandbox
 starts and makes resource-exhaustion retries bounded, cancellation-aware, and
-observable instead of allowing an unbounded admission loop.
+observable instead of allowing an unbounded admission loop. The seventh patch
+makes host resource pools and the immutable base-template CPU, memory, and
+writable-root shape explicit operator inputs with validated bounds. The eighth
+patch resolves live process tags across the complete guest process table so a
+recovery lookup cannot silently miss a non-first process. The ninth patch adds
+a bounded, generation-bound process-output journal so an interrupted command
+stream can resume from an exact cursor without rerunning customer code; missing,
+evicted, or stale-generation output fails closed.
 
 Upstream source: <https://github.com/e2b-dev/runtime>

@@ -84,6 +84,13 @@ The benchmark does not clear caches. `cold`, `cached-template`, `warm-pool`, and
 `unknown` are explicit operator declarations. A cold-cache report must document
 the external reset procedure; changing the label alone does not make a run cold.
 
+`warm-pool` means the request claimed a never-used clean slot for the exact
+template and network class. The report must retain the configured target, clean
+occupancy before the wave, claim failures, hard-deadline reset failures,
+replacement creates, and confirmed destruction of every claimed backend
+resource. A recycled customer sandbox, an in-memory-only reservation, or an
+unreported cold fallback invalidates the label.
+
 Snapshot diffs under `/orchestrator/build` are a recoverable performance cache,
 not a durable workspace or template store. The single-host distribution defaults
 to a 4 hour TTL, a 32 GiB physical-allocation high water, and a 70 percent local
@@ -365,6 +372,27 @@ than the leading providers and the published E2B median of 1.28 s. These are
 directional comparisons only: Brezel has not run inside ComputeSDK's official
 provider harness, host CPUs differ, and the public table uses one iteration per
 scheduled provider run.
+
+The retained phase medians explain the DAX gap more usefully than the rank:
+
+| Phase | Brezel rehearsal | Blaxel public | Isorun public |
+| --- | ---: | ---: | ---: |
+| Prepare | 6.407 s | 1.241 s | 1.759 s |
+| Bun download | 0.405 s | 0.385 s | 0.259 s |
+| Bun unpack | 0.725 s | 0.465 s | 0.427 s |
+| Clone | 2.597 s | 1.515 s | 1.054 s |
+| Install | 14.160 s | 9.286 s | 9.177 s |
+| Typecheck | 37.551 s | 23.857 s | 18.820 s |
+| Workload total | 63.272 s | 43.653 s | 33.973 s |
+
+Approximately 64 percent of Brezel's total gap to Isorun is the typecheck
+phase, 17 percent is dependency installation, and 16 percent is preparation.
+The calculation is directional because individual phase medians do not sum to
+the median of per-run totals and the providers ran on different physical CPUs.
+It nevertheless rules out API-language or controller serialization as the
+primary DAX target. CPU quality and writable-root I/O are the first-order work;
+the pinned Node 24 development image addresses preparation consistency but has
+not yet been qualified as a latency improvement.
 
 The entry gate is therefore:
 

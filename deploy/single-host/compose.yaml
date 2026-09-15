@@ -55,6 +55,14 @@ services:
       BREZEL_LISTEN_ADDR: 127.0.0.1:8080
       BREZEL_DATA_DB: /var/lib/brezel/brezel.db
       BREZEL_LEGACY_DATA_FILE: /var/lib/brezel/state.json
+      BREZEL_WARM_POOL_DB: /var/lib/brezel/warm-pool.db
+      BREZEL_WARM_POOL_SIZE: ${BREZEL_WARM_POOL_SIZE:-0}
+      BREZEL_WARM_POOL_TEMPLATE: ${BREZEL_WARM_POOL_TEMPLATE:-base}
+      BREZEL_WARM_POOL_SLOT_TTL_SECONDS: ${BREZEL_WARM_POOL_SLOT_TTL_SECONDS:-14400}
+      BREZEL_WARM_POOL_MAX_CLAIM_TTL_SECONDS: ${BREZEL_WARM_POOL_MAX_CLAIM_TTL_SECONDS:-3600}
+      BREZEL_WARM_POOL_PRIME_CONCURRENCY: ${BREZEL_WARM_POOL_PRIME_CONCURRENCY:-1}
+      BREZEL_WARM_POOL_ALLOW_INTERNET: ${BREZEL_WARM_POOL_ALLOW_INTERNET:-false}
+      BREZEL_WARM_POOL_STRICT: ${BREZEL_WARM_POOL_STRICT:-true}
       BREZEL_ACCESS_POLICY_FILE: /run/brezel-secrets/access-policy.json
       # The API ignores this raw token when a policy is configured; the
       # conformance binary in the same image reads it for authenticated probes.

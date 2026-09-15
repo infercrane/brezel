@@ -227,6 +227,16 @@ func (c *Client) Inspect(ctx context.Context, id string) (backend.Sandbox, error
 	return c.observedSandbox(ctx, id, out)
 }
 
+func (c *Client) SetTimeout(ctx context.Context, id string, ttlSeconds int64) error {
+	if !safeSandboxID.MatchString(id) {
+		return errors.New("sandbox id is invalid")
+	}
+	if ttlSeconds < 1 {
+		return errors.New("sandbox timeout must be positive")
+	}
+	return c.do(ctx, http.MethodPost, "/sandboxes/"+url.PathEscape(id)+"/timeout", map[string]int64{"timeout": ttlSeconds}, nil, http.StatusNoContent)
+}
+
 func (c *Client) Find(ctx context.Context, localID, projectID string) (backend.Sandbox, error) {
 	u := c.baseURL.ResolveReference(&url.URL{Path: "/v2/sandboxes"})
 	query := u.Query()

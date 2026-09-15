@@ -32,6 +32,7 @@ hostile shared-multitenant, or public-production system.
 | Network and connectors | Deny by default; explicit unrestricted-internet opt-in; narrow private model/tool connector preview |
 | Authentication | Protected token digests bound to explicit projects |
 | Capacity | Per-project resource limits plus a process-wide admission ceiling |
+| Warm capacity | Optional crash-recoverable, single-use clean slots for one exact template/network class; customer sandboxes are destroyed after their first claim; Linux/KVM performance qualification remains pending |
 | State | Private SQLite WAL ledger, exclusive controller lock, semantic validation, legacy JSON import, and row-scoped guest hot paths |
 | Recovery | Durable resource-lifecycle idempotency, lifecycle events, cleanup intent, expiration reconciliation |
 | Evidence | Ed25519-signed DSSE lifecycle receipt; no customer content by default |
@@ -49,7 +50,7 @@ and engine credentials are read from protected files.
 - public full-state checkpoint and fork operations
 - Python and TypeScript SDKs
 - node enrollment, online certificate and signing-key rotation, durable node-operation receipts, and service-unit upgrade or rollback packaging
-- warm-capacity management and node-local snapshot prefetch
+- node-local snapshot prefetch and multi-class capacity scheduling
 - OIDC, organizations, RBAC, approvals, or dynamic quota administration
 - multiple nodes, replicated state, workspace backup/restore, or disaster recovery
 - GPU passthrough, air-gapped support, or hardware attestation
@@ -125,7 +126,11 @@ exist for DAX and 100 simultaneous command-ready sandboxes, together with
 strict workload and cleanup rehearsals. Both passed on the named GCP KVM host at
 revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`. The next performance gate
 is reducing Burst TTI and DAX's CPU-bound typecheck time without weakening the
-all-success requirement, then running the independent provider harness.
+all-success requirement. A single-use warm-capacity candidate and a pinned
+Node 24 development image now exist in source, but neither changes the current
+published evidence until the same named-host conformance, cleanup, failure, and
+repeated benchmark gates pass. After that, run the independent provider
+harness.
 Longer soak, disk-full, interrupted-upgrade, backup/restore, and rollback
 exercises remain required. Existing evidence qualifies independent single-host
 operation only; it does not establish multi-node scheduling, shared control,

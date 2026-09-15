@@ -10,7 +10,7 @@ reproducible yet.
 The installer accepts only the following engine inputs:
 
 - the exact upstream Git commit in `deploy/single-host/engine.lock`;
-- the six local patches whose SHA-256 digests are in that lock;
+- the nine local patches whose SHA-256 digests are in that lock;
 - the upstream compose, environment, and host-artifact fetcher bytes whose
   independent SHA-256 digests are in that lock;
 - the exact linux/amd64 OCI manifests in

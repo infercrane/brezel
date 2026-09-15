@@ -506,6 +506,28 @@ func (s *Service) CreateSandbox(ctx context.Context, projectID, idempotencyKey s
 	locked = true
 	if backendErr != nil {
 		delete(s.activeBackendMutations, mutationKey)
+		if errors.Is(backendErr, backend.ErrCapacityUnavailable) {
+			failure := &domain.Failure{Code: "backend_capacity_unavailable", Message: "sandbox capacity is temporarily unavailable", Retryable: true}
+			now = s.now()
+			sandbox.State, sandbox.Failure, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxFailed, failure, now, sandbox.Revision+1
+			op.State, op.Failure, op.UpdatedAt = domain.OperationFailed, failure, now
+			persistResultStarted := time.Now()
+			persistErr := store.UpdateRows(s.store, store.MutationScope{
+				Sandboxes:    []string{store.ScopedKey(projectID, sandbox.ID)},
+				Operations:   []string{store.ScopedKey(projectID, op.ID)},
+				EventStreams: []store.EventStream{{ProjectID: projectID, ResourceID: sandbox.ID}},
+			}, func(state *store.State) error {
+				state.Sandboxes[store.ScopedKey(projectID, sandbox.ID)] = sandbox
+				state.Operations[store.ScopedKey(projectID, op.ID)] = op
+				appendEvent(state, eventFor(sandbox, op.ID, "sandbox.failed", now, map[string]any{"code": failure.Code}))
+				return nil
+			})
+			telemetry.Observe(s.observer, telemetry.OperationSandboxCreate, telemetry.PhasePersistResult, persistResultStarted, persistErr)
+			if persistErr != nil {
+				return sandbox, op, persistErr
+			}
+			return sandbox, op, ErrCapacity
+		}
 		failure := &domain.Failure{Code: "backend_create_unconfirmed", Message: "sandbox backend did not confirm whether the resource was created", Retryable: true}
 		now = s.now()
 		sandbox.State, sandbox.Failure, sandbox.UpdatedAt, sandbox.Revision = domain.SandboxUnknown, failure, now, sandbox.Revision+1

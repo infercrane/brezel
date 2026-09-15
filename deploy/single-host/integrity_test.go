@@ -392,6 +392,12 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 	if output, err := run("plan", "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=4", "BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=4", "BREZEL_ENGINE_MAX_STARTING_SANDBOXES=4", "BREZEL_ENGINE_HUGEPAGES=2048"); err != nil {
 		t.Fatalf("capacity contract rejected a coherent four-sandbox profile: %v: %s", err, output)
 	}
+	if output, err := run("plan", "BREZEL_WARM_POOL_SIZE=4"); err == nil {
+		t.Fatalf("capacity contract accepted strict warm capacity below the active ceiling: %s", output)
+	}
+	if output, err := run("plan", "BREZEL_WARM_POOL_SIZE=32", "BREZEL_WARM_POOL_PRIME_CONCURRENCY=33"); err == nil {
+		t.Fatalf("capacity contract accepted excessive warm-pool prime concurrency: %s", output)
+	}
 	if output, err := run("plan", "BREZEL_TEST_CPU_COUNT=1"); err == nil {
 		t.Fatalf("capacity contract accepted a host smaller than one guest: %s", output)
 	}
@@ -417,7 +423,7 @@ func TestCapacityProfilesArePhysicallyCoherent(t *testing.T) {
 		want      string
 	}{
 		{name: "computesdk-dax.env", memoryKiB: 48 * 1024 * 1024, want: `"guest_vcpus":8`},
-		{name: "burst-100-capacity.env", memoryKiB: 64 * 1024 * 1024, want: `"max_active_sandboxes":100`},
+		{name: "burst-100-capacity.env", memoryKiB: 64 * 1024 * 1024, want: `"warm_pool_size":100`},
 	}
 	for _, profile := range profiles {
 		t.Run(profile.name, func(t *testing.T) {
@@ -1134,6 +1140,8 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_LOCAL_CAPACITY_PATCH"`,
 		`BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT="$INSTALL_DIR/artifacts/build-base-template.mjs"`,
 		`BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256=$(sha256sum "$BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT"`,
+		"BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE must name an immutable OCI image manifest by SHA-256 digest",
+		"export BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE",
 		`"$ENGINE_START_ADMISSION_PATCH_SHA256" "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256"`,
 		"engine local-capacity patch verification failed",
 	} {
@@ -1153,6 +1161,7 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 		"NBD_POOL_SIZE: ${BREZEL_ENGINE_NBD_POOL_SIZE:",
 		"BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}",
 		"BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}",
+		"BASE_TEMPLATE_SOURCE_IMAGE: ${BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE:",
 		"BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256:",
 		"/opt/brezel/build-base-template.mjs:ro",
 		"mounted builder digest mismatch",

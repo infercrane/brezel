@@ -40,6 +40,9 @@ const (
 	PhaseGuestProcessRun   Phase = "guest_process_run"
 	PhaseGuestTransfer     Phase = "guest_transfer"
 	PhaseGuestHealth       Phase = "guest_health"
+	PhaseWarmReserve       Phase = "warm_reserve"
+	PhaseWarmVerify        Phase = "warm_verify"
+	PhaseWarmDeadline      Phase = "warm_deadline"
 )
 
 type Outcome string
@@ -178,7 +181,8 @@ func validPhase(value Phase) bool {
 	switch value {
 	case PhasePersistIntent, PhaseBackendCall, PhasePersistResult, PhaseGuestAcquire,
 		PhaseGuestConnection, PhaseGuestProcessStart, PhaseGuestFirstEvent,
-		PhaseGuestProcessRun, PhaseGuestTransfer, PhaseGuestHealth:
+		PhaseGuestProcessRun, PhaseGuestTransfer, PhaseGuestHealth, PhaseWarmReserve,
+		PhaseWarmVerify, PhaseWarmDeadline:
 		return true
 	default:
 		return false

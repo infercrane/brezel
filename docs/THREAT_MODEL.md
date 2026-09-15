@@ -211,6 +211,16 @@ Future public full-state resume and fork operations must validate:
 Forking a compromised or dirty sandbox copies its state. Jobs default to a clean
 template, not the previous attempt's snapshot.
 
+Warm capacity consists only of never-claimed sandboxes created from the exact
+configured immutable template and network policy. A slot is bound durably to
+one project and sandbox before it can be published. After any customer claim,
+cleanup destroys the backend resource; it is never scrubbed and offered to
+another customer. A failed readiness or timeout-reset check also destroys the
+slot before replacement. Strict warm capacity rejects a request that would
+silently bypass its fixed physical budget. These properties reduce, but do not
+replace, the requirement to qualify the underlying Firecracker and storage
+isolation boundary.
+
 A checkpoint cannot undo an external effect. A future public full-state
 checkpoint, restore, or fork contract must record unresolved connector requests
 and idempotency identities, require an explicit quiescent boundary, and reject an

@@ -44,6 +44,39 @@ func TestReadyUsesAuthenticatedEngineHealth(t *testing.T) {
 	}
 }
 
+func TestSetTimeoutResetsTheHardEngineDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/sandboxes/sbx-1/timeout" {
+			t.Fatalf("timeout request = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("X-API-Key") != "engine-secret" {
+			t.Fatal("timeout request omitted engine authentication")
+		}
+		var body map[string]int64
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["timeout"] != 119 {
+			t.Fatalf("timeout body = %#v", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "engine-secret", server.Client(), WithGuestURLTemplate("http://127.0.0.1:3002"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetTimeout(context.Background(), "sbx-1", 119); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetTimeout(context.Background(), "../escape", 119); err == nil {
+		t.Fatal("invalid sandbox id was accepted")
+	}
+	if err := client.SetTimeout(context.Background(), "sbx-1", 0); err == nil {
+		t.Fatal("non-positive timeout was accepted")
+	}
+}
+
 func TestCreateMapsSecurityLifecycleAndTenantMetadata(t *testing.T) {
 	guest := newHealthyGuestServer(t, nil)
 	defer guest.Close()
