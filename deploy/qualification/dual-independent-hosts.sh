@@ -638,13 +638,15 @@ cleanup_fixture_best_effort() {
 
 stop_active_jobs() {
   local pid deadline
-  for pid in "${ACTIVE_PIDS[@]}"; do
+  for pid in ${ACTIVE_PIDS[*]-}; do
+    [[ -n "$pid" ]] || continue
     kill -TERM "$pid" >/dev/null 2>&1 || true
   done
   deadline=$((SECONDS + 5))
   while (( SECONDS < deadline )); do
     local running=false
-    for pid in "${ACTIVE_PIDS[@]}"; do
+    for pid in ${ACTIVE_PIDS[*]-}; do
+      [[ -n "$pid" ]] || continue
       if kill -0 "$pid" >/dev/null 2>&1; then
         running=true
         break
@@ -653,10 +655,12 @@ stop_active_jobs() {
     [[ "$running" = true ]] || break
     sleep 0.1
   done
-  for pid in "${ACTIVE_PIDS[@]}"; do
+  for pid in ${ACTIVE_PIDS[*]-}; do
+    [[ -n "$pid" ]] || continue
     kill -0 "$pid" >/dev/null 2>&1 && kill -KILL "$pid" >/dev/null 2>&1 || true
   done
-  for pid in "${ACTIVE_PIDS[@]}"; do
+  for pid in ${ACTIVE_PIDS[*]-}; do
+    [[ -n "$pid" ]] || continue
     wait "$pid" >/dev/null 2>&1 || true
   done
   ACTIVE_PIDS=()
@@ -692,12 +696,24 @@ trap 'FAILURE_REASON="qualification interrupted"; exit 130' HUP INT TERM
 run_pair() {
   local action=$1 file=$2
   shift 2
-  local -a arguments=("$@")
+  local argument_count=$#
+  local -a arguments
+  if (( argument_count > 0 )); then
+    arguments=("$@")
+  fi
   local pid_a pid_b status_a=0 status_b=0
-  remote_exec "$HOST_A" "$action" a "$RUN_ID" "${arguments[@]}" > "$RUN_DIR/host-a/$file.json" 2> "$RUN_DIR/host-a/$file.stderr" &
+  if (( argument_count > 0 )); then
+    remote_exec "$HOST_A" "$action" a "$RUN_ID" "${arguments[@]}" > "$RUN_DIR/host-a/$file.json" 2> "$RUN_DIR/host-a/$file.stderr" &
+  else
+    remote_exec "$HOST_A" "$action" a "$RUN_ID" > "$RUN_DIR/host-a/$file.json" 2> "$RUN_DIR/host-a/$file.stderr" &
+  fi
   pid_a=$!
   ACTIVE_PIDS=("$pid_a")
-  remote_exec "$HOST_B" "$action" b "$RUN_ID" "${arguments[@]}" > "$RUN_DIR/host-b/$file.json" 2> "$RUN_DIR/host-b/$file.stderr" &
+  if (( argument_count > 0 )); then
+    remote_exec "$HOST_B" "$action" b "$RUN_ID" "${arguments[@]}" > "$RUN_DIR/host-b/$file.json" 2> "$RUN_DIR/host-b/$file.stderr" &
+  else
+    remote_exec "$HOST_B" "$action" b "$RUN_ID" > "$RUN_DIR/host-b/$file.json" 2> "$RUN_DIR/host-b/$file.stderr" &
+  fi
   pid_b=$!
   ACTIVE_PIDS=("$pid_a" "$pid_b")
   wait "$pid_a" || status_a=$?
