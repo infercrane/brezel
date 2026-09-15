@@ -7,16 +7,35 @@ import {
   openSync,
   readFileSync,
 } from "node:fs";
+import { posix as posixPath } from "node:path";
 
 const MAX_TOKEN_BYTES = 16 * 1024;
 const MAX_ERROR_BYTES = 64 * 1024;
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_STREAM_LINE_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024;
+const MAX_FILE_UPLOAD_BYTES = 32 * 1024 * 1024;
+const MAX_FILE_DOWNLOAD_BYTES = 64 * 1024 * 1024;
 const DEFAULT_CREATE_TIMEOUT_MS = 120_000;
 const DEFAULT_DESTROY_TIMEOUT_MS = 120_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 300_000;
 const DEFAULT_SANDBOX_TTL_SECONDS = 3_600;
+const FILESYSTEM_PATH_ENV = "BREZEL_COMPUTESDK_FS_PATH";
+const READDIR_COMMAND = `node <<'BREZEL_COMPUTESDK_READDIR'
+const fs = require("node:fs");
+const path = require("node:path");
+const directory = process.env.${FILESYSTEM_PATH_ENV};
+const entries = fs.readdirSync(directory, { withFileTypes: true }).map((entry) => {
+  const stat = fs.lstatSync(path.join(directory, entry.name));
+  return {
+    name: entry.name,
+    type: entry.isDirectory() ? "directory" : "file",
+    size: stat.size,
+    modifiedMs: stat.mtimeMs,
+  };
+});
+process.stdout.write(JSON.stringify(entries));
+BREZEL_COMPUTESDK_READDIR`;
 
 class BrezelHttpError extends Error {
   constructor(status, message) {
@@ -266,6 +285,26 @@ function validateSandbox(wire) {
   return wire;
 }
 
+function validateFilesystemPath(path) {
+  if (typeof path !== "string" || path.length === 0) {
+    throw new Error("filesystem path must be a non-empty string");
+  }
+  const bytes = new TextEncoder().encode(path);
+  const roundTrip = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  if (roundTrip !== path || bytes.byteLength > 4096 || /[\0\r\n]/.test(path)) {
+    throw new Error("filesystem path must be valid UTF-8 without NUL or newline bytes and at most 4096 bytes");
+  }
+  if (!path.startsWith("/") || posixPath.normalize(path) !== path || (path !== "/" && path.endsWith("/"))) {
+    throw new Error("filesystem path must be a clean absolute path");
+  }
+  return path;
+}
+
+function filePath(sandboxId, path) {
+  const query = new URLSearchParams({ path: validateFilesystemPath(path) });
+  return `/v1/sandboxes/${encodeURIComponent(sandboxId)}/files?${query}`;
+}
+
 async function waitForState(config, sandboxId, acceptable, timeoutMs, parentSignal) {
   const deadline = withDeadline(parentSignal, timeoutMs);
   try {
@@ -402,6 +441,89 @@ async function runCommand(config, sandboxId, command, options = {}) {
   }
 }
 
+async function runFilesystemCommand(config, sandboxId, operation, command, path) {
+  const result = await runCommand(config, sandboxId, command, {
+    env: { [FILESYSTEM_PATH_ENV]: validateFilesystemPath(path) },
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`Brezel filesystem ${operation} failed`);
+  }
+  return result;
+}
+
+function validateDirectoryEntries(raw) {
+  let entries;
+  try {
+    entries = JSON.parse(raw);
+  } catch {
+    throw new Error("Brezel filesystem readdir returned malformed JSON");
+  }
+  if (!Array.isArray(entries)) {
+    throw new Error("Brezel filesystem readdir returned an invalid directory listing");
+  }
+  return entries.map((entry) => {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      Array.isArray(entry) ||
+      typeof entry.name !== "string" ||
+      entry.name.length === 0 ||
+      (entry.type !== "file" && entry.type !== "directory") ||
+      !Number.isSafeInteger(entry.size) ||
+      entry.size < 0 ||
+      typeof entry.modifiedMs !== "number" ||
+      !Number.isFinite(entry.modifiedMs)
+    ) {
+      throw new Error("Brezel filesystem readdir returned an invalid directory entry");
+    }
+    const modified = new Date(entry.modifiedMs);
+    if (Number.isNaN(modified.getTime())) {
+      throw new Error("Brezel filesystem readdir returned an invalid directory entry timestamp");
+    }
+    return { name: entry.name, type: entry.type, size: entry.size, modified };
+  });
+}
+
+function sandboxFilesystem(config, sandboxId) {
+  return {
+    async readFile(path) {
+      const response = await request(config, "GET", filePath(sandboxId, path));
+      return boundedText(response, MAX_FILE_DOWNLOAD_BYTES);
+    },
+    async writeFile(path, content) {
+      validateFilesystemPath(path);
+      if (typeof content !== "string") throw new Error("filesystem content must be a string");
+      if (Buffer.byteLength(content) > MAX_FILE_UPLOAD_BYTES) {
+        throw new Error(`filesystem content exceeds the ${MAX_FILE_UPLOAD_BYTES} byte upload limit`);
+      }
+      const response = await request(config, "PUT", filePath(sandboxId, path), {
+        body: content,
+        contentType: "application/octet-stream",
+      });
+      requireResponseType(response, "application/json");
+      await boundedText(response, MAX_JSON_BYTES);
+    },
+    async mkdir(path) {
+      await runFilesystemCommand(config, sandboxId, "mkdir", 'mkdir -p -- "$BREZEL_COMPUTESDK_FS_PATH"', path);
+    },
+    async readdir(path) {
+      const result = await runFilesystemCommand(config, sandboxId, "readdir", READDIR_COMMAND, path);
+      return validateDirectoryEntries(result.stdout);
+    },
+    async exists(path) {
+      const result = await runCommand(config, sandboxId, 'test -e "$BREZEL_COMPUTESDK_FS_PATH"', {
+        env: { [FILESYSTEM_PATH_ENV]: validateFilesystemPath(path) },
+      });
+      if (result.exitCode === 0) return true;
+      if (result.exitCode === 1) return false;
+      throw new Error("Brezel filesystem exists check failed");
+    },
+    async remove(path) {
+      await runFilesystemCommand(config, sandboxId, "remove", 'rm -rf -- "$BREZEL_COMPUTESDK_FS_PATH"', path);
+    },
+  };
+}
+
 function mapStatus(state) {
   if (["requested", "preparing", "running", "resuming"].includes(state)) return "running";
   if (["pausing", "standby", "deleting", "deleted", "expired"].includes(state)) return "stopped";
@@ -412,6 +534,7 @@ function sandboxHandle(config, wire) {
   return {
     sandboxId: wire.id,
     provider: "brezel",
+    filesystem: sandboxFilesystem(config, wire.id),
     async runCommand(command, options) {
       return runCommand(config, wire.id, command, options);
     },
@@ -488,6 +611,15 @@ export function createBrezelCompute(configInput = {}) {
   return {
     sandbox: {
       async create(options = {}) {
+        const unsupportedResources = ["vcpus", "memMiB", "diskMiB"].filter(
+          (name) => options[name] !== undefined,
+        );
+        if (unsupportedResources.length > 0) {
+          throw new Error(
+            `Brezel does not support per-sandbox resource overrides (${unsupportedResources.join(", ")}); ` +
+              "select a pre-sized environment with templateId instead",
+          );
+        }
         if (options.envs && Object.keys(options.envs).length > 0) {
           throw new Error("Brezel create-time environment variables are not exposed by the current public API");
         }

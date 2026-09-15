@@ -28,15 +28,18 @@ async function fixture(t, options = {}) {
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
   chmodSync(tokenFile, 0o600);
   const requests = [];
+  const files = new Map();
   let getCount = 0;
   let deleteRequested = false;
   let deleteGetCount = 0;
+  let commandCount = 0;
   const server = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = Buffer.concat(chunks).toString("utf8");
     requests.push({ method: request.method, url: request.url, headers: request.headers, body });
     response.setHeader("Content-Type", "application/json");
+    const parsedUrl = new URL(request.url, "http://127.0.0.1");
 
     if (request.method === "POST" && request.url === "/v1/sandboxes") {
       response.statusCode = 202;
@@ -68,10 +71,33 @@ async function fixture(t, options = {}) {
         response.end(`${JSON.stringify({ type: "error", error: { code: "command_failed" } })}\n`);
         return;
       }
+      const commandResult = options.commandResults?.[commandCount] ?? {
+        stdout: "v22.0.0\n",
+        stderr: "warn\n",
+        exitCode: 0,
+      };
+      commandCount += 1;
       response.write(`${JSON.stringify({ type: "started" })}\n`);
-      response.write(`${JSON.stringify({ type: "stdout", data: Buffer.from("v22.0.0\n").toString("base64") })}\n`);
-      response.write(`${JSON.stringify({ type: "stderr", data: Buffer.from("warn\n").toString("base64") })}\n`);
-      response.end(`${JSON.stringify({ type: "exited", exited: true, exit_code: 0 })}\n`);
+      response.write(`${JSON.stringify({ type: "stdout", data: Buffer.from(commandResult.stdout ?? "").toString("base64") })}\n`);
+      response.write(`${JSON.stringify({ type: "stderr", data: Buffer.from(commandResult.stderr ?? "").toString("base64") })}\n`);
+      response.end(`${JSON.stringify({ type: "exited", exited: true, exit_code: commandResult.exitCode ?? 0 })}\n`);
+      return;
+    }
+    if (request.method === "PUT" && parsedUrl.pathname === "/v1/sandboxes/sb_test/files") {
+      const path = parsedUrl.searchParams.get("path");
+      files.set(path, body);
+      response.end(JSON.stringify({ path, size: Buffer.byteLength(body), content_type: "application/octet-stream" }));
+      return;
+    }
+    if (request.method === "GET" && parsedUrl.pathname === "/v1/sandboxes/sb_test/files") {
+      const path = parsedUrl.searchParams.get("path");
+      if (!files.has(path)) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: { code: "not_found", message: "not found" } }));
+        return;
+      }
+      response.setHeader("Content-Type", "application/octet-stream");
+      response.end(files.get(path));
       return;
     }
     if (request.method === "DELETE" && request.url === "/v1/sandboxes/sb_test") {
@@ -241,6 +267,97 @@ test("does not silently put provider credentials in sandbox environment", async 
     compute.sandbox.create({ envs: { BREZEL_SERVICE_TOKEN: token } }),
     /create-time environment variables are not exposed/,
   );
+});
+
+test("maps ComputeSDK file reads and writes to Brezel file APIs", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t, { createState: "running" });
+  const compute = createBrezelCompute({ baseUrl, tokenFile, projectId: "p", environmentRevision: "envr_test" });
+  const instance = await compute.sandbox.create();
+  const path = "/workspace/file with spaces and 'quotes'.txt";
+  const content = "hello from Brezel π";
+
+  await instance.filesystem.writeFile(path, content);
+  assert.equal(await instance.filesystem.readFile(path), content);
+
+  const fileRequests = requests.filter((request) => new URL(request.url, baseUrl).pathname.endsWith("/files"));
+  assert.equal(fileRequests.length, 2);
+  assert.equal(new URL(fileRequests[0].url, baseUrl).searchParams.get("path"), path);
+  assert.equal(fileRequests[0].headers["content-type"], "application/octet-stream");
+  assert.equal(fileRequests[0].body, content);
+  assert.equal(new URL(fileRequests[1].url, baseUrl).searchParams.get("path"), path);
+  await instance.destroy();
+});
+
+test("implements directory, existence, and removal operations without interpolating paths into commands", async (t) => {
+  const modifiedMs = Date.parse("2026-09-14T12:34:56.000Z");
+  const { baseUrl, tokenFile, requests } = await fixture(t, {
+    createState: "running",
+    commandResults: [
+      { exitCode: 0 },
+      {
+        stdout: JSON.stringify([
+          { name: "folder", type: "directory", size: 4096, modifiedMs },
+          { name: "file.txt", type: "file", size: 7, modifiedMs },
+        ]),
+        exitCode: 0,
+      },
+      { exitCode: 1 },
+      { exitCode: 0 },
+      { exitCode: 0 },
+    ],
+  });
+  const compute = createBrezelCompute({ baseUrl, tokenFile, projectId: "p", environmentRevision: "envr_test" });
+  const instance = await compute.sandbox.create();
+  const path = "/workspace/a directory with '$HOME'";
+
+  await instance.filesystem.mkdir(path);
+  assert.deepEqual(await instance.filesystem.readdir(path), [
+    { name: "folder", type: "directory", size: 4096, modified: new Date(modifiedMs) },
+    { name: "file.txt", type: "file", size: 7, modified: new Date(modifiedMs) },
+  ]);
+  assert.equal(await instance.filesystem.exists(path), false);
+  assert.equal(await instance.filesystem.exists(path), true);
+  await instance.filesystem.remove(path);
+
+  const commandRequests = requests.filter((request) => request.url?.endsWith("/commands"));
+  assert.equal(commandRequests.length, 5);
+  for (const request of commandRequests) {
+    const body = JSON.parse(request.body);
+    assert.equal(body.env.BREZEL_COMPUTESDK_FS_PATH, path);
+    assert.equal(body.argv.join(" ").includes(path), false, "guest path was not interpolated into a shell command");
+  }
+  await instance.destroy();
+});
+
+test("rejects invalid filesystem inputs before making file or command requests", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t, { createState: "running" });
+  const compute = createBrezelCompute({ baseUrl, tokenFile, projectId: "p", environmentRevision: "envr_test" });
+  const instance = await compute.sandbox.create();
+  const requestCount = requests.length;
+
+  for (const path of ["relative", "/workspace/../secret", "/workspace/trailing/", "/workspace/new\nline"]) {
+    await assert.rejects(instance.filesystem.readFile(path), /filesystem path/);
+  }
+  await assert.rejects(instance.filesystem.writeFile("/workspace/file", Buffer.from("binary")), /must be a string/);
+  assert.equal(requests.length, requestCount);
+  await instance.destroy();
+});
+
+test("fails closed on unsupported per-sandbox resource overrides", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t);
+  const compute = createBrezelCompute({ baseUrl, tokenFile, projectId: "p", environmentRevision: "envr_test" });
+
+  for (const [name, value] of [["vcpus", 8], ["memMiB", 16_384], ["diskMiB", 32_768], ["vcpus", null]]) {
+    await assert.rejects(
+      compute.sandbox.create({ [name]: value }),
+      new RegExp(`does not support per-sandbox resource overrides \\(${name}\\).+templateId`),
+    );
+  }
+  await assert.rejects(
+    compute.sandbox.create({ vcpus: 8, memMiB: 16_384, diskMiB: 32_768 }),
+    /resource overrides \(vcpus, memMiB, diskMiB\)/,
+  );
+  assert.equal(requests.length, 0);
 });
 
 test("rejects an indeterminate command stream instead of inventing an exit code", async (t) => {
