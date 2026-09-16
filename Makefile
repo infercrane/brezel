@@ -1,4 +1,4 @@
-.PHONY: build check test test-integrations test-race vet qualify-single-host benchmark-single-host benchmark-dax-local
+.PHONY: build check test test-integrations test-race vet qualify-single-host qualify-rootdevice-reflink benchmark-single-host benchmark-dax-local
 
 build:
 	mkdir -p bin
@@ -35,6 +35,11 @@ check: test test-integrations test-race vet build
 # Requires a dedicated Linux/amd64 host with KVM and /dev/net/tun.
 qualify-single-host:
 	./deploy/single-host/install.sh
+
+# Destructive and Linux-only: creates, fills, and removes a disposable 1 GiB
+# loopback XFS filesystem. It never changes the production root-device default.
+qualify-rootdevice-reflink:
+	./deploy/qualification/rootdevice-reflink.sh
 
 # Destructive: runs 24 real-microVM benchmark cells and preserves raw evidence.
 # See docs/BENCHMARKING.md for required identity and execution variables.
