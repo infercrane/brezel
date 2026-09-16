@@ -197,7 +197,6 @@ func (d *RelayDataPlane) Run(ctx context.Context, binding SandboxBinding, reques
 	reader := &relayBoundedReader{source: response.Body, remaining: relayClientMaxCommandResponse}
 	decoder := json.NewDecoder(reader)
 	var outputBytes int64
-	exited := false
 	for {
 		var event backend.CommandEvent
 		if err := decoder.Decode(&event); errors.Is(err, io.EOF) {
@@ -213,10 +212,6 @@ func (d *RelayDataPlane) Run(ctx context.Context, binding SandboxBinding, reques
 				return errRelayBodyLimit
 			}
 		case backend.CommandExited:
-			if exited {
-				return errors.New("node command stream contains multiple exit events")
-			}
-			exited = true
 		default:
 			return errors.New("node command stream contains an unsupported event")
 		}
@@ -226,11 +221,17 @@ func (d *RelayDataPlane) Run(ctx context.Context, binding SandboxBinding, reques
 		if err := emit(event); err != nil {
 			return err
 		}
+		if event.Type == backend.CommandExited {
+			// CommandExited is the relay protocol's final, authoritative record.
+			// Once the caller accepts it, close the body immediately so a delayed
+			// HTTP EOF or trailer cannot extend the command boundary. Closing also
+			// cancels the node request and promptly releases its one-shot route
+			// capability and upstream guest stream.
+			_ = response.Body.Close()
+			return nil
+		}
 	}
-	if !exited {
-		return errors.New("node command stream ended without an exit event")
-	}
-	return nil
+	return errors.New("node command stream ended without an exit event")
 }
 
 func (d *RelayDataPlane) WriteFile(ctx context.Context, binding SandboxBinding, path string, source io.Reader) (backend.FileInfo, error) {

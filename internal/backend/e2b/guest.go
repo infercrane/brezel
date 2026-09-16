@@ -92,7 +92,13 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 	})
 	connection.setHeaders(request.Header())
 	started := time.Now()
-	stream, err := client.Start(ctx, request)
+	// A terminal process event is the protocol's authoritative completion
+	// record. Give this stream its own cancellation scope so accepting that
+	// record can promptly tear down every proxy hop instead of waiting for an
+	// otherwise redundant transport EOF.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	stream, err := client.Start(streamCtx, request)
 	telemetry.Observe(c.observer, telemetry.OperationCommand, telemetry.PhaseGuestProcessStart, started, err)
 	if err != nil {
 		return fmt.Errorf("start guest process: %w", err)
@@ -163,15 +169,22 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 		if event.GetData() != nil || event.GetEnd() != nil {
 			committedSequence++
 		}
+		if ended {
+			// The end event was delivered to the caller successfully, so its exit
+			// status is confirmed and the replay cursor is committed. Nothing is
+			// valid after this event. Cancel and close immediately rather than
+			// charging command latency to delayed EOF propagation in envd or an
+			// intermediate reverse proxy.
+			cancelStream()
+			_ = stream.Close()
+			return nil
+		}
 	}
 	if journalID == "" {
 		journalID = processJournalID(stream.ResponseHeader())
 	}
 	streamErr := stream.Err()
-	if ended {
-		return nil
-	}
-	if streamErr == nil && !ended {
+	if streamErr == nil {
 		streamErr = errors.New("guest process stream closed without an exit event")
 	}
 	if streamErr != nil {

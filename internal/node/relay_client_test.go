@@ -175,6 +175,122 @@ func TestRelayDataPlaneEndToEndProtocol(t *testing.T) {
 	}
 }
 
+func TestRelayDataPlaneReturnsAndCancelsAfterConfirmedExitWithoutWaitingForEOF(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := NewCapabilitySigner(testRelayIssuer, testRelayKeyID, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := nodeledger.Route{RouteID: testRelayRoute, ProjectID: testRelayProject, SandboxID: testRelaySandbox, Generation: 11, State: nodeledger.StateReady, LastActivity: time.Now().UTC()}
+	terminalSent := make(chan struct{})
+	canceled := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/routes/"+testRelayRoute {
+			_ = json.NewEncoder(w).Encode(relayRouteResponse{NodeID: testRelayNode, BootEpoch: testRelayEpoch, Route: route})
+			return
+		}
+		if r.URL.Path != "/v1/commands" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_ = json.NewEncoder(w).Encode(backend.CommandEvent{Type: backend.CommandStarted, PID: 7})
+		_ = json.NewEncoder(w).Encode(backend.CommandEvent{Type: backend.CommandExited, Exited: true, ExitCode: 0})
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(terminalSent)
+		<-r.Context().Done()
+		close(canceled)
+	}))
+	defer server.Close()
+	diagnostics := &relayDiagnosticCollector{}
+	client, err := newRelayDataPlane(server.URL, server.Client(), signer, testRelayAudience, testRelayNode, WithRelayCommandDiagnostics(diagnostics))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := testRelayBinding(t, testRelayRoute, route.Generation)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	result := make(chan error, 1)
+	go func() {
+		result <- client.Run(ctx, binding, backend.CommandRequest{Argv: []string{"true"}}, func(backend.CommandEvent) error { return nil })
+	}()
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		if elapsed := time.Since(started); elapsed >= time.Second {
+			t.Fatalf("Run() waited %s for relay EOF after confirmed exit", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() waited for relay EOF after confirmed exit")
+	}
+	select {
+	case <-terminalSent:
+	default:
+		t.Fatal("relay did not send the terminal event")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("accepted terminal event did not promptly cancel the relay request")
+	}
+	if len(diagnostics.samples) != 1 {
+		t.Fatalf("command diagnostics = %#v", diagnostics.samples)
+	}
+	if tail := diagnostics.samples[0].AcceptedToEOFReady - diagnostics.samples[0].AcceptedToTerminal; tail < 0 || tail >= 250*time.Millisecond {
+		t.Fatalf("terminal-to-return tail = %s, diagnostics = %#v", tail, diagnostics.samples[0])
+	}
+}
+
+func TestRelayDataPlaneRejectsEOFBeforeConfirmedExit(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := NewCapabilitySigner(testRelayIssuer, testRelayKeyID, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := nodeledger.Route{RouteID: testRelayRoute, ProjectID: testRelayProject, SandboxID: testRelaySandbox, Generation: 11, State: nodeledger.StateReady, LastActivity: time.Now().UTC()}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/routes/"+testRelayRoute {
+			_ = json.NewEncoder(w).Encode(relayRouteResponse{NodeID: testRelayNode, BootEpoch: testRelayEpoch, Route: route})
+			return
+		}
+		if r.URL.Path != "/v1/commands" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_ = json.NewEncoder(w).Encode(backend.CommandEvent{Type: backend.CommandStarted, PID: 7})
+	}))
+	defer server.Close()
+	client, err := newRelayDataPlane(server.URL, server.Client(), signer, testRelayAudience, testRelayNode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := testRelayBinding(t, testRelayRoute, route.Generation)
+	var events []backend.CommandEvent
+	err = client.Run(context.Background(), binding, backend.CommandRequest{Argv: []string{"true"}}, func(event backend.CommandEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "without an exit event") {
+		t.Fatalf("Run() error = %v, want unconfirmed-exit rejection", err)
+	}
+	if len(events) != 1 || events[0].Type != backend.CommandStarted {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
 func TestRelayDataPlaneRejectsStaleRouteBeforeOperation(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

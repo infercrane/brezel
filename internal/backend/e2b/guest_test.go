@@ -31,6 +31,26 @@ type testProcessService struct {
 	requiredToken string
 }
 
+type terminalOpenProcessService struct {
+	wireconnect.UnimplementedProcessHandler
+
+	terminalSent chan struct{}
+	canceled     chan struct{}
+}
+
+func (s *terminalOpenProcessService) Start(ctx context.Context, _ *connect.Request[wire.StartRequest], stream *connect.ServerStream[wire.StartResponse]) error {
+	if err := stream.Send(&wire.StartResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_Start{Start: &wire.ProcessEvent_StartEvent{Pid: 84}}}}); err != nil {
+		return err
+	}
+	if err := stream.Send(&wire.StartResponse{Event: &wire.ProcessEvent{Event: &wire.ProcessEvent_End{End: &wire.ProcessEvent_EndEvent{Exited: true, ExitCode: 0, Status: "exited"}}}}); err != nil {
+		return err
+	}
+	close(s.terminalSent)
+	<-ctx.Done()
+	close(s.canceled)
+	return ctx.Err()
+}
+
 type reconnectingProcessService struct {
 	wireconnect.UnimplementedProcessHandler
 
@@ -242,6 +262,56 @@ func TestGuestRunStreamsRealProtocolEvents(t *testing.T) {
 	}
 	if phases.connectionMisses != 1 || phases.connectionHits != 0 || phases.connectionDuration < 0 {
 		t.Fatalf("guest connection phases=%#v", phases)
+	}
+}
+
+func TestGuestRunReturnsAndCancelsAfterConfirmedExitWithoutWaitingForEOF(t *testing.T) {
+	processService := &terminalOpenProcessService{terminalSent: make(chan struct{}), canceled: make(chan struct{})}
+	_, handler := wireconnect.NewProcessHandler(processService)
+	guest := httptest.NewServer(handler)
+	defer guest.Close()
+	api := sandboxDetailServer(t, `{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-secret"}`)
+	defer api.Close()
+	diagnostics := &guestDiagnosticCollector{}
+	client, err := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL), WithCommandDiagnostics(diagnostics))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	result := make(chan error, 1)
+	go func() {
+		result <- client.Run(ctx, "upstream-1", backend.CommandRequest{Argv: []string{"true"}}, func(backend.CommandEvent) error { return nil })
+	}()
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		if elapsed := time.Since(started); elapsed >= time.Second {
+			t.Fatalf("Run() waited %s for transport EOF after confirmed exit", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() waited for transport EOF after confirmed exit")
+	}
+	select {
+	case <-processService.terminalSent:
+	default:
+		t.Fatal("guest did not send the terminal event")
+	}
+	select {
+	case <-processService.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("accepted terminal event did not promptly cancel the guest stream")
+	}
+	if len(diagnostics.samples) != 1 {
+		t.Fatalf("command diagnostics = %#v", diagnostics.samples)
+	}
+	if tail := diagnostics.samples[0].AcceptedToEOFReady - diagnostics.samples[0].AcceptedToTerminal; tail < 0 || tail >= 250*time.Millisecond {
+		t.Fatalf("terminal-to-return tail = %s, diagnostics = %#v", tail, diagnostics.samples[0])
 	}
 }
 
