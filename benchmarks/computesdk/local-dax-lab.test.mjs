@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseStructuredOutput, percentile, summarizeAttempts } from "./local-dax-lab.mjs";
+import { parseRuntimeFacts, parseStructuredOutput, percentile, summarizeAttempts } from "./local-dax-lab.mjs";
 
 test("parses a complete DAX result", () => {
   const stdout = [
@@ -46,4 +46,21 @@ test("omits unavailable phases from a partial local probe", () => {
   const summary = summarizeAttempts([{ valid: true, result: { phases: { prepare: 1444 } } }]);
   assert.equal(summary.phaseMedianMs.prepare, 1444);
   assert.equal(summary.phaseMedianMs.typecheck, null);
+});
+
+test("separates cgroup CPU enforcement from misleading getconf metadata", () => {
+  const facts = parseRuntimeFacts([
+    "nproc\t8",
+    "getconf_processors_online\t10",
+    "cpuset_effective\t0-7",
+    "cpu_max\tmax 100000",
+    "memory_max\t17179869184",
+  ].join("\n"));
+  assert.deepEqual(facts, {
+    nproc: 8,
+    getconfProcessorsOnline: 10,
+    cpusetEffective: "0-7",
+    cpuMax: "max 100000",
+    memoryMax: 17179869184,
+  });
 });

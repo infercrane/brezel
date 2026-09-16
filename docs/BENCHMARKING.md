@@ -460,6 +460,18 @@ Desktop, ARM64 containers, 8 CPUs, approximately 6.1 GiB of container memory,
 and overlay storage; it did not reproduce x86-64, Firecracker, KVM, NBD, NUMA,
 or the public suite's 16 GiB memory shape.
 
+After Docker Desktop was increased to approximately 19.5 GiB, three complete
+16-GiB runs per image also passed the exact workload and cleanup gates. Plain
+image totals were 378.101 s, 345.721 s, and 267.576 s; candidate totals were
+341.203 s, 315.607 s, and 306.132 s. Their medians were 345.721 s and 315.607 s
+respectively, an 8.7 percent local reduction. Preparation medians fell from
+13.478 s to 2.460 s, or 81.8 percent. Install medians differed by only 1.3
+percent, while baseline typecheck ranged from 107.913 s to 217.174 s. The large
+desktop typecheck variance prevents attributing the whole-workload delta to the
+candidate image; only the preparation change is considered causal local
+evidence. A single native-volume candidate run completed in 326.327 s and did
+not beat the candidate overlay median, so it does not justify a storage change.
+
 After assigning Docker Desktop at least 16 GiB of memory, run the complete
 workload and controlled writable-root experiments locally:
 

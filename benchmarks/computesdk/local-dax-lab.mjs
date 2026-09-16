@@ -50,6 +50,22 @@ export function summarizeAttempts(attempts) {
   };
 }
 
+export function parseRuntimeFacts(raw) {
+  const facts = {};
+  for (const line of raw.trim().split("\n")) {
+    const separator = line.indexOf("\t");
+    if (separator <= 0) continue;
+    facts[line.slice(0, separator)] = line.slice(separator + 1);
+  }
+  return {
+    nproc: Number(facts.nproc),
+    getconfProcessorsOnline: Number(facts.getconf_processors_online),
+    cpusetEffective: facts.cpuset_effective ?? "",
+    cpuMax: facts.cpu_max ?? "",
+    memoryMax: Number(facts.memory_max),
+  };
+}
+
 function usage() {
   return `Usage: node benchmarks/computesdk/local-dax-lab.mjs [options]
 
@@ -114,6 +130,29 @@ function inspectImage(image) {
     encoding: "utf8",
     timeout: 30_000,
   }));
+}
+
+function inspectRuntimeLimits(image, cpus, memory) {
+  const output = execFileSync("docker", [
+    "run", "--rm", "--pull=never",
+    "--cpuset-cpus", `0-${cpus - 1}`,
+    "--memory", String(memory), "--memory-swap", String(memory),
+    image, "sh", "-c",
+    [
+      "printf 'nproc\\t%s\\n' \"$(nproc)\"",
+      "printf 'getconf_processors_online\\t%s\\n' \"$(getconf _NPROCESSORS_ONLN)\"",
+      "printf 'cpuset_effective\\t%s\\n' \"$(cat /sys/fs/cgroup/cpuset.cpus.effective)\"",
+      "printf 'cpu_max\\t%s\\n' \"$(cat /sys/fs/cgroup/cpu.max)\"",
+      "printf 'memory_max\\t%s\\n' \"$(cat /sys/fs/cgroup/memory.max)\"",
+    ].join("; "),
+  ], { encoding: "utf8", timeout: 30_000 });
+  const facts = parseRuntimeFacts(output);
+  const expectedCpuset = `0-${cpus - 1}`;
+  const conformant = facts.nproc === cpus && facts.cpusetEffective === expectedCpuset && facts.memoryMax === memory;
+  if (!conformant) {
+    throw new Error(`Docker did not enforce the requested local limits: ${JSON.stringify({ expectedCpuset, cpus, memory, facts })}`);
+  }
+  return { ...facts, conformant };
 }
 
 async function fetchPinnedScript() {
@@ -223,6 +262,7 @@ async function main() {
   const image = options.image === "baseline" ? BASELINE_IMAGE : options.image === "candidate" ? CANDIDATE_IMAGE : options.image;
   execFileSync("docker", ["image", "inspect", image], { stdio: "ignore", timeout: 30_000 });
   const imageInfo = inspectImage(image);
+  const runtimeLimits = inspectRuntimeLimits(image, cpus, memory);
   const script = await fetchPinnedScript();
   const attempts = [];
   for (let iteration = 1; iteration <= options.iterations; iteration += 1) {
@@ -233,6 +273,9 @@ async function main() {
   if (process.platform !== "linux") limitations.push(`runner is ${process.platform}, not Linux`);
   if (engine.arch !== "x86_64" && engine.arch !== "amd64") limitations.push(`Docker engine is ${engine.arch}, not x86-64`);
   if (memory < 16 * GIB) limitations.push(`container memory is ${(memory / GIB).toFixed(2)} GiB, below DAX's 16 GiB target`);
+  if (runtimeLimits.getconfProcessorsOnline !== runtimeLimits.nproc) {
+    limitations.push(`upstream getconf reports ${runtimeLimits.getconfProcessorsOnline} logical CPUs while the enforced cgroup cpuset exposes ${runtimeLimits.nproc}`);
+  }
   limitations.push("container storage does not reproduce Firecracker block, NBD, KVM, NUMA, or snapshot behavior");
   if (options.probe === "prepare") limitations.push("prepare probe intentionally stops at clone and does not measure a complete workload");
   const report = {
@@ -242,7 +285,7 @@ async function main() {
     leaderboardComparable: false,
     limitations,
     upstream: { commit: UPSTREAM_COMMIT, scriptSha256: UPSTREAM_SCRIPT_SHA256 },
-    configuration: { image, imageId: imageInfo.Id, imageArchitecture: imageInfo.Architecture, storage: options.storage, probe: options.probe, cpus, memoryBytes: memory },
+    configuration: { image, imageId: imageInfo.Id, imageArchitecture: imageInfo.Architecture, storage: options.storage, probe: options.probe, cpus, memoryBytes: memory, runtimeLimits },
     engine,
     summary: summarizeAttempts(attempts),
     attempts,
