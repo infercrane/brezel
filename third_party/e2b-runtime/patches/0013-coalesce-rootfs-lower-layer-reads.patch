@@ -252,16 +252,17 @@ index 40c8be6f3..6437d48f1 100644
  }
 diff --git a/packages/orchestrator/pkg/sandbox/block/overlay_coalesced_test.go b/packages/orchestrator/pkg/sandbox/block/overlay_coalesced_test.go
 new file mode 100644
-index 000000000..7202c0eb0
+index 000000000..5f0160904
 --- /dev/null
 +++ b/packages/orchestrator/pkg/sandbox/block/overlay_coalesced_test.go
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,416 @@
 +//go:build linux
 +
 +package block
 +
 +import (
 +	"context"
++	"io"
 +	"sync"
 +	"sync/atomic"
 +	"testing"
@@ -278,6 +279,77 @@ index 000000000..7202c0eb0
 +	release chan struct{}
 +	once    sync.Once
 +	calls   atomic.Int64
++}
++
++type blockingHeaderOriginalDevice struct {
++	fakeOriginalDevice
++
++	started  chan struct{}
++	release  chan struct{}
++	once     sync.Once
++	calls    atomic.Int64
++	mu       sync.RWMutex
++	nextData []byte
++}
++
++func (d *blockingHeaderOriginalDevice) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
++	d.mu.RLock()
++	if off >= int64(len(d.data)) {
++		d.mu.RUnlock()
++
++		return 0, io.EOF
++	}
++	snapshot := append([]byte(nil), d.data[off:]...)
++	d.mu.RUnlock()
++
++	d.calls.Add(1)
++	d.once.Do(func() { close(d.started) })
++	select {
++	case <-d.release:
++	case <-ctx.Done():
++		return 0, ctx.Err()
++	}
++
++	n := copy(p, snapshot)
++	if n < len(p) {
++		return n, io.EOF
++	}
++
++	return n, nil
++}
++
++func (d *blockingHeaderOriginalDevice) Header() *header.Header {
++	d.mu.RLock()
++	defer d.mu.RUnlock()
++
++	return d.hdr
++}
++
++func (d *blockingHeaderOriginalDevice) SwapHeader(h *header.Header) {
++	d.mu.Lock()
++	defer d.mu.Unlock()
++
++	d.hdr = h
++	d.data = d.nextData
++}
++
++type overlayReadResult struct {
++	data []byte
++	n    int
++	err  error
++}
++
++func startOverlayRead(t *testing.T, overlay *Overlay, size int64) <-chan overlayReadResult {
++	t.Helper()
++
++	result := make(chan overlayReadResult, 1)
++	go func() {
++		data := make([]byte, size)
++		n, err := overlay.ReadAt(t.Context(), data, 0)
++		result <- overlayReadResult{data: data, n: n, err: err}
++	}()
++
++	return result
 +}
 +
 +func (d *blockingOriginalDevice) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
@@ -422,6 +494,183 @@ index 000000000..7202c0eb0
 +	require.False(t, mutationQuiescent(overlay.mutationState.Load()))
 +	overlay.endMutation()
 +	require.True(t, mutationQuiescent(overlay.mutationState.Load()))
++}
++
++func TestOverlayCoalescedBaseReadRetriesAfterConcurrentReleaseSealing(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	size := int64(32) * blockSize
++	want := fill(size, 0x31)
++	base := &blockingOriginalDevice{
++		fakeOriginalDevice: fakeOriginalDevice{data: want},
++		started:            make(chan struct{}),
++		release:            make(chan struct{}),
++	}
++	initial, err := NewCache(size, blockSize, t.TempDir()+"/initial", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, initial)
++	fresh, err := NewCache(size, blockSize, t.TempDir()+"/fresh", false)
++	require.NoError(t, err)
++	_, err = overlay.SwapCache(fresh)
++	require.NoError(t, err)
++	t.Cleanup(func() {
++		_ = initial.Close()
++		_ = overlay.Close()
++	})
++
++	result := startOverlayRead(t, overlay, size)
++	<-base.started
++	released := overlay.ReleaseSealing()
++	require.Same(t, initial, released, "release must finish while lower-source I/O is blocked")
++	close(base.release)
++
++	got := <-result
++	require.NoError(t, got.err)
++	require.Equal(t, len(got.data), got.n)
++	require.Equal(t, want, got.data)
++	require.EqualValues(t, 2, base.calls.Load(), "release must invalidate and retry the optimistic read")
++}
++
++func TestOverlayCoalescedBaseReadRetriesAfterConcurrentFoldSealing(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	readSize := int64(32) * blockSize
++	size := 2 * readSize
++	baseData := fill(size, 0x42)
++	base := &blockingOriginalDevice{
++		fakeOriginalDevice: fakeOriginalDevice{data: baseData},
++		started:            make(chan struct{}),
++		release:            make(chan struct{}),
++	}
++	initial, err := NewCache(size, blockSize, t.TempDir()+"/initial", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, initial)
++	foldedData := fill(readSize, 0xA7)
++	_, err = overlay.WriteAt(foldedData, readSize)
++	require.NoError(t, err)
++	fresh, err := NewCache(size, blockSize, t.TempDir()+"/fresh", false)
++	require.NoError(t, err)
++	_, err = overlay.SwapCache(fresh)
++	require.NoError(t, err)
++	t.Cleanup(func() {
++		_ = initial.Close()
++		_ = overlay.Close()
++	})
++
++	result := startOverlayRead(t, overlay, readSize)
++	<-base.started
++	folded, err := overlay.FoldSealing()
++	require.NoError(t, err)
++	require.Same(t, initial, folded, "fold must finish while lower-source I/O is blocked")
++	close(base.release)
++
++	got := <-result
++	require.NoError(t, got.err)
++	require.Equal(t, len(got.data), got.n)
++	require.Equal(t, baseData[:readSize], got.data)
++	require.EqualValues(t, 2, base.calls.Load(), "fold must invalidate and retry the optimistic read")
++
++	gotFolded := make([]byte, readSize)
++	n, err := overlay.ReadAt(t.Context(), gotFolded, readSize)
++	require.NoError(t, err)
++	require.Equal(t, len(gotFolded), n)
++	require.Equal(t, foldedData, gotFolded, "folded sealing bytes must remain visible in the writable cache")
++}
++
++func TestOverlayCoalescedBaseReadRetriesAfterConcurrentEject(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	const blocks = int64(32)
++	size := blocks * blockSize
++	want := fill(size, 0x53)
++	base := &blockingOriginalDevice{
++		fakeOriginalDevice: fakeOriginalDevice{data: want},
++		started:            make(chan struct{}),
++		release:            make(chan struct{}),
++	}
++	cache, err := NewCache(size, blockSize, t.TempDir()+"/cache", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, cache)
++	t.Cleanup(func() {
++		_ = cache.Close()
++		_ = overlay.Close()
++	})
++
++	result := startOverlayRead(t, overlay, size)
++	<-base.started
++	ejected, err := overlay.EjectCache()
++	require.NoError(t, err)
++	require.Same(t, cache, ejected, "eject must finish while lower-source I/O is blocked")
++	close(base.release)
++
++	got := <-result
++	require.NoError(t, got.err)
++	require.Equal(t, len(got.data), got.n)
++	require.Equal(t, want, got.data)
++	require.EqualValues(t, 2, base.calls.Load(), "eject must invalidate and retry the in-flight optimistic read")
++}
++
++func TestOverlayCoalescedBaseReadFailsCleanlyAfterConcurrentClose(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	size := int64(32) * blockSize
++	base := &blockingOriginalDevice{
++		fakeOriginalDevice: fakeOriginalDevice{data: fill(size, 0x64)},
++		started:            make(chan struct{}),
++		release:            make(chan struct{}),
++	}
++	cache, err := NewCache(size, blockSize, t.TempDir()+"/cache", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, cache)
++
++	result := startOverlayRead(t, overlay, size)
++	<-base.started
++	require.NoError(t, overlay.Close(), "close must not wait for lower-source I/O")
++	close(base.release)
++
++	got := <-result
++	require.Error(t, got.err)
++	var closed *CacheClosedError
++	require.ErrorAs(t, got.err, &closed)
++	require.Zero(t, got.n)
++	require.EqualValues(t, 1, base.calls.Load(), "the retry must fail at the closed cache before another lower read")
++}
++
++func TestOverlayCoalescedBaseReadRetriesAfterConcurrentHeaderSwap(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	size := int64(32) * blockSize
++	oldData := fill(size, 0x75)
++	newData := fill(size, 0xB8)
++	oldHeader := &header.Header{}
++	newHeader := &header.Header{}
++	base := &blockingHeaderOriginalDevice{
++		fakeOriginalDevice: fakeOriginalDevice{data: oldData, hdr: oldHeader},
++		started:            make(chan struct{}),
++		release:            make(chan struct{}),
++		nextData:           newData,
++	}
++	cache, err := NewCache(size, blockSize, t.TempDir()+"/cache", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, cache)
++	t.Cleanup(func() { require.NoError(t, overlay.Close()) })
++
++	result := startOverlayRead(t, overlay, size)
++	<-base.started
++	overlay.SwapHeader(newHeader)
++	close(base.release)
++
++	got := <-result
++	require.NoError(t, got.err)
++	require.Equal(t, len(got.data), got.n)
++	require.Equal(t, newData, got.data, "bytes selected under the old header must be rejected")
++	require.Same(t, newHeader, overlay.Header())
++	require.EqualValues(t, 2, base.calls.Load(), "header swap must invalidate and retry the optimistic read")
 +}
 diff --git a/packages/orchestrator/pkg/sandbox/block/overlay_read_bench_test.go b/packages/orchestrator/pkg/sandbox/block/overlay_read_bench_test.go
 index f31b7da2c..bceccf7ed 100644
