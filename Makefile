@@ -14,6 +14,7 @@ test:
 
 test-integrations:
 	node --test benchmarks/computesdk/*.test.mjs
+	node --check benchmarks/computesdk/dax-bottleneck-model.mjs
 	node --check benchmarks/computesdk/adapter.mjs
 	node --check benchmarks/computesdk/provider-entry.mjs
 	node --check benchmarks/computesdk/qualified-smoke.mjs

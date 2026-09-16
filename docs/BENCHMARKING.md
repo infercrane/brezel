@@ -383,9 +383,15 @@ The retained phase medians explain the DAX gap more usefully than the rank:
 | Clone | 2.597 s | 1.515 s | 1.054 s |
 | Install | 14.160 s | 9.286 s | 9.177 s |
 | Typecheck | 37.551 s | 23.857 s | 18.820 s |
-| Workload total | 63.272 s (nonconformant report) | 43.653 s | 33.973 s |
+| Provider-observed command total | 68.435 s (nonconformant report) | 43.653 s | 33.973 s |
+| Guest internal phase total | 63.272 s (nonconformant report) | not compared | not compared |
 
-The phase data remains useful for diagnosis but not ranking. Approximately 64
+The provider-observed total is the like-for-like timing boundary: host wall
+time around `runCommand()`. The guest internal total excludes command setup,
+post-total rendering, EXIT cleanup, transport, stream drain, persistence, and
+SDK decoding. The retained per-attempt difference was 4.373 to 5.163 seconds;
+it is an overhead envelope, not a network-latency measurement. The phase data
+remains useful for diagnosis but not ranking. Approximately 64
 percent of the historical Brezel gap to Isorun is the typecheck
 phase, 17 percent is dependency installation, and 16 percent is preparation.
 The calculation is directional because individual phase medians do not sum to
@@ -495,6 +501,27 @@ It is sufficient to prioritize guest CPU quality and topology for typecheck
 while treating dependency installation as a separate network and writable-root
 investigation. Causal or release decisions require at least five randomized,
 paired, uninstrumented runs on the same qualified Linux/KVM host.
+
+A subsequent instrumented tmpfs run completed in 317.918 s. Its install phase
+was 118.221 s, effectively unchanged from the comparable overlay run at
+118.535 s. One noisy pair cannot prove equivalence, but it rejects the simple
+hypothesis that Docker Desktop overlay storage alone explains the install gap.
+The Firecracker NBD path is different and still requires source-level call-count
+benchmarks followed by randomized KVM A/B runs.
+
+The two-point model turns the controlled CPU pair into experiment targets. It
+fits a conservative serial-floor plus inverse-CPU model per phase, refuses to
+invent scaling for phases that became slower, and reports the remaining gap to
+explicit leaderboard thresholds. Its output is a simulation, never benchmark
+evidence:
+
+```sh
+node benchmarks/computesdk/dax-bottleneck-model.mjs \
+  /tmp/brezel-dax-local-4cpu-profile.json \
+  /tmp/brezel-dax-local-8cpu-profile.json \
+  --target-cpus 8,16,32,44 \
+  > /tmp/brezel-dax-local-bottleneck-model.json
+```
 
 After assigning Docker Desktop at least 16 GiB of memory, run the complete
 workload and controlled writable-root experiments locally:
