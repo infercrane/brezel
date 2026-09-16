@@ -151,7 +151,8 @@ func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
 		"0015-parameterize-base-template-identity.patch",
 		"base_template_identity_patch_sha256",
 		"engine base-template identity patch verification failed",
-		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`,
+		`git -C "$ENGINE_BUILD_DIR" apply --check "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`,
+		`git -C "$ENGINE_BUILD_DIR" apply "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`,
 		"BREZEL_ENGINE_BASE_TEMPLATE_NAME",
 		"BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE",
 		"base-template.reference",
@@ -161,7 +162,7 @@ func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
 		}
 	}
 	ext4Apply := strings.Index(installer, `-p1 < "$ENGINE_EXT4_DIR_INDEX_PATCH"`)
-	identityApply := strings.Index(installer, `-p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`)
+	identityApply := strings.Index(installer, `git -C "$ENGINE_BUILD_DIR" apply --check "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`)
 	if ext4Apply < 0 || identityApply <= ext4Apply {
 		t.Fatal("base-template identity patch is not applied after its pinned predecessor")
 	}
