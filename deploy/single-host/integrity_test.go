@@ -45,6 +45,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"orchestrator_cpuset_qualification_patch_sha256": "0013-qualify-cpuset-exclusive-cpu-topology.patch",
 		"orchestrator_ext4_dir_index_patch_sha256":       "0014-opt-in-ext4-dir-index.patch",
 		"base_template_identity_patch_sha256":            "0015-parameterize-base-template-identity.patch",
+		"orchestrator_direct_rootfs_patch_sha256":        "0016-opt-in-direct-rootfs-provider.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -193,6 +194,120 @@ func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
 		if !strings.Contains(override, required) {
 			t.Fatalf("engine override is missing immutable base-template identity %q", required)
 		}
+	}
+}
+
+func TestInstallerPinsOptInDirectRootfsProviderPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0016-opt-in-direct-rootfs-provider.patch",
+		"orchestrator_direct_rootfs_patch_sha256",
+		"engine direct-rootfs patch verification failed",
+		`-p1 < "$ENGINE_DIRECT_ROOTFS_PATCH"`,
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER",
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing direct-rootfs integrity binding %q", required)
+		}
+	}
+	identityApply := strings.Index(installer, `-p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`)
+	directApply := strings.Index(installer, `-p1 < "$ENGINE_DIRECT_ROOTFS_PATCH"`)
+	if identityApply < 0 || directApply <= identityApply {
+		t.Fatal("direct-rootfs patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0016-opt-in-direct-rootfs-provider.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		`env:"SANDBOX_ROOTFS_PROVIDER" envDefault:"nbd"`,
+		"NewRuntimeProvider",
+		`case "nbd":`,
+		`case "direct":`,
+		`case "reflink":`,
+		"os.O_EXCL",
+		"unix.Fallocate",
+		"SANDBOX_ROOTFS_REFLINK_CACHE_DIR",
+		"unix.IoctlFileClone",
+		"unix.RENAME_NOREPLACE",
+		"reflink base is missing the filesystem immutable flag",
+		"TestReflinkIdentityUsesImmutableBuildMetadata",
+		"TestReflinkProviderFailsClosedWithoutExplicitCache",
+		"direct rootfs materialization canceled",
+		"TestDirectRuntimeProviderFailsClosedOnExistingTarget",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("direct-rootfs patch is missing contract %q", required)
+		}
+	}
+
+	overrideData, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(overrideData), "SANDBOX_ROOTFS_PROVIDER: ${BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER:-nbd}") {
+		t.Fatal("engine override does not preserve the NBD rootfs-provider default")
+	}
+	if !strings.Contains(string(overrideData), "SANDBOX_ROOTFS_REFLINK_CACHE_DIR: ${BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR:-}") {
+		t.Fatal("engine override does not keep the reflink cache explicit and default-off")
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.direct_rootfs_patch_sha256",
+		"artifact.orchestrator.rootfs_provider=nbd-default-direct-diagnostic-reflink-explicit-opt-in",
+		"the direct-rootfs patch requires the base-template identity patch",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing direct-rootfs contract %q", required)
+		}
+	}
+}
+
+func TestInstallerRejectsUnknownRootfsProviderBeforeHostMutation(t *testing.T) {
+	command := exec.Command("sh", "install.sh")
+	command.Env = append(os.Environ(),
+		"BREZEL_INSTALL_DIR="+t.TempDir(),
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=raw",
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("installer accepted an unknown rootfs provider")
+	}
+	if !strings.Contains(string(output), "BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER must be nbd, direct, or reflink") {
+		t.Fatalf("installer returned the wrong rootfs-provider validation error: %s", output)
+	}
+	if strings.Contains(string(output), "Docker Engine is required") || strings.Contains(string(output), "This host cannot run") {
+		t.Fatalf("installer reached host preflight before rejecting the rootfs provider: %s", output)
+	}
+}
+
+func TestInstallerRejectsReflinkWithoutPreparedCacheBeforeHostMutation(t *testing.T) {
+	command := exec.Command("sh", "install.sh")
+	command.Env = append(os.Environ(),
+		"BREZEL_INSTALL_DIR="+t.TempDir(),
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink",
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR=",
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("installer accepted reflink mode without an explicit cache")
+	}
+	if !strings.Contains(string(output), "BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR must be an explicit absolute path") {
+		t.Fatalf("installer returned the wrong reflink-cache validation error: %s", output)
+	}
+	if strings.Contains(string(output), "Docker Engine is required") || strings.Contains(string(output), "This host cannot run") {
+		t.Fatalf("installer reached host preflight before rejecting the reflink cache: %s", output)
 	}
 }
 
@@ -1019,6 +1134,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		patchDigest,
 		"dax-baseline-a",
 		"template-a:11111111-1111-1111-1111-111111111111",
+		patchDigest,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("distribution manifest rejected source-built envd: %v: %s", err, output)
@@ -1050,6 +1166,8 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.template.name=dax-baseline-a",
 		"artifact.template.reference=template-a:11111111-1111-1111-1111-111111111111",
 		"artifact.template.cache_identity=template-id-and-build-id",
+		"artifact.orchestrator.direct_rootfs_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.rootfs_provider=nbd-default-direct-diagnostic-reflink-explicit-opt-in",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -1212,13 +1330,15 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 	files := map[string]string{
 		"packages/orchestrator/pkg/sandbox/fc/client.go":                      "models.MemoryBackendBackendTypeUffd\nOperations.LoadSnapshot\nResumeVM:            false\n",
 		"packages/orchestrator/pkg/sandbox/uffd/uffd.go":                      "userfaultfd.NewUserfaultfdFromFd\n",
-		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"NBD_CONNECTIONS_PER_DEVICE\"\nNBD_CONNECTIONS_PER_DEVICE must be between 1 and 4\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nenv:\"FIRECRACKER_CPUSET_CPUS\"\nis required when FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\nenv:\"BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS\"\nBuildExt4DirIndexForTemplate\n",
+		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"NBD_CONNECTIONS_PER_DEVICE\"\nNBD_CONNECTIONS_PER_DEVICE must be between 1 and 4\nenv:\"SANDBOX_ROOTFS_PROVIDER\" envDefault:\"nbd\"\nenv:\"SANDBOX_ROOTFS_REFLINK_CACHE_DIR\"\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nenv:\"FIRECRACKER_CPUSET_CPUS\"\nis required when FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\nenv:\"BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS\"\nBuildExt4DirIndexForTemplate\n",
 		"packages/orchestrator/pkg/template/build/builder.go":                 "builders = append(builders, optimizeBuilder)\nfeatureflags.BuildExt4DirIndex\n",
 		"packages/orchestrator/pkg/template/build/buildcontext/context.go":    "Ext4DirIndex bool\n",
 		"packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go":      "DirIndex: r.buildContext.Rootfs.Ext4DirIndex\n",
 		"packages/orchestrator/pkg/template/build/phases/base/hash.go":        "ext4-dir-index:v1\n",
 		"packages/orchestrator/pkg/template/build/phases/optimize/builder.go": "WithPrefetch(&metadata.Prefetch\ncontinuing without prefetch\n",
-		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewNBDProvider\nexclusive CPU placement requires sandbox cgroup creation\n",
+		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewRuntimeProvider\nexclusive CPU placement requires sandbox cgroup creation\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/provider.go":                "case \"nbd\":\ncase \"direct\":\ncase \"reflink\":\nos.O_EXCL\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/reflink.go":                 "unix.IoctlFileClone\nunix.RENAME_NOREPLACE\nreflink base is missing the filesystem immutable flag\n",
 		"packages/orchestrator/pkg/sandbox/cgroup/manager.go":                 "cpuset.cpus.partition\ncpuset.cpus.exclusive.effective\n",
 		"packages/shared/pkg/featureflags/flags.go":                           "NewStringFlag(\"resume-prefetch-source\", \"init\")\n",
 		"packages/shared/pkg/storage/sandbox.go":                              "fmt.Sprintf(\"rootfs-%s-%s.cow\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/sandbox\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/template\"\n",
@@ -1318,7 +1438,9 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"Operations.LoadSnapshot",
 		"NewUserfaultfdFromFd",
 		"WithPrefetch",
-		"rootfs.NewNBDProvider",
+		"rootfs.NewRuntimeProvider",
+		"SANDBOX_ROOTFS_PROVIDER",
+		"SANDBOX_ROOTFS_REFLINK_CACHE_DIR",
 		"NewSlotsPoolSize",
 		"anon_inode:[userfaultfd]",
 		"NETWORK_NEW_SLOTS_POOL_SIZE",

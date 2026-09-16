@@ -50,7 +50,25 @@ check_source() {
     'NewStringFlag("resume-prefetch-source", "init")' "the qualified init-prefetch default"
 
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/sandbox.go" \
-    "rootfs.NewNBDProvider" "the NBD copy-on-write root filesystem provider"
+    "rootfs.NewRuntimeProvider" "the explicit runtime root filesystem provider boundary"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/rootfs/provider.go" \
+    'case "nbd":' "the default NBD runtime root filesystem provider"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/rootfs/provider.go" \
+    'case "direct":' "the opt-in direct raw-file root filesystem provider"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/rootfs/provider.go" \
+    'case "reflink":' "the opt-in immutable-base reflink root filesystem provider"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/rootfs/provider.go" \
+    'os.O_EXCL' "exclusive private raw-file creation before Firecracker"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/rootfs/reflink.go" \
+    'unix.IoctlFileClone' "same-filesystem FICLONE sandbox root filesystem creation"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/rootfs/reflink.go" \
+    'unix.RENAME_NOREPLACE' "atomic no-replace reflink publication"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/rootfs/reflink.go" \
+    'reflink base is missing the filesystem immutable flag' "immutable cached-base enforcement"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"SANDBOX_ROOTFS_PROVIDER" envDefault:"nbd"' "the default-off direct rootfs provider selection"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"SANDBOX_ROOTFS_REFLINK_CACHE_DIR"' "the explicit reflink-cache boundary"
   require_literal "$source_root/packages/shared/pkg/storage/sandbox.go" \
     'fmt.Sprintf("rootfs-%s-%s.cow"' "per-sandbox copy-on-write root filesystem paths"
   require_literal "$source_root/packages/shared/pkg/storage/sandbox.go" \

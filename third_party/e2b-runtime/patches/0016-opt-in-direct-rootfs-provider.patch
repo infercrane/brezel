@@ -1,0 +1,1232 @@
+diff --git a/packages/orchestrator/pkg/cfg/model.go b/packages/orchestrator/pkg/cfg/model.go
+index 55b45c11e9389d5291b5ef799806744c0b31851e..52f233047269c54c3efe11d1cbcf7c814c5ac62b 100644
+--- a/packages/orchestrator/pkg/cfg/model.go
++++ b/packages/orchestrator/pkg/cfg/model.go
+@@ -39,6 +39,8 @@ type BuilderConfig struct {
+ 	HostKernelsDir                  string `env:"HOST_KERNELS_DIR"         envDefault:"/fc-kernels"`
+ 	OrchestratorBaseDir             string `env:"ORCHESTRATOR_BASE_PATH"   envDefault:"/orchestrator"`
+ 	NBDConnectionsPerDevice         int    `env:"NBD_CONNECTIONS_PER_DEVICE" envDefault:"1"`
++	SandboxRootfsProvider           string `env:"SANDBOX_ROOTFS_PROVIDER" envDefault:"nbd"`
++	SandboxRootfsReflinkCacheDir    string `env:"SANDBOX_ROOTFS_REFLINK_CACHE_DIR"`
+ 	SandboxDir                      string `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
+ 	SharedChunkCacheDir             string `env:"SHARED_CHUNK_CACHE_PATH"`
+ 	TemplatesDir                    string `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
+@@ -88,6 +90,42 @@ func validateBuildExt4DirIndexTemplateIDs(raw string) error {
+ 	return nil
+ }
+ 
++func validateSandboxRootfsProvider(raw string) error {
++	switch raw {
++	case "nbd", "direct", "reflink":
++		return nil
++	default:
++		return fmt.Errorf(
++			"SANDBOX_ROOTFS_PROVIDER must be one of nbd, direct, or reflink, got %q",
++			raw,
++		)
++	}
++}
++
++func validateSandboxRootfsReflinkConfig(provider, cacheDir string) error {
++	if provider != "reflink" {
++		return nil
++	}
++	if cacheDir == "" {
++		return fmt.Errorf("SANDBOX_ROOTFS_REFLINK_CACHE_DIR is required when SANDBOX_ROOTFS_PROVIDER=reflink")
++	}
++	if !filepath.IsAbs(cacheDir) || filepath.Clean(cacheDir) != cacheDir || cacheDir == "/" {
++		return fmt.Errorf("SANDBOX_ROOTFS_REFLINK_CACHE_DIR must be a clean absolute path below root")
++	}
++	return nil
++}
++
++// SandboxRootfsProviderName keeps zero-value BuilderConfig users on the safe
++// NBD default. Parsed production configuration still validates an explicit
++// value before the factory can create a sandbox.
++func (c BuilderConfig) SandboxRootfsProviderName() string {
++	if c.SandboxRootfsProvider == "" {
++		return "nbd"
++	}
++
++	return c.SandboxRootfsProvider
++}
++
+ // NBDConnectionCount returns the process-static queue count. A zero-value
+ // BuilderConfig is common in tests and small tools, so it preserves the safe
+ // single-queue default used by parsed production configuration.
+@@ -107,6 +145,7 @@ func makePathsAbsolute(c *BuilderConfig) error {
+ 		&c.HostEnvdPath,
+ 		&c.HostKernelsDir,
+ 		&c.OrchestratorBaseDir,
++		&c.SandboxRootfsReflinkCacheDir,
+ 		&c.StorageConfig.SandboxCacheDir,
+ 		&c.SandboxDir,
+ 		&c.SharedChunkCacheDir,
+@@ -229,6 +268,12 @@ func Parse() (Config, error) {
+ 	if err := validateBuildExt4DirIndexTemplateIDs(config.BuildExt4DirIndexTemplateIDs); err != nil {
+ 		return config, err
+ 	}
++	if err := validateSandboxRootfsProvider(config.SandboxRootfsProvider); err != nil {
++		return config, err
++	}
++	if err := validateSandboxRootfsReflinkConfig(config.SandboxRootfsProvider, config.SandboxRootfsReflinkCacheDir); err != nil {
++		return config, err
++	}
+ 	if config.NBDConnectionsPerDevice < 1 || config.NBDConnectionsPerDevice > 4 {
+ 		return config, fmt.Errorf("NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4")
+ 	}
+@@ -296,6 +341,12 @@ func ParseBuilder() (BuilderConfig, error) {
+ 	if err := validateExclusiveCPUConfig(model); err != nil {
+ 		return BuilderConfig{}, err
+ 	}
++	if err := validateSandboxRootfsProvider(model.SandboxRootfsProvider); err != nil {
++		return BuilderConfig{}, err
++	}
++	if err := validateSandboxRootfsReflinkConfig(model.SandboxRootfsProvider, model.SandboxRootfsReflinkCacheDir); err != nil {
++		return BuilderConfig{}, err
++	}
+ 	if model.NBDConnectionsPerDevice < 1 || model.NBDConnectionsPerDevice > 4 {
+ 		return BuilderConfig{}, fmt.Errorf("NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4")
+ 	}
+diff --git a/packages/orchestrator/pkg/cfg/model_test.go b/packages/orchestrator/pkg/cfg/model_test.go
+index 870ec64e82f1a7f15bcd3f3e1895b733eceba78d..bd41537a2d203fca5d37b4d7f08453b1d180fc52 100644
+--- a/packages/orchestrator/pkg/cfg/model_test.go
++++ b/packages/orchestrator/pkg/cfg/model_test.go
+@@ -20,6 +20,7 @@ func TestParse(t *testing.T) {
+ 		assert.False(t, config.FirecrackerSMT)
+ 		assert.False(t, config.FirecrackerExclusiveCPUTopology)
+ 		assert.Equal(t, 1, config.NBDConnectionsPerDevice)
++		assert.Equal(t, "nbd", config.SandboxRootfsProvider)
+ 	})
+ 
+ 	t.Run("exclusive Firecracker CPU topology requires the complete cpuset contract", func(t *testing.T) {
+@@ -86,6 +87,52 @@ func TestParse(t *testing.T) {
+ 		})
+ 	}
+ 
++	t.Run("direct rootfs provider requires an explicit exact value", func(t *testing.T) {
++		t.Setenv("SANDBOX_ROOTFS_PROVIDER", "direct")
++
++		config, err := Parse()
++		require.NoError(t, err)
++		assert.Equal(t, "direct", config.SandboxRootfsProvider)
++		assert.Equal(t, "direct", config.SandboxRootfsProviderName())
++	})
++
++	t.Run("reflink rootfs provider requires a clean explicit cache directory", func(t *testing.T) {
++		t.Setenv("SANDBOX_ROOTFS_PROVIDER", "reflink")
++		t.Setenv("SANDBOX_ROOTFS_REFLINK_CACHE_DIR", "/var/lib/brezel/rootfs-reflink")
++
++		config, err := Parse()
++		require.NoError(t, err)
++		assert.Equal(t, "reflink", config.SandboxRootfsProvider)
++		assert.Equal(t, "/var/lib/brezel/rootfs-reflink", config.SandboxRootfsReflinkCacheDir)
++	})
++
++	for _, cacheDir := range []string{"", "relative", "/", "/var/lib/../tmp/reflink"} {
++		t.Run("reflink rejects cache directory "+cacheDir, func(t *testing.T) {
++			t.Setenv("SANDBOX_ROOTFS_PROVIDER", "reflink")
++			t.Setenv("SANDBOX_ROOTFS_REFLINK_CACHE_DIR", cacheDir)
++
++			_, err := Parse()
++			require.ErrorContains(t, err, "SANDBOX_ROOTFS_REFLINK_CACHE_DIR")
++		})
++	}
++
++	t.Run("zero-value builder config preserves the NBD provider", func(t *testing.T) {
++		assert.Equal(t, "nbd", (BuilderConfig{}).SandboxRootfsProviderName())
++	})
++
++	for _, provider := range []string{"", "DIRECT", "raw", " direct"} {
++		t.Run("rootfs provider rejects "+provider, func(t *testing.T) {
++			t.Setenv("SANDBOX_ROOTFS_PROVIDER", provider)
++
++			_, err := Parse()
++			require.ErrorContains(
++				t,
++				err,
++				"SANDBOX_ROOTFS_PROVIDER must be one of nbd, direct, or reflink",
++			)
++		})
++	}
++
+ 	t.Run("embedded structs get overrides", func(t *testing.T) {
+ 		t.Setenv("SANDBOX_DIR", "/fc-vm2")
+ 
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/provider.go b/packages/orchestrator/pkg/sandbox/rootfs/provider.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1424c708fcc2e839c90f78c2259ec1debd2da181
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/rootfs/provider.go
+@@ -0,0 +1,164 @@
++//go:build linux
++
++package rootfs
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"os"
++
++	"golang.org/x/sys/unix"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd"
++	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
++)
++
++const directMaterializeChunkBytes int64 = 4 << 20
++
++// NewRuntimeProvider is the single provider-selection boundary for regular
++// sandbox create and resume. NBD remains the default in configuration; callers
++// must pass the exact value "direct" or "reflink" to materialize a private
++// raw rootfs. Selection and materialization finish before Firecracker is
++// created, so unsupported storage fails closed outside the VM boundary.
++func NewRuntimeProvider(
++	ctx context.Context,
++	provider string,
++	rootfs block.ReadonlyDevice,
++	cachePath string,
++	reflinkCacheDir string,
++	devicePool *nbd.DevicePool,
++	featureFlags *featureflags.Client,
++	nbdConnections int,
++) (Provider, error) {
++	switch provider {
++	case "nbd":
++		return NewNBDProvider(
++			ctx,
++			rootfs,
++			cachePath,
++			devicePool,
++			featureFlags,
++			nbdConnections,
++		)
++	case "direct":
++		return newMaterializedDirectProvider(ctx, rootfs, cachePath)
++	case "reflink":
++		return newMaterializedReflinkProvider(ctx, rootfs, cachePath, reflinkCacheDir)
++	default:
++		return nil, fmt.Errorf("unsupported sandbox rootfs provider %q", provider)
++	}
++}
++
++// newMaterializedDirectProvider makes one private, writable raw image for a
++// sandbox before exposing it to Firecracker. The source can be local or lazy;
++// ReadAt is the only boundary used, so no host path supplied by a template is
++// trusted. O_EXCL prevents replacing or following an existing cache path.
++//
++// This intentionally materializes the complete virtual disk. It is an opt-in
++// runtime A/B mechanism, not a persistence or export guarantee. NBD remains the
++// operational default until direct mode has separate lifecycle qualification.
++func newMaterializedDirectProvider(
++	ctx context.Context,
++	rootfs block.ReadonlyDevice,
++	cachePath string,
++) (_ Provider, resultErr error) {
++	if err := ctx.Err(); err != nil {
++		return nil, fmt.Errorf("direct rootfs materialization canceled: %w", err)
++	}
++	if rootfs == nil {
++		return nil, errors.New("direct rootfs provider requires a source device")
++	}
++	if cachePath == "" {
++		return nil, errors.New("direct rootfs provider requires a private cache path")
++	}
++
++	size, err := rootfs.Size(ctx)
++	if err != nil {
++		return nil, fmt.Errorf("getting direct rootfs size: %w", err)
++	}
++	blockSize := rootfs.BlockSize()
++	if size <= 0 || blockSize <= 0 || size%blockSize != 0 {
++		return nil, fmt.Errorf(
++			"direct rootfs requires a positive block-aligned image: size=%d block_size=%d",
++			size,
++			blockSize,
++		)
++	}
++
++	file, err := os.OpenFile(cachePath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
++	if err != nil {
++		return nil, fmt.Errorf("creating private direct rootfs: %w", err)
++	}
++	keep := false
++	closed := false
++	defer func() {
++		var closeErr error
++		if !closed {
++			closeErr = file.Close()
++		}
++		if !keep {
++			removeErr := os.Remove(cachePath)
++			if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
++				resultErr = errors.Join(resultErr, fmt.Errorf("removing incomplete direct rootfs: %w", removeErr))
++			}
++		}
++		if closeErr != nil && resultErr == nil {
++			resultErr = fmt.Errorf("closing direct rootfs: %w", closeErr)
++		}
++	}()
++
++	if err := file.Truncate(size); err != nil {
++		return nil, fmt.Errorf("sizing direct rootfs: %w", err)
++	}
++	// Direct mode consumes a complete private raw image per sandbox. Reserve
++	// every byte now instead of allowing sparse-file overcommit to become an
++	// ENOSPC write fault after the VM starts. Unsupported filesystems fail this
++	// opt-in arm before Firecracker exists; the default NBD path is unaffected.
++	if err := unix.Fallocate(int(file.Fd()), 0, 0, size); err != nil {
++		return nil, fmt.Errorf("reserving direct rootfs storage: %w", err)
++	}
++
++	chunkSize := directMaterializeChunkBytes
++	if blockSize > chunkSize {
++		chunkSize = blockSize
++	} else {
++		chunkSize -= chunkSize % blockSize
++	}
++	buf := make([]byte, chunkSize)
++	for offset := int64(0); offset < size; offset += chunkSize {
++		if err := ctx.Err(); err != nil {
++			return nil, fmt.Errorf("direct rootfs materialization canceled: %w", err)
++		}
++		length := min(chunkSize, size-offset)
++		n, readErr := rootfs.ReadAt(ctx, buf[:length], offset)
++		if readErr != nil {
++			return nil, fmt.Errorf("reading direct rootfs at offset %d: %w", offset, readErr)
++		}
++		if int64(n) != length {
++			return nil, fmt.Errorf("reading direct rootfs at offset %d: %w", offset, io.ErrUnexpectedEOF)
++		}
++		n, writeErr := file.WriteAt(buf[:length], offset)
++		if writeErr != nil {
++			return nil, fmt.Errorf("writing direct rootfs at offset %d: %w", offset, writeErr)
++		}
++		if int64(n) != length {
++			return nil, fmt.Errorf("writing direct rootfs at offset %d: %w", offset, io.ErrShortWrite)
++		}
++	}
++
++	if err := file.Close(); err != nil {
++		return nil, fmt.Errorf("closing materialized direct rootfs: %w", err)
++	}
++	closed = true
++
++	provider, err := NewDirectProvider(ctx, rootfs, cachePath)
++	if err != nil {
++		return nil, fmt.Errorf("opening materialized direct rootfs: %w", err)
++	}
++	keep = true
++
++	return provider, nil
++}
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/provider_test.go b/packages/orchestrator/pkg/sandbox/rootfs/provider_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c010462cffd5f5ddd5cc6d65dc5b884197715b46
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/rootfs/provider_test.go
+@@ -0,0 +1,138 @@
++//go:build linux
++
++package rootfs
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
++)
++
++func newTestLocalRootfs(t *testing.T, contents []byte) *block.Local {
++	t.Helper()
++
++	sourcePath := filepath.Join(t.TempDir(), "source.raw")
++	require.NoError(t, os.WriteFile(sourcePath, contents, 0o600))
++	device, err := block.NewLocal(sourcePath, 4096, uuid.New())
++	require.NoError(t, err)
++	t.Cleanup(func() { require.NoError(t, device.Close()) })
++
++	return device
++}
++
++func TestNewRuntimeProviderRejectsUnknownProviderBeforeCreatingCache(t *testing.T) {
++	t.Parallel()
++
++	target := filepath.Join(t.TempDir(), "rootfs.cow")
++	provider, err := NewRuntimeProvider(
++		context.Background(),
++		"raw",
++		newTestLocalRootfs(t, make([]byte, 4096)),
++		target,
++		"",
++		nil,
++		nil,
++		1,
++	)
++	require.ErrorContains(t, err, `unsupported sandbox rootfs provider "raw"`)
++	assert.Nil(t, provider)
++	_, statErr := os.Stat(target)
++	assert.ErrorIs(t, statErr, os.ErrNotExist)
++}
++
++func TestDirectRuntimeProviderMaterializesPrivateIndependentRawFile(t *testing.T) {
++	t.Parallel()
++
++	contents := make([]byte, 8192)
++	copy(contents, []byte("template-data"))
++	source := newTestLocalRootfs(t, contents)
++	target := filepath.Join(t.TempDir(), "rootfs.cow")
++
++	provider, err := NewRuntimeProvider(
++		context.Background(),
++		"direct",
++		source,
++		target,
++		"",
++		nil,
++		nil,
++		1,
++	)
++	require.NoError(t, err)
++	require.NoError(t, provider.Start(context.Background()))
++	t.Cleanup(func() { require.NoError(t, provider.Close(context.Background())) })
++
++	path, err := provider.Path()
++	require.NoError(t, err)
++	assert.Equal(t, target, path)
++	materialized, err := os.ReadFile(path)
++	require.NoError(t, err)
++	assert.Equal(t, contents, materialized)
++	info, err := os.Stat(path)
++	require.NoError(t, err)
++	assert.Zero(t, info.Mode().Perm()&0o077)
++
++	targetFile, err := os.OpenFile(path, os.O_WRONLY, 0)
++	require.NoError(t, err)
++	_, err = targetFile.WriteAt([]byte("sandbox"), 0)
++	require.NoError(t, err)
++	require.NoError(t, targetFile.Close())
++
++	sourceBytes := make([]byte, len(contents))
++	_, err = source.ReadAt(context.Background(), sourceBytes, 0)
++	require.NoError(t, err)
++	assert.Equal(t, contents, sourceBytes)
++}
++
++func TestDirectRuntimeProviderFailsClosedOnExistingTarget(t *testing.T) {
++	t.Parallel()
++
++	target := filepath.Join(t.TempDir(), "rootfs.cow")
++	require.NoError(t, os.WriteFile(target, []byte("owned"), 0o600))
++	provider, err := NewRuntimeProvider(
++		context.Background(),
++		"direct",
++		newTestLocalRootfs(t, make([]byte, 4096)),
++		target,
++		"",
++		nil,
++		nil,
++		1,
++	)
++	require.Error(t, err)
++	assert.Nil(t, provider)
++	contents, readErr := os.ReadFile(target)
++	require.NoError(t, readErr)
++	assert.Equal(t, []byte("owned"), contents)
++}
++
++func TestDirectRuntimeProviderCancellationLeavesNoPartialImage(t *testing.T) {
++	t.Parallel()
++
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	target := filepath.Join(t.TempDir(), "rootfs.cow")
++	provider, err := NewRuntimeProvider(
++		ctx,
++		"direct",
++		newTestLocalRootfs(t, make([]byte, 4096)),
++		target,
++		"",
++		nil,
++		nil,
++		1,
++	)
++	require.Error(t, err)
++	assert.True(t, errors.Is(err, context.Canceled))
++	assert.Nil(t, provider)
++	_, statErr := os.Stat(target)
++	assert.ErrorIs(t, statErr, os.ErrNotExist)
++}
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink.go b/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..e10572c81cf8452ea63fa975a240f6a0201e69c6
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
+@@ -0,0 +1,647 @@
++//go:build linux
++
++package rootfs
++
++import (
++	"context"
++	"crypto/rand"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"os"
++	"path/filepath"
++	"sync"
++	"time"
++
++	"github.com/google/uuid"
++	"golang.org/x/sys/unix"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
++)
++
++const (
++	reflinkManifestVersion = 1
++	reflinkBaseImageName   = "rootfs.raw"
++	reflinkManifestName    = "manifest.json"
++	reflinkImmutableFlag   = 0x00000010
++	reflinkMinFreeBytes    = uint64(64 << 20)
++	reflinkMaxReserveBytes = uint64(1 << 30)
++	reflinkManifestMaxSize = 4096
++)
++
++type reflinkManifest struct {
++	Version     int    `json:"version"`
++	Identity    string `json:"identity"`
++	BuildID     string `json:"build_id"`
++	BaseBuildID string `json:"base_build_id"`
++	Generation  uint64 `json:"generation"`
++	DiskSize    int64  `json:"disk_size"`
++	BlockSize   int64  `json:"block_size"`
++	SHA256      string `json:"sha256"`
++}
++
++type reflinkFingerprint struct {
++	device     uint64
++	inode      uint64
++	size       int64
++	changeSec  int64
++	changeNSec int64
++	digest     string
++}
++
++var reflinkDigestCache = struct {
++	sync.Mutex
++	entries map[string]reflinkFingerprint
++}{entries: make(map[string]reflinkFingerprint)}
++
++func openReflinkBeneath(dirfd int, name string, flags int, mode uint32) (int, error) {
++	how := &unix.OpenHow{
++		Flags:   uint64(flags | unix.O_CLOEXEC | unix.O_NOFOLLOW),
++		Mode:    uint64(mode),
++		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
++	}
++	return unix.Openat2(dirfd, name, how)
++}
++
++func openReflinkRoot(path string) (int, uint64, error) {
++	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
++		return -1, 0, errors.New("reflink cache must be a clean absolute path below root")
++	}
++	how := &unix.OpenHow{
++		Flags:   unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW,
++		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
++	}
++	fd, err := unix.Openat2(unix.AT_FDCWD, path, how)
++	if err != nil {
++		return -1, 0, fmt.Errorf("opening reflink cache: %w", err)
++	}
++	fail := func(err error) (int, uint64, error) {
++		_ = unix.Close(fd)
++		return -1, 0, err
++	}
++	var stat unix.Stat_t
++	if err := unix.Fstat(fd, &stat); err != nil {
++		return fail(err)
++	}
++	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != uint32(os.Geteuid()) || stat.Mode&0o077 != 0 {
++		return fail(errors.New("reflink cache must be a private directory owned by the effective user"))
++	}
++	var statfs unix.Statfs_t
++	if err := unix.Fstatfs(fd, &statfs); err != nil {
++		return fail(err)
++	}
++	if uint64(statfs.Type) != unix.XFS_SUPER_MAGIC && uint64(statfs.Type) != unix.BTRFS_SUPER_MAGIC {
++		return fail(errors.New("reflink cache requires XFS or Btrfs"))
++	}
++	return fd, stat.Dev, nil
++}
++
++func reflinkSourceIdentity(rootfs block.ReadonlyDevice) (reflinkManifest, error) {
++	if rootfs == nil {
++		return reflinkManifest{}, errors.New("reflink rootfs provider requires a source device")
++	}
++	header := rootfs.Header()
++	if header == nil || header.Metadata == nil {
++		return reflinkManifest{}, errors.New("reflink rootfs source requires immutable build metadata")
++	}
++	metadata := header.Metadata
++	if metadata.BuildId == uuid.Nil {
++		return reflinkManifest{}, errors.New("reflink rootfs source requires a non-zero immutable build ID")
++	}
++	size := int64(metadata.Size)
++	blockSize := int64(metadata.BlockSize)
++	if size <= 0 || blockSize <= 0 || size%blockSize != 0 {
++		return reflinkManifest{}, fmt.Errorf("reflink rootfs requires a positive block-aligned image: size=%d block_size=%d", size, blockSize)
++	}
++	canonical := fmt.Sprintf(
++		"brezel-rootfs-v1\nversion=%d\nbuild=%s\nbase=%s\ngeneration=%d\nsize=%d\nblock=%d\n",
++		metadata.Version,
++		metadata.BuildId,
++		metadata.BaseBuildId,
++		metadata.Generation,
++		size,
++		blockSize,
++	)
++	identity := sha256.Sum256([]byte(canonical))
++	return reflinkManifest{
++		Version:     reflinkManifestVersion,
++		Identity:    hex.EncodeToString(identity[:]),
++		BuildID:     metadata.BuildId.String(),
++		BaseBuildID: metadata.BaseBuildId.String(),
++		Generation:  metadata.Generation,
++		DiskSize:    size,
++		BlockSize:   blockSize,
++	}, nil
++}
++
++func validateReflinkManifest(actual, expected reflinkManifest) error {
++	if actual.Version != reflinkManifestVersion ||
++		actual.Identity != expected.Identity ||
++		actual.BuildID != expected.BuildID ||
++		actual.BaseBuildID != expected.BaseBuildID ||
++		actual.Generation != expected.Generation ||
++		actual.DiskSize != expected.DiskSize ||
++		actual.BlockSize != expected.BlockSize {
++		return errors.New("reflink base manifest does not match the immutable source identity")
++	}
++	if len(actual.SHA256) != sha256.Size*2 {
++		return errors.New("reflink base manifest has an invalid SHA-256 digest")
++	}
++	if _, err := hex.DecodeString(actual.SHA256); err != nil {
++		return errors.New("reflink base manifest has an invalid SHA-256 digest")
++	}
++	return nil
++}
++
++func reflinkRandomSuffix() (string, error) {
++	value := make([]byte, 12)
++	if _, err := rand.Read(value); err != nil {
++		return "", err
++	}
++	return hex.EncodeToString(value), nil
++}
++
++func lockReflinkBase(ctx context.Context, rootfd int, identity string) (int, error) {
++	name := ".lock-" + identity
++	fd, err := openReflinkBeneath(rootfd, name, unix.O_CREAT|unix.O_RDWR, 0o600)
++	if err != nil {
++		return -1, err
++	}
++	var stat unix.Stat_t
++	if err := unix.Fstat(fd, &stat); err != nil {
++		_ = unix.Close(fd)
++		return -1, err
++	}
++	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 || stat.Mode&0o077 != 0 {
++		_ = unix.Close(fd)
++		return -1, errors.New("reflink base lock is not a private owned regular file")
++	}
++	for {
++		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
++		if err == nil {
++			return fd, nil
++		}
++		if !errors.Is(err, unix.EWOULDBLOCK) {
++			_ = unix.Close(fd)
++			return -1, err
++		}
++		select {
++		case <-ctx.Done():
++			_ = unix.Close(fd)
++			return -1, ctx.Err()
++		case <-time.After(20 * time.Millisecond):
++		}
++	}
++}
++
++func unlockReflinkBase(fd int) {
++	_ = unix.Flock(fd, unix.LOCK_UN)
++	_ = unix.Close(fd)
++}
++
++func reflinkAvailableBytes(fd int) (uint64, error) {
++	var statfs unix.Statfs_t
++	if err := unix.Fstatfs(fd, &statfs); err != nil {
++		return 0, err
++	}
++	return statfs.Bavail * uint64(statfs.Bsize), nil
++}
++
++func requireReflinkSpace(fd int, required uint64) error {
++	available, err := reflinkAvailableBytes(fd)
++	if err != nil {
++		return err
++	}
++	if available < required {
++		return fmt.Errorf("reflink cache has insufficient free space: available=%d required=%d", available, required)
++	}
++	return nil
++}
++
++func writeAllAt(fd int, contents []byte, offset int64) error {
++	for len(contents) > 0 {
++		count, err := unix.Pwrite(fd, contents, offset)
++		if err != nil {
++			return err
++		}
++		if count == 0 {
++			return io.ErrShortWrite
++		}
++		contents = contents[count:]
++		offset += int64(count)
++	}
++	return nil
++}
++
++func readSmallFileAt(dirfd int, name string) ([]byte, error) {
++	fd, err := openReflinkBeneath(dirfd, name, unix.O_RDONLY, 0)
++	if err != nil {
++		return nil, err
++	}
++	var stat unix.Stat_t
++	if err := unix.Fstat(fd, &stat); err != nil {
++		_ = unix.Close(fd)
++		return nil, err
++	}
++	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 || stat.Mode&0o222 != 0 || stat.Size <= 0 || stat.Size > reflinkManifestMaxSize {
++		_ = unix.Close(fd)
++		return nil, errors.New("reflink manifest is not an exact private read-only regular file")
++	}
++	file := os.NewFile(uintptr(fd), name)
++	if file == nil {
++		_ = unix.Close(fd)
++		return nil, errors.New("wrapping reflink manifest descriptor")
++	}
++	defer file.Close()
++	contents, err := io.ReadAll(io.LimitReader(file, reflinkManifestMaxSize+1))
++	if err != nil {
++		return nil, err
++	}
++	if len(contents) > reflinkManifestMaxSize {
++		return nil, errors.New("reflink manifest is too large")
++	}
++	return contents, nil
++}
++
++func validateReflinkDigest(fd int, stat unix.Stat_t, digest, identity string) error {
++	fingerprint := reflinkFingerprint{
++		device: stat.Dev, inode: stat.Ino, size: stat.Size,
++		changeSec: stat.Ctim.Sec, changeNSec: stat.Ctim.Nsec, digest: digest,
++	}
++	reflinkDigestCache.Lock()
++	cached, ok := reflinkDigestCache.entries[identity]
++	reflinkDigestCache.Unlock()
++	if ok && cached == fingerprint {
++		return nil
++	}
++	if _, err := unix.Seek(fd, 0, io.SeekStart); err != nil {
++		return err
++	}
++	hash := sha256.New()
++	// The caller retains ownership of fd.
++	duplicate, err := unix.Dup(fd)
++	if err != nil {
++		return err
++	}
++	file := os.NewFile(uintptr(duplicate), reflinkBaseImageName)
++	if file == nil {
++		_ = unix.Close(duplicate)
++		return errors.New("wrapping duplicate reflink base descriptor")
++	}
++	_, copyErr := io.CopyBuffer(hash, file, make([]byte, directMaterializeChunkBytes))
++	closeErr := file.Close()
++	if copyErr != nil {
++		return copyErr
++	}
++	if closeErr != nil {
++		return closeErr
++	}
++	actual := hex.EncodeToString(hash.Sum(nil))
++	if actual != digest {
++		return errors.New("reflink base digest does not match its manifest")
++	}
++	reflinkDigestCache.Lock()
++	reflinkDigestCache.entries[identity] = fingerprint
++	reflinkDigestCache.Unlock()
++	return nil
++}
++
++func openVerifiedReflinkBase(rootfd int, expected reflinkManifest) (int, unix.Stat_t, error) {
++	directoryName := "base-" + expected.Identity
++	dirfd, err := openReflinkBeneath(rootfd, directoryName, unix.O_RDONLY|unix.O_DIRECTORY, 0)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	defer unix.Close(dirfd)
++	var dirStat unix.Stat_t
++	if err := unix.Fstat(dirfd, &dirStat); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	if dirStat.Mode&unix.S_IFMT != unix.S_IFDIR || dirStat.Uid != uint32(os.Geteuid()) || dirStat.Mode&0o077 != 0 {
++		return -1, unix.Stat_t{}, errors.New("reflink base directory is not private and owned")
++	}
++	manifestBytes, err := readSmallFileAt(dirfd, reflinkManifestName)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	var manifest reflinkManifest
++	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
++		return -1, unix.Stat_t{}, fmt.Errorf("decoding reflink base manifest: %w", err)
++	}
++	if err := validateReflinkManifest(manifest, expected); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	fd, err := openReflinkBeneath(dirfd, reflinkBaseImageName, unix.O_RDONLY, 0)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	fail := func(err error) (int, unix.Stat_t, error) {
++		_ = unix.Close(fd)
++		return -1, unix.Stat_t{}, err
++	}
++	var stat unix.Stat_t
++	if err := unix.Fstat(fd, &stat); err != nil {
++		return fail(err)
++	}
++	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 || stat.Mode&0o222 != 0 || stat.Size != expected.DiskSize {
++		return fail(errors.New("reflink base is not an exact immutable private regular file"))
++	}
++	flags, err := unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS)
++	if err != nil {
++		return fail(fmt.Errorf("reading reflink base inode flags: %w", err))
++	}
++	if flags&reflinkImmutableFlag == 0 {
++		return fail(errors.New("reflink base is missing the filesystem immutable flag"))
++	}
++	if err := validateReflinkDigest(fd, stat, manifest.SHA256, expected.Identity); err != nil {
++		return fail(err)
++	}
++	return fd, stat, nil
++}
++
++func cleanupReflinkBuild(rootfd int, name string) {
++	dirfd, err := openReflinkBeneath(rootfd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
++	if err == nil {
++		if basefd, openErr := openReflinkBeneath(dirfd, reflinkBaseImageName, unix.O_RDONLY, 0); openErr == nil {
++			if flags, flagsErr := unix.IoctlGetInt(basefd, unix.FS_IOC_GETFLAGS); flagsErr == nil {
++				_ = unix.IoctlSetPointerInt(basefd, unix.FS_IOC_SETFLAGS, flags&^reflinkImmutableFlag)
++			}
++			_ = unix.Close(basefd)
++		}
++		_ = unix.Unlinkat(dirfd, reflinkBaseImageName, 0)
++		_ = unix.Unlinkat(dirfd, reflinkManifestName, 0)
++		_ = unix.Close(dirfd)
++	}
++	_ = unix.Unlinkat(rootfd, name, unix.AT_REMOVEDIR)
++	_ = unix.Fsync(rootfd)
++}
++
++func materializeReflinkBase(ctx context.Context, rootfd int, rootfs block.ReadonlyDevice, expected reflinkManifest) (int, unix.Stat_t, error) {
++	if fd, stat, err := openVerifiedReflinkBase(rootfd, expected); err == nil {
++		return fd, stat, nil
++	} else if !errors.Is(err, unix.ENOENT) {
++		return -1, unix.Stat_t{}, fmt.Errorf("validating existing reflink base: %w", err)
++	}
++	suffix, err := reflinkRandomSuffix()
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	temporary := ".build-" + expected.Identity + "-" + suffix
++	if err := unix.Mkdirat(rootfd, temporary, 0o700); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	committed := false
++	defer func() {
++		if !committed {
++			cleanupReflinkBuild(rootfd, temporary)
++		}
++	}()
++	dirfd, err := openReflinkBeneath(rootfd, temporary, unix.O_RDONLY|unix.O_DIRECTORY, 0)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	defer unix.Close(dirfd)
++	required := uint64(expected.DiskSize)
++	if required > ^uint64(0)-reflinkMinFreeBytes {
++		return -1, unix.Stat_t{}, errors.New("reflink base size overflows free-space requirement")
++	}
++	if err := requireReflinkSpace(rootfd, required+reflinkMinFreeBytes); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	basefd, err := openReflinkBeneath(dirfd, reflinkBaseImageName, unix.O_CREAT|unix.O_EXCL|unix.O_RDWR, 0o600)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	baseOpen := true
++	defer func() {
++		if baseOpen {
++			_ = unix.Close(basefd)
++		}
++	}()
++	if err := unix.Ftruncate(basefd, expected.DiskSize); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	chunkSize := directMaterializeChunkBytes
++	if expected.BlockSize > chunkSize {
++		chunkSize = expected.BlockSize
++	} else {
++		chunkSize -= chunkSize % expected.BlockSize
++	}
++	buffer := make([]byte, chunkSize)
++	hash := sha256.New()
++	for offset := int64(0); offset < expected.DiskSize; offset += chunkSize {
++		if err := ctx.Err(); err != nil {
++			return -1, unix.Stat_t{}, err
++		}
++		length := min(chunkSize, expected.DiskSize-offset)
++		count, err := rootfs.ReadAt(ctx, buffer[:length], offset)
++		if err != nil {
++			return -1, unix.Stat_t{}, fmt.Errorf("reading reflink base at offset %d: %w", offset, err)
++		}
++		if int64(count) != length {
++			return -1, unix.Stat_t{}, io.ErrUnexpectedEOF
++		}
++		if err := writeAllAt(basefd, buffer[:length], offset); err != nil {
++			return -1, unix.Stat_t{}, err
++		}
++		_, _ = hash.Write(buffer[:length])
++	}
++	if err := unix.Fsync(basefd); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	if err := unix.Fchmod(basefd, 0o400); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	flags, err := unix.IoctlGetInt(basefd, unix.FS_IOC_GETFLAGS)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	if err := unix.IoctlSetPointerInt(basefd, unix.FS_IOC_SETFLAGS, flags|reflinkImmutableFlag); err != nil {
++		return -1, unix.Stat_t{}, fmt.Errorf("making reflink base immutable: %w", err)
++	}
++	expected.SHA256 = hex.EncodeToString(hash.Sum(nil))
++	manifestBytes, err := json.Marshal(expected)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	manifestfd, err := openReflinkBeneath(dirfd, reflinkManifestName, unix.O_CREAT|unix.O_EXCL|unix.O_RDWR, 0o600)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	if err := writeAllAt(manifestfd, manifestBytes, 0); err != nil {
++		_ = unix.Close(manifestfd)
++		return -1, unix.Stat_t{}, err
++	}
++	if err := unix.Fsync(manifestfd); err != nil {
++		_ = unix.Close(manifestfd)
++		return -1, unix.Stat_t{}, err
++	}
++	if err := unix.Fchmod(manifestfd, 0o400); err != nil {
++		_ = unix.Close(manifestfd)
++		return -1, unix.Stat_t{}, err
++	}
++	if err := unix.Close(manifestfd); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	if err := unix.Close(basefd); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	baseOpen = false
++	if err := unix.Fsync(dirfd); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	finalName := "base-" + expected.Identity
++	if err := unix.Renameat2(rootfd, temporary, rootfd, finalName, unix.RENAME_NOREPLACE); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	committed = true
++	if err := unix.Fsync(rootfd); err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	return openVerifiedReflinkBase(rootfd, expected)
++}
++
++func cloneReflinkBase(ctx context.Context, basefd int, baseStat unix.Stat_t, cachePath string) (resultErr error) {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	if cachePath == "" || !filepath.IsAbs(cachePath) || filepath.Clean(cachePath) != cachePath {
++		return errors.New("reflink destination must be a clean absolute path")
++	}
++	parent := filepath.Dir(cachePath)
++	name := filepath.Base(cachePath)
++	if name == "." || name == string(filepath.Separator) || len(name) > 180 {
++		return errors.New("reflink destination has an invalid filename")
++	}
++	how := &unix.OpenHow{
++		Flags:   unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW,
++		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
++	}
++	parentfd, err := unix.Openat2(unix.AT_FDCWD, parent, how)
++	if err != nil {
++		return err
++	}
++	defer unix.Close(parentfd)
++	var parentStat unix.Stat_t
++	if err := unix.Fstat(parentfd, &parentStat); err != nil {
++		return err
++	}
++	if parentStat.Mode&unix.S_IFMT != unix.S_IFDIR || parentStat.Uid != uint32(os.Geteuid()) || parentStat.Mode&0o022 != 0 {
++		return errors.New("reflink destination parent must be owned and not group/world writable")
++	}
++	if parentStat.Dev != baseStat.Dev {
++		return errors.New("reflink base and sandbox destination must be on the same filesystem")
++	}
++	reserve := uint64(baseStat.Size / 100)
++	if reserve < reflinkMinFreeBytes {
++		reserve = reflinkMinFreeBytes
++	}
++	if reserve > reflinkMaxReserveBytes {
++		reserve = reflinkMaxReserveBytes
++	}
++	if err := requireReflinkSpace(parentfd, reserve); err != nil {
++		return err
++	}
++	suffix, err := reflinkRandomSuffix()
++	if err != nil {
++		return err
++	}
++	temporary := ".reflink-" + name + "-" + suffix
++	destination, err := openReflinkBeneath(parentfd, temporary, unix.O_CREAT|unix.O_EXCL|unix.O_RDWR, 0o600)
++	if err != nil {
++		return err
++	}
++	committed := false
++	defer func() {
++		closeErr := unix.Close(destination)
++		if !committed {
++			_ = unix.Unlinkat(parentfd, temporary, 0)
++			_ = unix.Fsync(parentfd)
++		}
++		if resultErr == nil && closeErr != nil {
++			resultErr = closeErr
++		}
++	}()
++	if err := unix.IoctlFileClone(destination, basefd); err != nil {
++		return fmt.Errorf("FICLONE rootfs: %w", err)
++	}
++	if err := unix.Fchmod(destination, 0o600); err != nil {
++		return err
++	}
++	if err := unix.Fsync(destination); err != nil {
++		return err
++	}
++	if err := unix.Renameat2(parentfd, temporary, parentfd, name, unix.RENAME_NOREPLACE); err != nil {
++		return err
++	}
++	committed = true
++	return unix.Fsync(parentfd)
++}
++
++// newMaterializedReflinkProvider materializes one immutable base per exact
++// build identity, then gives every sandbox a private copy-on-write clone. It
++// is deliberately opt-in: NBD remains the default and direct remains the
++// diagnostic full-copy arm. The cache must be a pre-created private XFS or
++// Btrfs directory on the same filesystem as the sandbox cache.
++func newMaterializedReflinkProvider(
++	ctx context.Context,
++	rootfs block.ReadonlyDevice,
++	cachePath string,
++	reflinkCacheDir string,
++) (_ Provider, resultErr error) {
++	expected, err := reflinkSourceIdentity(rootfs)
++	if err != nil {
++		return nil, err
++	}
++	actualSize, err := rootfs.Size(ctx)
++	if err != nil {
++		return nil, fmt.Errorf("getting reflink rootfs size: %w", err)
++	}
++	if actualSize != expected.DiskSize || rootfs.BlockSize() != expected.BlockSize {
++		return nil, errors.New("reflink rootfs device shape does not match immutable build metadata")
++	}
++	rootfd, _, err := openReflinkRoot(reflinkCacheDir)
++	if err != nil {
++		return nil, err
++	}
++	defer unix.Close(rootfd)
++	lockfd, err := lockReflinkBase(ctx, rootfd, expected.Identity)
++	if err != nil {
++		return nil, err
++	}
++	lockHeld := true
++	defer func() {
++		if lockHeld {
++			unlockReflinkBase(lockfd)
++		}
++	}()
++	basefd, baseStat, err := materializeReflinkBase(ctx, rootfd, rootfs, expected)
++	if err != nil {
++		return nil, err
++	}
++	defer unix.Close(basefd)
++	// The published base is immutable and held open by descriptor. Release the
++	// build lock before FICLONE so independent sandboxes clone concurrently.
++	unlockReflinkBase(lockfd)
++	lockHeld = false
++	if err := cloneReflinkBase(ctx, basefd, baseStat, cachePath); err != nil {
++		return nil, err
++	}
++	keep := false
++	defer func() {
++		if !keep {
++			if err := os.Remove(cachePath); err != nil && !errors.Is(err, os.ErrNotExist) {
++				resultErr = errors.Join(resultErr, fmt.Errorf("removing incomplete reflink rootfs: %w", err))
++			}
++		}
++	}()
++	provider, err := NewDirectProvider(ctx, rootfs, cachePath)
++	if err != nil {
++		return nil, fmt.Errorf("opening reflink rootfs: %w", err)
++	}
++	keep = true
++	return provider, nil
++}
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go b/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..756b7bd5f02de75ac355c2ed4f19928537577b93
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
+@@ -0,0 +1,72 @@
++//go:build linux
++
++package rootfs
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
++	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
++)
++
++func newIdentityTestRootfs(t *testing.T, buildID uuid.UUID) *block.Local {
++	t.Helper()
++	device := newTestLocalRootfs(t, make([]byte, 4096))
++	device.SwapHeader(&header.Header{Metadata: header.NewTemplateMetadata(buildID, 4096, 4096)})
++	return device
++}
++
++func TestReflinkIdentityUsesImmutableBuildMetadata(t *testing.T) {
++	t.Parallel()
++	firstID := uuid.New()
++	first, err := reflinkSourceIdentity(newIdentityTestRootfs(t, firstID))
++	require.NoError(t, err)
++	same, err := reflinkSourceIdentity(newIdentityTestRootfs(t, firstID))
++	require.NoError(t, err)
++	other, err := reflinkSourceIdentity(newIdentityTestRootfs(t, uuid.New()))
++	require.NoError(t, err)
++	assert.Equal(t, first.Identity, same.Identity)
++	assert.NotEqual(t, first.Identity, other.Identity)
++	assert.Equal(t, firstID.String(), first.BuildID)
++}
++
++func TestReflinkManifestFailsClosedOnMismatchOrCorruptDigest(t *testing.T) {
++	t.Parallel()
++	expected, err := reflinkSourceIdentity(newIdentityTestRootfs(t, uuid.New()))
++	require.NoError(t, err)
++	actual := expected
++	actual.SHA256 = "00" + string(make([]byte, 62))
++	require.ErrorContains(t, validateReflinkManifest(actual, expected), "invalid SHA-256")
++	actual.SHA256 = string(make([]byte, 64))
++	require.ErrorContains(t, validateReflinkManifest(actual, expected), "invalid SHA-256")
++	actual.SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
++	require.NoError(t, validateReflinkManifest(actual, expected))
++	actual.Generation++
++	require.ErrorContains(t, validateReflinkManifest(actual, expected), "does not match")
++}
++
++func TestReflinkProviderFailsClosedWithoutExplicitCache(t *testing.T) {
++	t.Parallel()
++	target := filepath.Join(t.TempDir(), "rootfs.cow")
++	provider, err := NewRuntimeProvider(
++		context.Background(),
++		"reflink",
++		newIdentityTestRootfs(t, uuid.New()),
++		target,
++		"",
++		nil,
++		nil,
++		1,
++	)
++	require.ErrorContains(t, err, "reflink cache")
++	assert.Nil(t, provider)
++	_, statErr := os.Stat(target)
++	assert.ErrorIs(t, statErr, os.ErrNotExist)
++}
+diff --git a/packages/orchestrator/pkg/sandbox/sandbox.go b/packages/orchestrator/pkg/sandbox/sandbox.go
+index 830844f83840718e17abf48437779a6ed62fb512..c45fc4dad5afff81b7726f5783f16ca63c4f05c3 100644
+--- a/packages/orchestrator/pkg/sandbox/sandbox.go
++++ b/packages/orchestrator/pkg/sandbox/sandbox.go
+@@ -905,10 +905,12 @@ func (f *Factory) CreateSandbox(
+ 
+ 	var rootfsProvider rootfs.Provider
+ 	if rootfsCachePath == "" {
+-		rootfsProvider, err = rootfs.NewNBDProvider(
++		rootfsProvider, err = rootfs.NewRuntimeProvider(
+ 			ctx,
++			f.config.SandboxRootfsProviderName(),
+ 			rootFS,
+ 			sandboxFiles.SandboxCacheRootfsPath(f.config.StorageConfig),
++			f.config.SandboxRootfsReflinkCacheDir,
+ 			f.devicePool,
+ 			f.featureFlags,
+ 			f.config.NBDConnectionCount(),
+@@ -1390,10 +1392,12 @@ func (f *Factory) ResumeSandbox(
+ 
+ 		telemetry.ReportEvent(ctx, "got template rootfs")
+ 
+-		overlay, err := rootfs.NewNBDProvider(
++		overlay, err := rootfs.NewRuntimeProvider(
+ 			ctx,
++			f.config.SandboxRootfsProviderName(),
+ 			readonlyRootfs,
+ 			sandboxFiles.SandboxCacheRootfsPath(f.config.StorageConfig),
++			f.config.SandboxRootfsReflinkCacheDir,
+ 			f.devicePool,
+ 			f.featureFlags,
+ 			f.config.NBDConnectionCount(),

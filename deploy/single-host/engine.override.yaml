@@ -206,6 +206,12 @@ services:
       # Keep one queue as the qualified default. Values from two to four are
       # available only for explicit KVM A/B qualification on the target host.
       NBD_CONNECTIONS_PER_DEVICE: ${BREZEL_ENGINE_NBD_CONNECTIONS_PER_DEVICE:-1}
+      # NBD is the qualified default. Direct materializes a complete private
+      # disk for diagnostics. Reflink atomically clones a verified immutable
+      # build base on a separately qualified XFS/Btrfs filesystem. Neither
+      # opt-in arm is a persistence or resume claim.
+      SANDBOX_ROOTFS_PROVIDER: ${BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER:-nbd}
+      SANDBOX_ROOTFS_REFLINK_CACHE_DIR: ${BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR:-}
       # Keep the guest topology honest. Exclusive placement is opt-in because
       # this single-host release has no multi-VM physical-core allocator yet.
       FIRECRACKER_SMT: ${BREZEL_ENGINE_FIRECRACKER_SMT:-false}
