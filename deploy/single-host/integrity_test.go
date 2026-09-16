@@ -44,6 +44,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"orchestrator_nbd_multiqueue_patch_sha256":       "0012-harden-nbd-multiqueue-lifecycle.patch",
 		"orchestrator_cpuset_qualification_patch_sha256": "0013-qualify-cpuset-exclusive-cpu-topology.patch",
 		"orchestrator_ext4_dir_index_patch_sha256":       "0014-opt-in-ext4-dir-index.patch",
+		"base_template_identity_patch_sha256":            "0015-parameterize-base-template-identity.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -137,6 +138,80 @@ func TestInstallerPinsTargetedExt4DirIndexPatch(t *testing.T) {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("artifact manifest is missing ext4-dir-index contract %q", required)
 		}
+	}
+}
+
+func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0015-parameterize-base-template-identity.patch",
+		"base_template_identity_patch_sha256",
+		"engine base-template identity patch verification failed",
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`,
+		"BREZEL_ENGINE_BASE_TEMPLATE_NAME",
+		"BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE",
+		"base-template.reference",
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing immutable base-template identity binding %q", required)
+		}
+	}
+	ext4Apply := strings.Index(installer, `-p1 < "$ENGINE_EXT4_DIR_INDEX_PATCH"`)
+	identityApply := strings.Index(installer, `-p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`)
+	if ext4Apply < 0 || identityApply <= ext4Apply {
+		t.Fatal("base-template identity patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0015-parameterize-base-template-identity.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		"BASE_TEMPLATE_NAME",
+		`/^[a-z0-9][a-z0-9_-]{0,63}$/`,
+		"name: templateName",
+		"immutable reference ${build.templateID}:${build.buildID}",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("base-template identity patch is missing contract %q", required)
+		}
+	}
+
+	overrideData, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := string(overrideData)
+	for _, required := range []string{
+		"BASE_TEMPLATE_NAME: ${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}",
+		"BREZEL_ENGINE_BASE_TEMPLATE_NAME: ${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}",
+	} {
+		if !strings.Contains(override, required) {
+			t.Fatalf("engine override is missing immutable base-template identity %q", required)
+		}
+	}
+}
+
+func TestInstallerRejectsInvalidBaseTemplateNameBeforeHostMutation(t *testing.T) {
+	command := exec.Command("sh", "install.sh")
+	command.Env = append(os.Environ(),
+		"BREZEL_INSTALL_DIR="+t.TempDir(),
+		"BREZEL_ENGINE_BASE_TEMPLATE_NAME=dax/baseline",
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("installer accepted an unsafe base-template name")
+	}
+	if !strings.Contains(string(output), "BREZEL_ENGINE_BASE_TEMPLATE_NAME must be 1-64 lowercase") {
+		t.Fatalf("installer returned the wrong base-template validation error: %s", output)
+	}
+	if strings.Contains(string(output), "Docker Engine is required") || strings.Contains(string(output), "This host cannot run") {
+		t.Fatalf("installer reached host mutation preflight before rejecting the name: %s", output)
 	}
 }
 
@@ -923,6 +998,9 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		hex.EncodeToString(envdDigest[:]), patchDigest,
 		patchDigest,
 		patchDigest,
+		patchDigest,
+		"dax-baseline-a",
+		"template-a:11111111-1111-1111-1111-111111111111",
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("distribution manifest rejected source-built envd: %v: %s", err, output)
@@ -950,6 +1028,10 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.orchestrator.exclusive_cpu_isolation=qualified-only-when-explicitly-configured",
 		"artifact.orchestrator.ext4_dir_index_patch_sha256=" + patchDigest,
 		"artifact.template.ext4_dir_index=targeted-opt-in-default-disabled",
+		"artifact.template.identity_patch_sha256=" + patchDigest,
+		"artifact.template.name=dax-baseline-a",
+		"artifact.template.reference=template-a:11111111-1111-1111-1111-111111111111",
+		"artifact.template.cache_identity=template-id-and-build-id",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -1141,7 +1223,7 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/nfsproxy/chroot/file.go":                   "syncing NFS write\nsyncing NFS truncate\n",
 		"packages/orchestrator/pkg/nfsproxy/chroot/fs.go":                     "syncDirectoryTree\nerrors.Join(syncPath(f.chroot, newParent), syncPath(f.chroot, oldParent))\n",
 		"embed/compose/compose.yaml":                                          "TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates\nNBD_POOL_SIZE: \"64\"\nNETWORK_VERSION: \"1\"\n",
-		"embed/compose/scripts/node/build-base-template.mjs":                  "BASE_TEMPLATE_MIN_FREE_DISK_MB\nminFreeDiskMb\n",
+		"embed/compose/scripts/node/build-base-template.mjs":                  "BASE_TEMPLATE_MIN_FREE_DISK_MB\nBASE_TEMPLATE_NAME\nminFreeDiskMb\nimmutable reference\n",
 		"packages/envd/internal/services/process/service.go":                  "if value.Tag == nil || *value.Tag != tag {\n",
 		"packages/envd/internal/services/process/service_test.go":             "TestGetProcessByTagScansPastNonMatches\nrequire.Same(t, target, got)\n",
 		"packages/envd/internal/services/process/replay.go":                   "replayVersionHeader = \"E2b-Process-Replay-Version\"\nreturn replayRequest{}, fmt.Errorf(\"%s is required with %s\", journalIDHeader, afterSequenceHeader)\n",
@@ -1384,6 +1466,7 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 		"NETWORK_REUSED_SLOTS_POOL_SIZE: ${BREZEL_ENGINE_NETWORK_REUSED_SLOTS:",
 		"NBD_POOL_SIZE: ${BREZEL_ENGINE_NBD_POOL_SIZE:",
 		"BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}",
+		"BASE_TEMPLATE_NAME: ${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}",
 		"BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}",
 		"BASE_TEMPLATE_SOURCE_IMAGE: ${BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE:",
 		`FORCE_REBUILD: "1"`,
@@ -1402,10 +1485,10 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 	}
 	contract := string(contractData)
 	for _, required := range []string{
-		"active base template does not match the operator guest shape",
+		"active template '$EXPECTED_TEMPLATE_NAME' does not match the operator guest shape",
 		"public.env_build_assignments",
 		"public.env_builds",
-		"active_base_template_verified",
+		"active_template_verified",
 	} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("engine capacity contract is missing template-shape gate %q", required)

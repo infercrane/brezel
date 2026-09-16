@@ -18,6 +18,17 @@ require_sha256() {
   printf '%s\n' "$value" | grep -Eq '^[0-9a-f]{64}$' || fail "$description is not a lowercase SHA-256 digest"
 }
 
+require_template_identity() {
+  name=$1
+  reference=$2
+  case "$name" in
+    ""|*[!a-z0-9_-]*|[-_]*) fail "base-template name is invalid" ;;
+  esac
+  [ "${#name}" -le 64 ] || fail "base-template name is too long"
+  printf '%s\n' "$reference" | grep -Eq '^[a-z0-9_-]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || \
+    fail "base-template reference must be an immutable templateID:buildID"
+}
+
 require_regular_file() {
   path=$1
   [ -f "$path" ] && [ ! -L "$path" ] || fail "$path must be a regular, non-symlink file"
@@ -141,6 +152,9 @@ write_manifest() {
   envd_process_tag_patch_sha256=${17:-}
   envd_process_replay_patch_sha256=${18:-}
   orchestrator_ext4_dir_index_patch_sha256=${19:-}
+  base_template_identity_patch_sha256=${20:-}
+  base_template_name=${21:-}
+  base_template_reference=${22:-}
   verify_host_artifacts "$artifact_lock" "$host_root" "$orchestrator_override_sha256" "$envd_override_sha256"
   if [ -n "$orchestrator_patch_sha256" ]; then
     require_sha256 "$orchestrator_patch_sha256" "orchestrator patch SHA-256"
@@ -180,6 +194,13 @@ write_manifest() {
   if [ -n "$orchestrator_ext4_dir_index_patch_sha256" ]; then
     [ -n "$orchestrator_cpuset_qualification_patch_sha256" ] || fail "the ext4-dir-index patch requires the cpuset-qualification patch identity"
     require_sha256 "$orchestrator_ext4_dir_index_patch_sha256" "orchestrator ext4-dir-index patch SHA-256"
+  fi
+  if [ -n "$base_template_identity_patch_sha256" ]; then
+    [ -n "$orchestrator_ext4_dir_index_patch_sha256" ] || fail "the base-template identity patch requires the ext4-dir-index patch identity"
+    require_sha256 "$base_template_identity_patch_sha256" "base-template identity patch SHA-256"
+    require_template_identity "$base_template_name" "$base_template_reference"
+  elif [ -n "$base_template_name" ] || [ -n "$base_template_reference" ]; then
+    fail "base-template identity requires its patch identity"
   fi
   if [ -n "$envd_override_sha256" ]; then
     [ -n "$envd_process_tag_patch_sha256" ] || fail "the envd override requires the process-tag patch identity"
@@ -266,6 +287,12 @@ write_manifest() {
       printf 'artifact.orchestrator.ext4_dir_index_patch_sha256=%s\n' "$orchestrator_ext4_dir_index_patch_sha256"
       printf 'artifact.template.ext4_dir_index=targeted-opt-in-default-disabled\n'
     fi
+    if [ -n "$base_template_identity_patch_sha256" ]; then
+      printf 'artifact.template.identity_patch_sha256=%s\n' "$base_template_identity_patch_sha256"
+      printf 'artifact.template.name=%s\n' "$base_template_name"
+      printf 'artifact.template.reference=%s\n' "$base_template_reference"
+      printf 'artifact.template.cache_identity=template-id-and-build-id\n'
+    fi
     if [ -n "$envd_process_tag_patch_sha256" ]; then
       printf 'artifact.envd.process_tag_patch_sha256=%s\n' "$envd_process_tag_patch_sha256"
       printf 'artifact.envd.live_tag_resolution=complete-map-scan\n'
@@ -281,7 +308,7 @@ write_manifest() {
 }
 
 usage() {
-  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ORCHESTRATOR_CPU_TOPOLOGY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_READ_PATCH_SHA256 ORCHESTRATOR_NBD_MULTIQUEUE_PATCH_SHA256 ORCHESTRATOR_CPUSET_QUALIFICATION_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256 ENVD_PROCESS_REPLAY_PATCH_SHA256 ORCHESTRATOR_EXT4_DIR_INDEX_PATCH_SHA256]" >&2
+  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ORCHESTRATOR_CPU_TOPOLOGY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_READ_PATCH_SHA256 ORCHESTRATOR_NBD_MULTIQUEUE_PATCH_SHA256 ORCHESTRATOR_CPUSET_QUALIFICATION_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256 ENVD_PROCESS_REPLAY_PATCH_SHA256 ORCHESTRATOR_EXT4_DIR_INDEX_PATCH_SHA256 BASE_TEMPLATE_IDENTITY_PATCH_SHA256 BASE_TEMPLATE_NAME BASE_TEMPLATE_REFERENCE]" >&2
   exit 2
 }
 
@@ -304,8 +331,8 @@ case "$command" in
     verify_host_artifacts "$2" "$3" "${4:-}" "${5:-}"
     ;;
   manifest)
-    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 13 ] || [ "$#" -eq 19 ] || [ "$#" -eq 20 ]; } || usage
-    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}" "${15:-}" "${16:-}" "${17:-}" "${18:-}" "${19:-}" "${20:-}"
+    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 13 ] || [ "$#" -eq 19 ] || [ "$#" -eq 20 ] || [ "$#" -eq 23 ]; } || usage
+    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}" "${15:-}" "${16:-}" "${17:-}" "${18:-}" "${19:-}" "${20:-}" "${21:-}" "${22:-}" "${23:-}"
     ;;
   *) usage ;;
 esac

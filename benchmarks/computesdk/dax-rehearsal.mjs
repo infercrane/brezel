@@ -56,6 +56,38 @@ export function percentile(values, fraction) {
   return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
 }
 
+export function createPhaseObserver(clock = () => ({
+  observedAt: new Date().toISOString(),
+  elapsedMs: performance.now(),
+})) {
+  let buffer = "";
+  const events = [];
+  const seen = new Set();
+  const consume = (line) => {
+    const match = /^BENCH_PHASE\t([a-z_]+)\t([0-9]+)$/.exec(line);
+    if (!match || !DAX_PHASES.includes(match[1]) || seen.has(match[1])) return;
+    seen.add(match[1]);
+    const observed = clock();
+    events.push({ phase: match[1], guestDurationMs: Number(match[2]), ...observed });
+  };
+  return {
+    push(chunk) {
+      buffer += chunk;
+      for (;;) {
+        const newline = buffer.indexOf("\n");
+        if (newline < 0) break;
+        consume(buffer.slice(0, newline).replace(/\r$/, ""));
+        buffer = buffer.slice(newline + 1);
+      }
+    },
+    finish() {
+      if (buffer) consume(buffer.replace(/\r$/, ""));
+      buffer = "";
+      return events.map((event) => ({ ...event }));
+    },
+  };
+}
+
 export { parseDaxTranscript as structuredLines };
 
 export function transcriptValid(result, guest) {
@@ -142,6 +174,10 @@ export async function run() {
   if (!/^[0-9a-f]{40}$/.test(sourceRevision)) throw new Error("BREZEL_SOURCE_REVISION must be the exact 40-character Brezel git revision");
   const environmentRevision = process.env.BREZEL_ENVIRONMENT_REVISION;
   const pairedAB = pairedABIdentity();
+  const capturePhaseEvents = process.env.BREZEL_DAX_CAPTURE_PHASE_EVENTS === "true";
+  if (pairedAB && capturePhaseEvents) {
+    throw new Error("phase telemetry is diagnostic-only and cannot be enabled for paired benchmark slots");
+  }
   const endpoint = new URL(process.env.BREZEL_API_URL);
   const before = await compute.sandbox.list();
   if (before.length !== 0) throw new Error("the dedicated DAX benchmark project must be empty before execution");
@@ -162,11 +198,27 @@ export async function run() {
       const command = `cat > /tmp/dax-benchmark.sh <<'${marker}'\n${script}\n${marker}\nBENCH_PROVIDER=brezel BENCH_REGION=${region} bash /tmp/dax-benchmark.sh`;
       attempt.buildStartedAt = new Date().toISOString();
       const started = performance.now();
-      const result = await sandbox.runCommand(command, { timeout: 600_000 });
+      const phaseObserver = capturePhaseEvents ? createPhaseObserver(() => ({
+        observedAt: new Date().toISOString(),
+        elapsedMs: performance.now() - started,
+      })) : undefined;
+      const result = await sandbox.runCommand(command, {
+        timeout: 600_000,
+        ...(phaseObserver ? { onStdout: (chunk) => phaseObserver.push(chunk) } : {}),
+      });
       attempt.totalMs = performance.now() - started;
       attempt.buildFinishedAt = new Date().toISOString();
       attempt.exitCode = result.exitCode;
       attempt.result = parseDaxTranscript(result.stdout, result.stderr);
+      if (phaseObserver) {
+        attempt.phaseEvents = phaseObserver.finish();
+        const totalEvent = attempt.phaseEvents.find((event) => event.phase === "total");
+        attempt.providerOverhead = {
+          commandMinusGuestMs: attempt.totalMs - attempt.result.phases.total,
+          markerObservationMinusGuestMs: totalEvent ? totalEvent.elapsedMs - attempt.result.phases.total : null,
+          streamTailMs: totalEvent ? attempt.totalMs - totalEvent.elapsedMs : null,
+        };
+      }
       attempt.stderrTail = result.stderr.trim().split("\n").slice(-40).join("\n");
       if (result.exitCode !== 0 || attempt.result.executionFailures.length !== 0 || !transcriptValid(attempt.result, guest)) {
         throw new Error(`DAX iteration ${iteration} did not complete the pinned workload`);
@@ -218,6 +270,7 @@ export async function run() {
       scoredBoundary: "runCommand request through complete command result",
       upstreamPhaseOrder: DAX_PHASES,
       cleanupBoundary: "destroy confirmation followed by empty-project inventory",
+      ...(capturePhaseEvents ? { phaseTelemetry: "opt-in provider receipt timestamps for strict BENCH_PHASE markers" } : {}),
     },
     guest,
     requested: iterations,

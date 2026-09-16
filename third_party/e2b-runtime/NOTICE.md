@@ -42,5 +42,9 @@ It requires atomic Firecracker launch into a per-sandbox child cgroup, rejects
 partial physical-core sibling sets, and continuously verifies cgroup membership
 and thread affinity. The default remains disabled, and any missing or drifting
 isolation contract stops the sandbox rather than silently sharing CPUs.
+The fifteenth patch validates and parameterizes the local base-template name
+and reports the exact template-and-build reference emitted by each completed
+build. This lets operators keep benchmark variants separate and bind Brezel
+environment revisions to an immutable build instead of a moving alias.
 
 Upstream source: <https://github.com/e2b-dev/runtime>

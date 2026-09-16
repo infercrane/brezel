@@ -59,6 +59,32 @@ func TestCollectorCapturesBoundedHostCountersAndToleratesProcessChurn(t *testing
 	}
 }
 
+func TestReadTasksIsBoundedAndPreservesSchedulerIdentity(t *testing.T) {
+	root := t.TempDir()
+	config := DefaultConfig()
+	config.OutputDir = filepath.Join(root, "unused-output")
+	config.MaxTaskSamples = 1
+	configured, err := newCollector(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processDirectory := filepath.Join(root, "firecracker")
+	stat := "201 (fc_vcpu 0) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 7\n"
+	writeFixture(t, filepath.Join(processDirectory, "task", "201", "comm"), "fc_vcpu 0\n")
+	writeFixture(t, filepath.Join(processDirectory, "task", "201", "stat"), stat)
+	writeFixture(t, filepath.Join(processDirectory, "task", "201", "status"), "Cpus_allowed_list:\t4-11\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t9\nnonvoluntary_ctxt_switches:\t2\n")
+	writeFixture(t, filepath.Join(processDirectory, "task", "202", "comm"), "fc_vcpu 1\n")
+	writeFixture(t, filepath.Join(processDirectory, "task", "202", "stat"), strings.Replace(stat, "201 (fc_vcpu 0)", "202 (fc_vcpu 1)", 1))
+
+	tasks, capped, err := configured.readTasks(processDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capped || len(tasks) != 1 || tasks[0].TID != 201 || tasks[0].Processor != 7 || tasks[0].CPUsAllowedList != "4-11" || tasks[0].VoluntaryContextSwitches != 9 {
+		t.Fatalf("tasks=%#v capped=%v", tasks, capped)
+	}
+}
+
 func writeHostFixture(t *testing.T, procRoot, sysRoot, cgroupRoot string) {
 	t.Helper()
 	writeFixture(t, filepath.Join(procRoot, "stat"), "cpu 100 0 50 800 20 1 2 3\ncpu0 1 0 1 8 0 0 0 0\ncpu1 1 0 1 8 0 0 0 0\nctxt 400\nprocesses 20\nprocs_running 2\nprocs_blocked 1\n")

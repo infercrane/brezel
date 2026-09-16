@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { pairedABIdentity, structuredLines, summarizeAttempts, transcriptValid } from "./dax-rehearsal.mjs";
+import { createPhaseObserver, pairedABIdentity, structuredLines, summarizeAttempts, transcriptValid } from "./dax-rehearsal.mjs";
 
 const completeOutput = `BENCH_PHASE\tprepare\t10
 BENCH_CACHE\tguest_page_cache\tdropped
@@ -28,6 +28,18 @@ BENCH_DISK\tafter_typecheck\t2e+6
 BENCH_DONE\t08fb47373509ba64b13441061314eeacf4264f51
 BENCH_PHASE\ttotal\t40
 `;
+
+test("phase observer timestamps split strict markers once", () => {
+  let tick = 0;
+  const observer = createPhaseObserver(() => ({ observedAt: `2026-09-16T00:00:0${tick}Z`, elapsedMs: ++tick * 100 }));
+  observer.push("noise\nBENCH_PHASE\tpre");
+  observer.push("pare\t10\nBENCH_PHASE\tprepare\t11\nBENCH_PHASE\tinstall\t6\r\n");
+  const events = observer.finish();
+  assert.deepEqual(events, [
+    { phase: "prepare", guestDurationMs: 10, observedAt: "2026-09-16T00:00:00Z", elapsedMs: 100 },
+    { phase: "install", guestDurationMs: 6, observedAt: "2026-09-16T00:00:01Z", elapsedMs: 200 },
+  ]);
+});
 
 test("structuredLines retains exact phase, cache, metadata and disk evidence", () => {
   const parsed = structuredLines(completeOutput);

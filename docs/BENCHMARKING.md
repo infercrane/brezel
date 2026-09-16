@@ -218,6 +218,7 @@ go build -trimpath -o bin/brezel-host-telemetry ./cmd/brezel-host-telemetry
 sudo bin/brezel-host-telemetry \
   -output "/var/lib/brezel/diagnostics/c3-$(date -u +%Y%m%dT%H%M%SZ)" \
   -duration 30m \
+  -interval 250ms \
   -max-bytes 134217728
 ```
 
@@ -230,7 +231,9 @@ cardinality, and stops before the samples file exceeds its configured byte
 limit. The default maximum duration is 30 minutes; the hard maximum is 24
 hours.
 
-Each one-second sample carries both UTC and monotonic elapsed time. Fixed fields
+The default interval is one second. Use the bounded 250 ms interval only for a
+single dedicated DAX diagnostic: it resolves the subsecond prepare phases while
+keeping collection overhead visible in every sample. Fixed fields
 cover aggregate CPU busy, iowait, and steal; CPU, memory, and I/O pressure;
 memory, swap, page faults, reclaim stalls, and OOM kills; physical and NBD block
 counters; aggregate interface, TCP, and socket counters; cgroup-v2 CPU, memory,
@@ -245,6 +248,13 @@ numeric counters rather than paths or error strings. Run it with sufficient
 host permission to read the relevant process and cgroup counters; missing data
 must remain visible as unavailable fields and read-error counts.
 
+For every Firecracker process the collector also records a bounded task list:
+task name, stable PID/start-time identity, CPU ticks, faults, context switches,
+most recently used processor, allowed CPU list, and allowed NUMA-node list.
+That is sufficient to identify vCPU/VMM contention, migration, and a bad
+cpuset/NUMA boundary without reading a command line, environment, guest memory,
+or file content.
+
 Verify the artifact before analysis:
 
 ```sh
@@ -256,6 +266,94 @@ Collector CPU, filesystem, and logging work can perturb the host. Use this
 artifact to attribute a bottleneck, not as a leaderboard result. Confirm every
 candidate with randomized paired runs using the collector disabled before
 publishing a latency or throughput claim.
+
+For phase-aligned evidence, enable marker receipt timestamps only on the
+diagnostic DAX invocation and merge the artifacts afterward:
+
+```sh
+diagnostic_id="c4-$(date -u +%Y%m%dT%H%M%SZ)"
+telemetry_dir="/var/lib/brezel/diagnostics/${diagnostic_id}"
+
+sudo bin/brezel-host-telemetry \
+  -output "$telemetry_dir" -duration 15m -interval 250ms \
+  -max-bytes 134217728 &
+telemetry_pid=$!
+sleep 1
+sudo kill -0 "$telemetry_pid"
+
+BREZEL_DAX_CAPTURE_PHASE_EVENTS=true \
+BREZEL_COMPUTESDK_DAX_ITERATIONS=3 \
+node benchmarks/computesdk/dax-rehearsal.mjs \
+  > "/tmp/${diagnostic_id}-dax.json"
+
+sudo kill -TERM "$telemetry_pid"
+wait "$telemetry_pid"
+cd "$telemetry_dir" && sha256sum -c SHA256SUMS && cd -
+
+node benchmarks/computesdk/dax-host-telemetry-report.mjs \
+  --dax "/tmp/${diagnostic_id}-dax.json" \
+  --telemetry "$telemetry_dir" \
+  --output "/tmp/${diagnostic_id}-phase-telemetry.json" \
+  > /dev/null
+```
+
+Use a dedicated host and start collection before the first sandbox create. The
+report aligns samples to provider-observed `BENCH_PHASE` receipt times. A 250
+ms sample can straddle a boundary, so any phase with fewer than two samples is
+marked `underSampled`; treat it as directional and use the enclosing window for
+attribution. The report is always diagnostic-only and not leaderboard
+comparable.
+
+The decisive signals are:
+
+* CPU: sustained Firecracker/vCPU CPU-tick progress, CPU `some` PSI and runnable
+  pressure, with low I/O PSI and low NBD weighted time. The eight `fc_vcpu`
+  tasks should have the intended CPU mask, avoid sharing a processor, and not
+  unexpectedly cross NUMA nodes.
+* Block/root filesystem: NBD bytes and weighted I/O time, blocked tasks, or I/O
+  `some`/`full` PSI rise while vCPU progress drops. Major faults, reclaim, swap,
+  or allocation stalls identify memory pressure masquerading as storage delay.
+* Provider: command-minus-guest, marker-observation-minus-guest, or stream-tail
+  time remains large while CPU, PSI, NBD, and page-fault evidence is quiet.
+  Create and destroy remain separate from the scored command boundary.
+* Host contention: steal, cgroup throttling, wide or migrating vCPU placement,
+  or collection time that is not negligible compared with 250 ms.
+
+#### Native-container decomposition on the same host
+
+The Firecracker ext4 root cannot be used as an OCI image without conversion,
+which changes the artifact and invalidates a same-image claim. The useful
+comparison is therefore the same pinned DAX script in the repository's immutable
+`dax-dev` OCI environment, constrained to the same 8 vCPU and 16 GiB shape. It
+separates CPU/virtualization cost from writable-root cost; it is not a provider
+comparison. Docker overlay is not an upper bound because its package-manager
+path can be slower than Brezel's Firecracker root. The tmpfs arm is the useful
+CPU-side ceiling, subject to its disclosed 6 GiB volatile-workspace limit.
+
+Stop Brezel services first so the container does not compete with reserved
+engine CPUs. On the same Linux x86-64 C4 host, collect three uninstrumented
+samples and then one separately labelled instrumented sample:
+
+```sh
+node benchmarks/computesdk/local-dax-lab.mjs \
+  --probe full --build-candidate --image candidate \
+  --storage overlay --cpus 8 --memory 17179869184 --iterations 3 \
+  --output /tmp/brezel-c4-native-overlay.json > /dev/null
+
+node benchmarks/computesdk/local-dax-lab.mjs \
+  --probe full --image candidate \
+  --storage overlay --cpus 8 --memory 17179869184 --iterations 1 \
+  --telemetry-interval-ms 1000 \
+  --output /tmp/brezel-c4-native-diagnostic.json > /dev/null
+
+node benchmarks/computesdk/local-dax-lab.mjs \
+  --probe full --image candidate \
+  --storage tmpfs --cpus 8 --memory 17179869184 --iterations 3 \
+  --output /tmp/brezel-c4-native-tmpfs-ceiling.json > /dev/null
+```
+
+Restore and requalify the exact Brezel profile before another provider run.
+Never mix native-container samples into a ComputeSDK median.
 
 The script runs all eight scenarios under all three load shapes for 24 cells.
 It continues after an ordinary measured failure so the matrix does not
@@ -793,25 +891,58 @@ leaderboard result nor a cross-provider performance claim.
 ##### Ext4 directory-index candidate gate
 
 The pinned engine can keep ext4's htree directory index for a selected template
-without changing the fleet default. Build two new immutable revisions from the
-same general-development OCI manifest and template contents. Leave both the
-`build-ext4-dir-index` flag and the local allowlist empty for the baseline. For
-the candidate, create the template record first, retain its immutable template
-ID, then set only that ID before restarting and requalifying the engine:
+without changing the fleet default. Engine aliases are mutable, so a Brezel
+environment revision used for evidence must never store `base` or another
+alias. The installer validates `BREZEL_ENGINE_BASE_TEMPLATE_NAME`, builds that
+exact name, resolves the resulting ready build, and atomically writes the
+immutable `templateID:buildID` reference to
+`.brezel/artifacts/base-template.reference`. Preserve that file before the next
+install and use its contents as the environment's `--template` value.
+
+Use a unique, never-reused name for each arm. Build the baseline with the ext4
+allowlist empty, save its receipt, and create its Brezel environment revision:
 
 ```sh
-export BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS=template_id_from_create
+run_id=$(date -u +%Y%m%d%H%M%S)
+export BREZEL_ENGINE_BASE_TEMPLATE_NAME="dax-baseline-$run_id"
+export BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS=
+deploy/profiles/run.sh deploy/profiles/computesdk-dax.env \
+  deploy/single-host/install.sh
+cp .brezel/artifacts/base-template.reference baseline.template-reference
+brezel environment create --name dax-baseline \
+  --template "$(cat baseline.template-reference)"
+```
+
+The engine resolves the opt-in by template ID before building. Allocate the
+candidate's unique template ID with an unselected seed build, save the ID, then
+rebuild only that candidate name with the ID allowlisted. The seed build is not
+an experiment arm:
+
+```sh
+export BREZEL_ENGINE_BASE_TEMPLATE_NAME="dax-ext4-$run_id"
+export BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS=
+deploy/profiles/run.sh deploy/profiles/computesdk-dax.env \
+  deploy/single-host/install.sh
+candidate_template_id=$(cut -d: -f1 .brezel/artifacts/base-template.reference)
+
+export BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS="$candidate_template_id"
+deploy/profiles/run.sh deploy/profiles/computesdk-dax.env \
+  deploy/single-host/install.sh
+cp .brezel/artifacts/base-template.reference candidate.template-reference
+brezel environment create --name dax-ext4 \
+  --template "$(cat candidate.template-reference)"
 ```
 
 Multiple IDs are comma-separated with no whitespace. Empty is the default;
 empty members, whitespace, and duplicates fail engine startup. A hosted
 deployment may target the same template context with `build-ext4-dir-index`
 instead, but one experiment must use one activation mechanism, not both. Submit
-the candidate build only after the requalified engine reports ready. The option
-is resolved once at build time and contributes `ext4-dir-index:v1` to the
-base-layer cache key, so do not reuse an environment revision that predates the
-change. A build derived from another template inherits its parent's filesystem;
-rebuild the OCI-based parent instead of selecting a child.
+the timed candidate only after the second install and qualification report are
+complete. The option is resolved once at build time and contributes
+`ext4-dir-index:v1` to the base-layer cache key, so the baseline and candidate
+cannot share that cached base layer. A build derived from another template
+inherits its parent's filesystem; rebuild the OCI-based parent instead of
+selecting a child.
 
 Before timing, open one fresh sandbox from each revision and record:
 
@@ -824,10 +955,11 @@ Require `dir_index` only on the candidate and retain both outputs with the
 environment manifests. Keep every other paired-plan field identical: 8 vCPU,
 16 GiB, root UID, free-root floor, image manifest, host, NBD queue count,
 network policy, and release revision. The two
-`configurationIdentitySha256` values must hash those manifests and the explicit
-flag value. Use `pairs: 5` and `iterationsPerSlot: 3` in the strict paired
+`configurationIdentitySha256` values must hash those manifests, each immutable
+template reference, and the explicit flag value. Use `pairs: 5` and
+`iterationsPerSlot: 3` in the strict paired
 runner above. Activate and qualify exactly the arm returned by `next`, then run
-`run-next`; never collect both arms under one mutable alias.
+`run-next`; never create an evidence environment from a mutable alias.
 
 Treat this as a release candidate only if all 30 fresh-sandbox attempts pass
 the pinned transcript and cleanup gates, the paired bootstrap interval excludes

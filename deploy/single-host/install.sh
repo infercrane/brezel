@@ -24,6 +24,7 @@ ENGINE_ROOTFS_READ_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0011-reduce-
 ENGINE_NBD_MULTIQUEUE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0012-harden-nbd-multiqueue-lifecycle.patch"
 ENGINE_CPUSET_QUALIFICATION_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0013-qualify-cpuset-exclusive-cpu-topology.patch"
 ENGINE_EXT4_DIR_INDEX_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0014-opt-in-ext4-dir-index.patch"
+ENGINE_BASE_TEMPLATE_IDENTITY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0015-parameterize-base-template-identity.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
@@ -72,6 +73,7 @@ BREZEL_BUILD_CACHE_TTL=${BREZEL_BUILD_CACHE_TTL:-4h}
 BREZEL_BUILD_CACHE_MAX_BYTES=${BREZEL_BUILD_CACHE_MAX_BYTES:-34359738368}
 BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT=${BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT:-70}
 BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE=${BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE:-e2bdev/base@sha256:197ad15124a51884aea5a629b96045cd8300bdbbb6df648647004fad99fc59ec}
+BREZEL_ENGINE_BASE_TEMPLATE_NAME=${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}
 BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS=${BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS:-}
 export BREZEL_GUEST_VCPUS BREZEL_GUEST_MEMORY_MIB BREZEL_GUEST_MIN_FREE_DISK_MIB BREZEL_GUEST_MAX_FREE_DISK_MIB
 export BREZEL_ENGINE_HUGEPAGES BREZEL_ENGINE_NETWORK_NEW_SLOTS BREZEL_ENGINE_NETWORK_REUSED_SLOTS BREZEL_ENGINE_NBD_POOL_SIZE
@@ -86,7 +88,19 @@ export BREZEL_WARM_POOL_ALLOW_INTERNET BREZEL_WARM_POOL_STRICT
 export BREZEL_ENGINE_MAX_STARTING_SANDBOXES
 export BREZEL_BUILD_CACHE_TTL BREZEL_BUILD_CACHE_MAX_BYTES BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT
 export BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE
+export BREZEL_ENGINE_BASE_TEMPLATE_NAME
 export BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS
+
+case "$BREZEL_ENGINE_BASE_TEMPLATE_NAME" in
+  ""|*[!a-z0-9_-]*|[-_]*)
+    echo "BREZEL_ENGINE_BASE_TEMPLATE_NAME must be 1-64 lowercase letters, numbers, underscores, or hyphens and must start with a letter or number" >&2
+    exit 1
+    ;;
+esac
+[ "${#BREZEL_ENGINE_BASE_TEMPLATE_NAME}" -le 64 ] || {
+  echo "BREZEL_ENGINE_BASE_TEMPLATE_NAME must be at most 64 characters" >&2
+  exit 1
+}
 
 case "$BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE" in
   *@sha256:????????????????????????????????????????????????????????????????) ;;
@@ -149,9 +163,10 @@ ENGINE_ROOTFS_READ_PATCH_SHA256=$(read_lock orchestrator_rootfs_read_patch_sha25
 ENGINE_NBD_MULTIQUEUE_PATCH_SHA256=$(read_lock orchestrator_nbd_multiqueue_patch_sha256)
 ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256=$(read_lock orchestrator_cpuset_qualification_patch_sha256)
 ENGINE_EXT4_DIR_INDEX_PATCH_SHA256=$(read_lock orchestrator_ext4_dir_index_patch_sha256)
+ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256=$(read_lock base_template_identity_patch_sha256)
 ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256=$(read_lock envd_process_tag_patch_sha256)
 ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256=$(read_lock envd_process_replay_patch_sha256)
-if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256" ] || [ -z "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
+if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256" ] || [ -z "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" ] || [ -z "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
   echo "invalid engine.lock" >&2
   exit 1
 fi
@@ -304,6 +319,10 @@ if [ "$(sha256sum "$ENGINE_EXT4_DIR_INDEX_PATCH" | awk '{print $1}')" != "$ENGIN
   echo "engine ext4-dir-index patch verification failed" >&2
   exit 1
 fi
+if [ "$(sha256sum "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH" | awk '{print $1}')" != "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" ]; then
+  echo "engine base-template identity patch verification failed" >&2
+  exit 1
+fi
 if [ "$(sha256sum "$ENGINE_ENVD_PROCESS_TAG_PATCH" | awk '{print $1}')" != "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ]; then
   echo "engine envd process-tag patch verification failed" >&2
   exit 1
@@ -377,6 +396,7 @@ ORCHESTRATOR_ARTIFACT_TMP=
 ENVD_BUILD_CONTAINER=
 ENVD_ARTIFACT_TMP=
 NODE_TLS_DIR=
+BASE_TEMPLATE_REFERENCE_TMP=
 PUBLIC_DRAIN_STARTED=false
 INSTALL_SUCCEEDED=false
 cleanup_build_dir() {
@@ -407,6 +427,9 @@ cleanup_install() {
   case "$NODE_TLS_DIR" in
     "$SECRETS_DIR"/.node-tls.*) rm -rf -- "$NODE_TLS_DIR" ;;
   esac
+  case "$BASE_TEMPLATE_REFERENCE_TMP" in
+    "$INSTALL_DIR"/artifacts/.base-template-reference.*) rm -f -- "$BASE_TEMPLATE_REFERENCE_TMP" ;;
+  esac
   cleanup_build_dir
   if [ "$PUBLIC_DRAIN_STARTED" = true ] && [ "$INSTALL_SUCCEEDED" != true ]; then
     docker compose -f "$SCRIPT_DIR/compose.yaml" stop brezeld >/dev/null 2>&1
@@ -433,6 +456,7 @@ patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_RE
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NBD_MULTIQUEUE_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPUSET_QUALIFICATION_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_EXT4_DIR_INDEX_PATCH"
+patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 
 # The upstream base-template service executes a JavaScript helper embedded in
@@ -578,6 +602,22 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
   run --rm --no-deps brezel-engine-capacity /opt/brezel/engine-capacity-contract.sh verify >/dev/null
 
+# Bind this installation to the exact ready build selected by the configured
+# template name. Aliases are mutable engine pointers; the templateID:buildID
+# reference below is the only value benchmark environment revisions may use.
+BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE=$(docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
+  run --rm --no-deps brezel-engine-capacity /opt/brezel/engine-capacity-contract.sh reference)
+printf '%s\n' "$BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE" | grep -Eq '^[a-z0-9_-]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || {
+  echo "the active base template did not resolve to an immutable templateID:buildID reference" >&2
+  exit 1
+}
+BASE_TEMPLATE_REFERENCE_TMP=$(mktemp "$INSTALL_DIR/artifacts/.base-template-reference.XXXXXX")
+printf '%s\n' "$BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE" > "$BASE_TEMPLATE_REFERENCE_TMP"
+chmod 600 "$BASE_TEMPLATE_REFERENCE_TMP"
+mv -f -- "$BASE_TEMPLATE_REFERENCE_TMP" "$INSTALL_DIR/artifacts/base-template.reference"
+BASE_TEMPLATE_REFERENCE_TMP=
+export BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE
+
 # The upstream fetcher also verifies these downloads. Verify them again using
 # product-owned lock data rather than trusting checksums embedded only in the
 # tools image, then write the exact installed distribution record.
@@ -587,7 +627,8 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
   "$ENGINE_NFS_DURABILITY_PATCH_SHA256" "$ENGINE_START_ADMISSION_PATCH_SHA256" "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" \
   "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256" \
   "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" \
-  "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256"
+  "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" \
+  "$BREZEL_ENGINE_BASE_TEMPLATE_NAME" "$BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE"
 
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
   exec -T ready sh -c 'cat /run/e2b/team-api-key' > "$SECRETS_DIR/engine.token"

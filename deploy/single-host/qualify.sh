@@ -5,6 +5,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 INSTALL_DIR=${BREZEL_INSTALL_DIR:-"$REPO_DIR/.brezel"}
 TOKEN_FILE="$INSTALL_DIR/secrets/service.token"
+TEMPLATE_REFERENCE_FILE="$INSTALL_DIR/artifacts/base-template.reference"
 QUALIFICATION_DIR="$INSTALL_DIR/qualification"
 ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
 ENGINE_ENV="$INSTALL_DIR/engine/embed/compose/.env"
@@ -23,6 +24,15 @@ if [ ! -s "$TOKEN_FILE" ]; then
   echo "runtime service token is missing; run install.sh first" >&2
   exit 1
 fi
+if [ ! -s "$TEMPLATE_REFERENCE_FILE" ]; then
+  echo "immutable base-template reference is missing; run install.sh first" >&2
+  exit 1
+fi
+IFS= read -r TEMPLATE_REFERENCE < "$TEMPLATE_REFERENCE_FILE"
+printf '%s\n' "$TEMPLATE_REFERENCE" | grep -Eq '^[a-z0-9_-]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || {
+  echo "immutable base-template reference is invalid; run install.sh again" >&2
+  exit 1
+}
 
 TARGET=${BREZEL_CONFORMANCE_TARGET:-"developer-single-host-$(hostname)-$(date -u +%Y%m%dT%H%M%SZ)"}
 case "$TARGET" in
@@ -104,7 +114,7 @@ run_conformance() {
   if ! compose exec -T brezeld \
     /usr/local/bin/brezel-conformance \
       -base-url http://127.0.0.1:8080 \
-      -backend-template base \
+      -backend-template "$TEMPLATE_REFERENCE" \
       -project brezel-conformance \
       -other-project brezel-conformance-isolation \
       -target "$run_target" \
@@ -147,7 +157,7 @@ run_active_recovery() {
     echo "active restart qualification did not return a workspace ID" >&2
     return 1
   fi
-  ACTIVE_SANDBOX_ID=$(cli new --template base --workspace "$ACTIVE_WORKSPACE_ID:/workspace" --ttl 600 | awk 'NR == 1 {print $1}')
+  ACTIVE_SANDBOX_ID=$(cli new --template "$TEMPLATE_REFERENCE" --workspace "$ACTIVE_WORKSPACE_ID:/workspace" --ttl 600 | awk 'NR == 1 {print $1}')
   if [ -z "$ACTIVE_SANDBOX_ID" ]; then
     echo "active restart qualification did not return a sandbox ID" >&2
     return 1
@@ -233,7 +243,7 @@ run_node_restart_recovery() {
     echo "node restart qualification did not return a workspace ID" >&2
     return 1
   }
-  ACTIVE_SANDBOX_ID=$(cli new --template base --workspace "$ACTIVE_WORKSPACE_ID:/workspace" --ttl 600 | awk 'NR == 1 {print $1}')
+  ACTIVE_SANDBOX_ID=$(cli new --template "$TEMPLATE_REFERENCE" --workspace "$ACTIVE_WORKSPACE_ID:/workspace" --ttl 600 | awk 'NR == 1 {print $1}')
   [ -n "$ACTIVE_SANDBOX_ID" ] || {
     echo "node restart qualification did not return a sandbox ID" >&2
     return 1
@@ -280,7 +290,7 @@ run_engine_fast_path_qualification() {
   fast_path_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   fast_path_started_ms=$(date +%s%3N)
 
-  ACTIVE_SANDBOX_ID=$(cli new --template base --ttl 600 | awk 'NR == 1 {print $1}')
+  ACTIVE_SANDBOX_ID=$(cli new --template "$TEMPLATE_REFERENCE" --ttl 600 | awk 'NR == 1 {print $1}')
   if [ -z "$ACTIVE_SANDBOX_ID" ]; then
     echo "engine fast-path qualification did not return a sandbox ID" >&2
     return 1

@@ -91,6 +91,23 @@ func TestProcessParserHandlesParenthesesWithoutReadingContent(t *testing.T) {
 	}
 }
 
+func TestTaskParserCapturesPlacementWithoutSensitiveProcessData(t *testing.T) {
+	// Fields after comm start at proc stat field 3. Field 39 (offset 36) is
+	// the most recent CPU on which the task ran.
+	stat := "321 (fc_vcpu 0) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 7\n"
+	task, err := parseTaskStat([]byte(stat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyTaskStatus(&task, []byte("Name:\tfc_vcpu 0\nCpus_allowed_list:\t4-11\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t91\nnonvoluntary_ctxt_switches:\t12\nSecret:\tdo-not-copy\n"))
+	if task.TID != 321 || task.Name != "fc_vcpu 0" || task.Processor != 7 || task.CPUsAllowedList != "4-11" || task.MemsAllowedList != "0" || task.VoluntaryContextSwitches != 91 || task.InvoluntaryContextSwitches != 12 {
+		t.Fatalf("task=%#v", task)
+	}
+	if _, err := parseTaskStat([]byte("321 (bad/name) S 1")); err == nil {
+		t.Fatal("unsafe task name was accepted")
+	}
+}
+
 func TestCgroupPathRejectsTraversal(t *testing.T) {
 	if path, ok := parseCgroupPath([]byte("0::/system.slice/brezel.service\n")); !ok || path != "/system.slice/brezel.service" {
 		t.Fatalf("path=%q ok=%v", path, ok)

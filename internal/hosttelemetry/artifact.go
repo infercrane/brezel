@@ -41,7 +41,7 @@ func Run(ctx context.Context, config Config) (Manifest, error) {
 	}
 	started := time.Now()
 	startedUTC := started.UTC()
-	ticker := time.NewTicker(SampleInterval)
+	ticker := time.NewTicker(config.Interval)
 	defer ticker.Stop()
 	timer := time.NewTimer(config.Duration)
 	defer timer.Stop()
@@ -74,7 +74,7 @@ collectLoop:
 		}
 	}
 
-	manifest, finalizeErr := writer.finalize(startedUTC, time.Now().UTC(), time.Since(started), stopReason, truncated)
+	manifest, finalizeErr := writer.finalize(startedUTC, time.Now().UTC(), time.Since(started), config.Interval, stopReason, truncated)
 	return manifest, errors.Join(runErr, finalizeErr)
 }
 
@@ -128,10 +128,10 @@ func (w *artifactWriter) append(sample Sample) error {
 	return nil
 }
 
-func (w *artifactWriter) finalize(started, finished time.Time, duration time.Duration, reason string, truncated bool) (Manifest, error) {
+func (w *artifactWriter) finalize(started, finished time.Time, duration, interval time.Duration, reason string, truncated bool) (Manifest, error) {
 	manifest := Manifest{
 		SchemaVersion: SchemaVersion, Kind: "brezel_host_telemetry", StartedAt: started.Format(time.RFC3339Nano), FinishedAt: finished.Format(time.RFC3339Nano),
-		DurationNS: duration.Nanoseconds(), IntervalNS: SampleInterval.Nanoseconds(), SampleCount: w.samples, SampleBytes: w.written,
+		DurationNS: duration.Nanoseconds(), IntervalNS: interval.Nanoseconds(), SampleCount: w.samples, SampleBytes: w.written,
 		MaxBytes: w.maxBytes, SamplesFile: samplesFilename, SamplesSHA256: hex.EncodeToString(w.digest.Sum(nil)), StopReason: reason, Truncated: truncated,
 	}
 	if err := w.file.Sync(); err != nil {

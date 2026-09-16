@@ -23,6 +23,7 @@ func run() error {
 	defaults := hosttelemetry.DefaultConfig()
 	output := flag.String("output", "", "new private directory for the telemetry artifact")
 	duration := flag.Duration("duration", defaults.Duration, "bounded collection duration (1s to 24h)")
+	interval := flag.Duration("interval", defaults.Interval, "sampling interval (250ms to 10s)")
 	maxBytes := flag.Int64("max-bytes", defaults.MaxBytes, "maximum samples.ndjson bytes (1 MiB to 4 GiB)")
 	flag.Parse()
 	if flag.NArg() != 0 {
@@ -30,6 +31,7 @@ func run() error {
 	}
 	defaults.OutputDir = *output
 	defaults.Duration = *duration
+	defaults.Interval = *interval
 	defaults.MaxBytes = *maxBytes
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

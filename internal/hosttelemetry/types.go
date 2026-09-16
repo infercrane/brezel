@@ -6,8 +6,9 @@ package hosttelemetry
 import "time"
 
 const (
-	SchemaVersion  = 1
-	SampleInterval = time.Second
+	SchemaVersion         = 1
+	SampleInterval        = time.Second
+	MinimumSampleInterval = 250 * time.Millisecond
 )
 
 type Sample struct {
@@ -188,6 +189,26 @@ type Process struct {
 	ReadSyscalls        uint64 `json:"read_syscalls_total"`
 	WriteSyscalls       uint64 `json:"write_syscalls_total"`
 	Cgroup              Cgroup `json:"cgroup"`
+	TaskSamples         []Task `json:"task_samples,omitempty"`
+	TaskSamplesCapped   bool   `json:"task_samples_capped,omitempty"`
+}
+
+// Task contains only scheduler and resource counters needed to diagnose
+// Firecracker placement. It deliberately excludes command lines, environment,
+// namespaces, file descriptors, and guest/customer data.
+type Task struct {
+	TID                        int    `json:"tid"`
+	Name                       string `json:"name"`
+	StartTicks                 uint64 `json:"start_ticks"`
+	UserTicks                  uint64 `json:"user_ticks_total"`
+	SystemTicks                uint64 `json:"system_ticks_total"`
+	MinorFaults                uint64 `json:"minor_faults_total"`
+	MajorFaults                uint64 `json:"major_faults_total"`
+	Processor                  int    `json:"last_processor"`
+	CPUsAllowedList            string `json:"cpus_allowed_list"`
+	MemsAllowedList            string `json:"mems_allowed_list"`
+	VoluntaryContextSwitches   uint64 `json:"voluntary_context_switches_total"`
+	InvoluntaryContextSwitches uint64 `json:"involuntary_context_switches_total"`
 }
 
 type ReadErrors struct {

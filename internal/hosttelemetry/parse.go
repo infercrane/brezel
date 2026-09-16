@@ -296,6 +296,64 @@ func parseProcessStat(data []byte) (Process, error) {
 	}, nil
 }
 
+func parseTaskStat(data []byte) (Task, error) {
+	text := strings.TrimSpace(string(data))
+	closeIndex := strings.LastIndex(text, ")")
+	openIndex := strings.Index(text, "(")
+	if openIndex < 1 || closeIndex <= openIndex || closeIndex+1 >= len(text) {
+		return Task{}, errors.New("task stat is malformed")
+	}
+	tid, err := strconv.Atoi(strings.TrimSpace(text[:openIndex]))
+	if err != nil || tid <= 0 {
+		return Task{}, errors.New("task id is invalid")
+	}
+	name := text[openIndex+1 : closeIndex]
+	if !safeTaskName(name) {
+		return Task{}, errors.New("task name is unsafe")
+	}
+	fields := strings.Fields(text[closeIndex+1:])
+	// processor is Linux proc stat field 39, or offset 36 after the comm field.
+	if len(fields) < 37 {
+		return Task{}, errors.New("task stat is incomplete")
+	}
+	values, err := parseUintFields([]string{fields[7], fields[9], fields[11], fields[12], fields[19]})
+	if err != nil {
+		return Task{}, errors.New("task stat counter is invalid")
+	}
+	processor, err := strconv.Atoi(fields[36])
+	if err != nil || processor < 0 {
+		return Task{}, errors.New("task processor is invalid")
+	}
+	return Task{
+		TID: tid, Name: name, MinorFaults: values[0], MajorFaults: values[1],
+		UserTicks: values[2], SystemTicks: values[3], StartTicks: values[4], Processor: processor,
+	}, nil
+}
+
+func applyTaskStatus(task *Task, data []byte) {
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch key {
+		case "Cpus_allowed_list":
+			if safeCPUList(value) {
+				task.CPUsAllowedList = value
+			}
+		case "Mems_allowed_list":
+			if safeCPUList(value) {
+				task.MemsAllowedList = value
+			}
+		case "voluntary_ctxt_switches":
+			task.VoluntaryContextSwitches, _ = strconv.ParseUint(value, 10, 64)
+		case "nonvoluntary_ctxt_switches":
+			task.InvoluntaryContextSwitches, _ = strconv.ParseUint(value, 10, 64)
+		}
+	}
+}
+
 func applyProcessIO(process *Process, data []byte) {
 	values := parseColonUintMap(data)
 	process.ReadSyscalls = values["syscr"]
@@ -429,4 +487,30 @@ func safeKernelName(value string) bool {
 
 func safeProcessName(value string) bool {
 	return safeKernelName(value) && len(value) <= 32
+}
+
+func safeTaskName(value string) bool {
+	if value == "" || len(value) > 32 {
+		return false
+	}
+	for _, current := range value {
+		if (current >= 'a' && current <= 'z') || (current >= 'A' && current <= 'Z') || (current >= '0' && current <= '9') || current == '_' || current == '-' || current == '.' || current == '@' || current == ' ' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func safeCPUList(value string) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for _, current := range value {
+		if (current >= '0' && current <= '9') || current == ',' || current == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }

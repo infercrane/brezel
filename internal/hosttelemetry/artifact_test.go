@@ -24,7 +24,7 @@ func TestArtifactIsBoundedPrivateDurableAndChecksummed(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC)
-	manifest, err := writer.finalize(started, started.Add(time.Second), time.Second, "duration_complete", false)
+	manifest, err := writer.finalize(started, started.Add(time.Second), time.Second, time.Second, "duration_complete", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestArtifactStopsBeforeCrossingOutputLimit(t *testing.T) {
 		t.Fatalf("append error=%v", err)
 	}
 	started := time.Now().UTC()
-	manifest, err := writer.finalize(started, started, 0, "output_limit", true)
+	manifest, err := writer.finalize(started, started, 0, time.Second, "output_limit", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +114,11 @@ func TestConfigRejectsUnboundedAndUnsafeInputs(t *testing.T) {
 	config.ProcessNames = []string{"brezeld", "private/customer"}
 	if err := config.validate(); err == nil {
 		t.Fatal("unsafe process name was accepted")
+	}
+	config = DefaultConfig()
+	config.OutputDir = filepath.Join(t.TempDir(), "output")
+	config.Interval = 100 * time.Millisecond
+	if err := config.validate(); err == nil {
+		t.Fatal("perturbing sample interval was accepted")
 	}
 }

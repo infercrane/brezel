@@ -67,6 +67,7 @@ services:
       BREZEL_GUEST_MEMORY_MIB: ${BREZEL_GUEST_MEMORY_MIB:-512}
       BREZEL_GUEST_MIN_FREE_DISK_MIB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}
       BREZEL_GUEST_MAX_FREE_DISK_MIB: ${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}
+      BREZEL_ENGINE_BASE_TEMPLATE_NAME: ${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}
     volumes:
       - ${BREZEL_ENGINE_CAPACITY_SCRIPT:?set BREZEL_ENGINE_CAPACITY_SCRIPT to the audited engine capacity script}:/opt/brezel/engine-capacity-contract.sh:ro
     entrypoint: ["/bin/sh"]
@@ -253,6 +254,7 @@ services:
   base-template:
     pull_policy: never
     environment:
+      BASE_TEMPLATE_NAME: ${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}
       BASE_TEMPLATE_SOURCE_IMAGE: ${BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE:?set the immutable base-template source image}
       BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}
       BASE_TEMPLATE_MEMORY_MB: ${BREZEL_GUEST_MEMORY_MIB:-512}

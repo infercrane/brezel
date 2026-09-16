@@ -1,0 +1,60 @@
+diff --git a/embed/compose/scripts/node/build-base-template.mjs b/embed/compose/scripts/node/build-base-template.mjs
+index f9cfc347f..4d30c0325 100644
+--- a/embed/compose/scripts/node/build-base-template.mjs
++++ b/embed/compose/scripts/node/build-base-template.mjs
+@@ -20,6 +20,11 @@ async function main() {
+   const memoryMB = integer('BASE_TEMPLATE_MEMORY_MB', 512, 128, 262144)
+   const minFreeDiskMb = integer('BASE_TEMPLATE_MIN_FREE_DISK_MB', 512, 0, 25600)
+   const sourceImage = process.env.BASE_TEMPLATE_SOURCE_IMAGE ?? 'e2bdev/base'
++  const templateName = process.env.BASE_TEMPLATE_NAME ?? 'base'
++  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(templateName)) {
++    throw new Error('BASE_TEMPLATE_NAME must be 1-64 lowercase letters, numbers, underscores, or hyphens and must start with a letter or number')
++  }
++  const templateNameJSON = JSON.stringify(templateName)
+ 
+   async function request(path, init = {}) {
+     const res = await fetch(`${apiUrl}${path}`, {
+@@ -40,11 +45,11 @@ async function main() {
+     // post-build free-space target. Reuse is therefore safe only for the
+     // upstream default shape; custom benchmark/production shapes are rebuilt
+     // so a stale or nearly-full template cannot satisfy a larger contract.
+-    if (cpuCount !== 2 || memoryMB !== 512 || minFreeDiskMb !== 512 || sourceImage !== 'e2bdev/base') return false
++    if (templateName !== 'base' || cpuCount !== 2 || memoryMB !== 512 || minFreeDiskMb !== 512 || sourceImage !== 'e2bdev/base') return false
+     const templates = await request('/templates')
+     return templates.some(
+       (t) =>
+-        [...(t.aliases ?? []), ...(t.names ?? [])].includes('base') &&
++        [...(t.aliases ?? []), ...(t.names ?? [])].includes(templateName) &&
+         t.buildStatus === 'ready' &&
+         Number(t.cpuCount) === cpuCount &&
+         Number(t.memoryMB) === memoryMB,
+@@ -52,11 +57,11 @@ async function main() {
+   }
+ 
+   if (process.env.FORCE_REBUILD !== '1' && (await defaultBaseIsReady())) {
+-    console.log('build-base-template: alias "base" already has a ready build; nothing to do')
++    console.log(`build-base-template: alias ${templateNameJSON} already has a ready build; nothing to do`)
+     process.exit(0)
+   }
+ 
+-  console.log(`build-base-template: building alias "base" from ${sourceImage} (${memoryMB} MiB, ${cpuCount} vCPU, at least ${minFreeDiskMb} MiB free disk)`)
++  console.log(`build-base-template: building alias ${templateNameJSON} from ${sourceImage} (${memoryMB} MiB, ${cpuCount} vCPU, at least ${minFreeDiskMb} MiB free disk)`)
+   const started = Date.now()
+   const RETRY_MS = 5_000
+   const RETRY_TOTAL_MS = 120_000
+@@ -71,7 +76,7 @@ async function main() {
+       build = await request('/v3/templates', {
+         method: 'POST',
+         body: JSON.stringify({
+-          name: 'base',
++          name: templateName,
+           cpuCount,
+           memoryMB,
+           minFreeDiskMb,
+@@ -100,5 +105,6 @@ async function main() {
+     if (status.status !== 'building' && status.status !== 'waiting') throw new Error(`unexpected template build status: ${status.status}`)
+     await new Promise((resolve) => setTimeout(resolve, 1_000))
+   }
++  console.log(`build-base-template: immutable reference ${build.templateID}:${build.buildID}`)
+   console.log(`build-base-template: done in ${Math.round((Date.now() - started) / 1000)}s`)
+ }

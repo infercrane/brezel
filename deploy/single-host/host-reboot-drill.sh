@@ -7,7 +7,18 @@ INSTALL_DIR=${BREZEL_INSTALL_DIR:-"$REPO_DIR/.brezel"}
 PENDING_FILE="$INSTALL_DIR/qualification/.host-reboot-drill.json"
 RUNTIME_ATTESTATION="$SCRIPT_DIR/runtime-attestation.sh"
 RUNTIME_ATTESTATION_MANIFEST="$INSTALL_DIR/runtime-attestation.manifest"
+TEMPLATE_REFERENCE_FILE="$INSTALL_DIR/artifacts/base-template.reference"
 BOOT_ID_FILE=/proc/sys/kernel/random/boot_id
+
+[ -s "$TEMPLATE_REFERENCE_FILE" ] || {
+  echo "immutable base-template reference is missing; run install.sh first" >&2
+  exit 1
+}
+IFS= read -r TEMPLATE_REFERENCE < "$TEMPLATE_REFERENCE_FILE"
+printf '%s\n' "$TEMPLATE_REFERENCE" | grep -Eq '^[a-z0-9_-]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || {
+  echo "immutable base-template reference is invalid; run install.sh again" >&2
+  exit 1
+}
 
 export BREZEL_STATE_DIR="$INSTALL_DIR/state"
 export BREZEL_SECRETS_DIR="$INSTALL_DIR/secrets"
@@ -375,7 +386,7 @@ prepare() {
   # The embedded engine accepts sandbox lifetimes up to one hour. The drill only
   # needs the sandbox to survive a host reboot, so keep the request inside that
   # enforced boundary rather than relying on an unsupported lease.
-  sandbox_id=$(cli new --template base --workspace "$workspace_id:/workspace" --ttl 3600 | awk 'NR == 1 {print $1}')
+  sandbox_id=$(cli new --template "$TEMPLATE_REFERENCE" --workspace "$workspace_id:/workspace" --ttl 3600 | awk 'NR == 1 {print $1}')
   marker=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
   marker_sha256=$(printf %s "$marker" | sha256sum | awk '{print $1}')
   create_crash_consistency_corpus "$sandbox_id" "$marker"
@@ -543,7 +554,7 @@ verify() {
       # Preserve the immutable failed receipt. A deleted sandbox has no live
       # resource to remove. Only the new, bounded-lifetime sandbox is cleaned
       # below after marker verification.
-      if ! RECOVERY_SANDBOX_ID=$(cli new --template base --workspace "$WORKSPACE_ID:/workspace" --ttl 600 | awk 'NR == 1 {print $1}'); then
+      if ! RECOVERY_SANDBOX_ID=$(cli new --template "$TEMPLATE_REFERENCE" --workspace "$WORKSPACE_ID:/workspace" --ttl 600 | awk 'NR == 1 {print $1}'); then
         report_failure recovery_sandbox_create_failed "replacement sandbox could not attach the durable workspace"
         return 1
       fi

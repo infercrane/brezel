@@ -19,22 +19,24 @@ var defaultProcessNames = []string{"brezeld", "brezel-node", "firecracker", "orc
 type Config struct {
 	OutputDir       string
 	Duration        time.Duration
+	Interval        time.Duration
 	MaxBytes        int64
 	ProcRoot        string
 	SysRoot         string
 	CgroupRoot      string
 	ProcessNames    []string
 	MaxProcesses    int
+	MaxTaskSamples  int
 	MaxBlockDevices int
 	MaxInterfaces   int
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Duration: 30 * time.Minute, MaxBytes: 128 << 20,
+		Duration: 30 * time.Minute, Interval: SampleInterval, MaxBytes: 128 << 20,
 		ProcRoot: "/proc", SysRoot: "/sys", CgroupRoot: "/sys/fs/cgroup",
 		ProcessNames: append([]string(nil), defaultProcessNames...),
-		MaxProcesses: 128, MaxBlockDevices: 64, MaxInterfaces: 64,
+		MaxProcesses: 128, MaxTaskSamples: 128, MaxBlockDevices: 256, MaxInterfaces: 64,
 	}
 }
 
@@ -42,13 +44,16 @@ func (c Config) validate() error {
 	if strings.TrimSpace(c.OutputDir) == "" {
 		return errors.New("output directory is required")
 	}
-	if c.Duration < SampleInterval || c.Duration > 24*time.Hour {
+	if c.Duration < time.Second || c.Duration > 24*time.Hour || c.Duration < c.Interval {
 		return errors.New("duration must be between 1 second and 24 hours")
+	}
+	if c.Interval < MinimumSampleInterval || c.Interval > 10*time.Second {
+		return errors.New("interval must be between 250 milliseconds and 10 seconds")
 	}
 	if c.MaxBytes < 1<<20 || c.MaxBytes > 4<<30 {
 		return errors.New("max bytes must be between 1 MiB and 4 GiB")
 	}
-	if c.MaxProcesses < 1 || c.MaxProcesses > 1024 || c.MaxBlockDevices < 1 || c.MaxBlockDevices > 256 || c.MaxInterfaces < 1 || c.MaxInterfaces > 256 {
+	if c.MaxProcesses < 1 || c.MaxProcesses > 1024 || c.MaxTaskSamples < 1 || c.MaxTaskSamples > 1024 || c.MaxBlockDevices < 1 || c.MaxBlockDevices > 1024 || c.MaxInterfaces < 1 || c.MaxInterfaces > 256 {
 		return errors.New("collector cardinality bounds are invalid")
 	}
 	if len(c.ProcessNames) == 0 || len(c.ProcessNames) > 32 {
@@ -284,6 +289,12 @@ func (c *collector) readProcess(pid int) (Process, bool, uint64, error) {
 	} else if !errors.Is(ioErr, os.ErrNotExist) && !errors.Is(ioErr, os.ErrPermission) {
 		return Process{}, false, 0, ioErr
 	}
+	if process.Name == "firecracker" {
+		process.TaskSamples, process.TaskSamplesCapped, err = c.readTasks(directory)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Process{}, false, 0, err
+		}
+	}
 	var cgroupErrors uint64
 	if data, cgroupErr := readKernelFile(filepath.Join(directory, "cgroup")); cgroupErr == nil {
 		if relative, ok := parseCgroupPath(data); ok {
@@ -301,6 +312,56 @@ func (c *collector) readProcess(pid int) (Process, bool, uint64, error) {
 		cgroupErrors++
 	}
 	return process, true, cgroupErrors, nil
+}
+
+func (c *collector) readTasks(processDirectory string) ([]Task, bool, error) {
+	directory := filepath.Join(processDirectory, "task")
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, false, err
+	}
+	tids := make([]int, 0, len(entries))
+	for _, entry := range entries {
+		tid, parseErr := strconv.Atoi(entry.Name())
+		if entry.IsDir() && parseErr == nil && tid > 0 {
+			tids = append(tids, tid)
+		}
+	}
+	sort.Ints(tids)
+	capped := len(tids) > c.config.MaxTaskSamples
+	if capped {
+		tids = tids[:c.config.MaxTaskSamples]
+	}
+	result := make([]Task, 0, len(tids))
+	for _, tid := range tids {
+		taskDirectory := filepath.Join(directory, strconv.Itoa(tid))
+		comm, readErr := readKernelFile(filepath.Join(taskDirectory, "comm"))
+		if readErr != nil {
+			if errors.Is(readErr, os.ErrNotExist) {
+				continue
+			}
+			return nil, capped, readErr
+		}
+		stat, readErr := readKernelFile(filepath.Join(taskDirectory, "stat"))
+		if readErr != nil {
+			if errors.Is(readErr, os.ErrNotExist) {
+				continue
+			}
+			return nil, capped, readErr
+		}
+		task, parseErr := parseTaskStat(stat)
+		if parseErr != nil || task.TID != tid || task.Name != strings.TrimSpace(string(comm)) {
+			// A disappearing or recycled task must not be joined to the old identity.
+			continue
+		}
+		if status, statusErr := readKernelFile(filepath.Join(taskDirectory, "status")); statusErr == nil {
+			applyTaskStatus(&task, status)
+		} else if !errors.Is(statusErr, os.ErrNotExist) {
+			return nil, capped, statusErr
+		}
+		result = append(result, task)
+	}
+	return result, capped, nil
 }
 
 func (c *collector) readCgroup(path string) (Cgroup, uint64) {

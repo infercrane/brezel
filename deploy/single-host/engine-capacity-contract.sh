@@ -26,6 +26,7 @@ EXPECTED_VCPUS=${BREZEL_GUEST_VCPUS:-2}
 EXPECTED_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}
 EXPECTED_FREE_DISK_MIB=${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}
 EXPECTED_MAX_FREE_DISK_MIB=${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}
+EXPECTED_TEMPLATE_NAME=${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}
 positive_integer "$EXPECTED" BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL
 positive_integer "$EXPECTED_VCPUS" BREZEL_GUEST_VCPUS
 positive_integer "$EXPECTED_MEMORY_MIB" BREZEL_GUEST_MEMORY_MIB
@@ -33,9 +34,13 @@ positive_integer "$EXPECTED_FREE_DISK_MIB" BREZEL_GUEST_MIN_FREE_DISK_MIB
 positive_integer "$EXPECTED_MAX_FREE_DISK_MIB" BREZEL_GUEST_MAX_FREE_DISK_MIB
 [ "$EXPECTED_FREE_DISK_MIB" -le "$EXPECTED_MAX_FREE_DISK_MIB" ] || \
   fail "BREZEL_GUEST_MIN_FREE_DISK_MIB cannot exceed BREZEL_GUEST_MAX_FREE_DISK_MIB"
+case "$EXPECTED_TEMPLATE_NAME" in
+  ""|*[!a-z0-9_-]*|[-_]*) fail "BREZEL_ENGINE_BASE_TEMPLATE_NAME is invalid" ;;
+esac
+[ "${#EXPECTED_TEMPLATE_NAME}" -le 64 ] || fail "BREZEL_ENGINE_BASE_TEMPLATE_NAME is too long"
 case "$MODE" in
-  apply|verify) ;;
-  *) echo "usage: $0 apply | verify" >&2; exit 2 ;;
+  apply|verify|reference) ;;
+  *) echo "usage: $0 apply | verify | reference" >&2; exit 2 ;;
 esac
 
 command -v psql >/dev/null 2>&1 || fail "psql is required"
@@ -154,12 +159,62 @@ conformant=$(psql -X -v ON_ERROR_STOP=1 -Atc \
   "WITH seed_team AS (SELECT DISTINCT team_id FROM public.team_api_keys WHERE name = 'local dev seed token') SELECT (SELECT count(*) = 1 FROM seed_team) AND count(*) = 1 AND count(*) FILTER (WHERE concurrent_sandboxes <> $EXPECTED OR max_vcpu <> $EXPECTED_VCPUS OR max_ram_mb <> $EXPECTED_MEMORY_MIB OR default_free_disk_size_mb <> $EXPECTED_FREE_DISK_MIB OR max_free_disk_size_mb <> $EXPECTED_MAX_FREE_DISK_MIB) = 0 FROM public.team_limits WHERE id IN (SELECT team_id FROM seed_team)")
 [ "$conformant" = t ] || fail "embedded engine effective limits do not match the operator resource contract"
 
-if [ "$MODE" = verify ]; then
-  template_conformant=$(psql -X -v ON_ERROR_STOP=1 -Atc \
-    "WITH seed_team AS (SELECT DISTINCT k.team_id, t.slug FROM public.team_api_keys k JOIN public.teams t ON t.id = k.team_id WHERE k.name = 'local dev seed token'), base_environment AS (SELECT e.id FROM seed_team s JOIN public.envs e ON e.team_id = s.team_id JOIN public.env_aliases a ON a.env_id = e.id AND a.alias = 'base' AND a.namespace = s.slug WHERE e.deleted_at IS NULL), current_build AS (SELECT b.vcpu, b.ram_mb, b.free_disk_size_mb FROM base_environment e JOIN LATERAL (SELECT a.build_id FROM public.env_build_assignments a WHERE a.env_id = e.id AND a.tag = 'default' ORDER BY a.created_at DESC, a.build_id DESC LIMIT 1) selected ON true JOIN public.env_builds b ON b.id = selected.build_id WHERE b.status_group = 'ready') SELECT count(*) = 1 AND count(*) FILTER (WHERE vcpu <> $EXPECTED_VCPUS OR ram_mb <> $EXPECTED_MEMORY_MIB OR free_disk_size_mb <> $EXPECTED_FREE_DISK_MIB) = 0 FROM current_build")
-  [ "$template_conformant" = t ] || \
-    fail "active base template does not match the operator guest shape"
+template_reference=
+if [ "$MODE" = verify ] || [ "$MODE" = reference ]; then
+  template_reference=$(psql -X -v ON_ERROR_STOP=1 -At \
+    -v expected_name="$EXPECTED_TEMPLATE_NAME" \
+    -v expected_vcpus="$EXPECTED_VCPUS" \
+    -v expected_memory="$EXPECTED_MEMORY_MIB" \
+    -v expected_free_disk="$EXPECTED_FREE_DISK_MIB" <<'SQL'
+WITH seed_team AS (
+  SELECT DISTINCT k.team_id, t.slug
+  FROM public.team_api_keys k
+  JOIN public.teams t ON t.id = k.team_id
+  WHERE k.name = 'local dev seed token'
+), named_environment AS (
+  SELECT e.id
+  FROM seed_team s
+  JOIN public.envs e ON e.team_id = s.team_id
+  JOIN public.env_aliases a
+    ON a.env_id = e.id
+   AND a.alias = :'expected_name'
+   AND a.namespace = s.slug
+  WHERE e.deleted_at IS NULL
+), current_build AS (
+  SELECT e.id AS template_id, b.id AS build_id,
+         b.vcpu, b.ram_mb, b.free_disk_size_mb
+  FROM named_environment e
+  JOIN LATERAL (
+    SELECT a.build_id
+    FROM public.env_build_assignments a
+    WHERE a.env_id = e.id AND a.tag = 'default'
+    ORDER BY a.created_at DESC, a.build_id DESC
+    LIMIT 1
+  ) selected ON true
+  JOIN public.env_builds b ON b.id = selected.build_id
+  WHERE b.status_group = 'ready'
+)
+SELECT template_id || ':' || build_id
+FROM current_build
+WHERE vcpu = :'expected_vcpus'::bigint
+  AND ram_mb = :'expected_memory'::bigint
+  AND free_disk_size_mb = :'expected_free_disk'::bigint;
+SQL
+)
+  case "$template_reference" in
+    *:*) ;;
+    *) fail "active template '$EXPECTED_TEMPLATE_NAME' does not match the operator guest shape" ;;
+  esac
+  printf '%s\n' "$template_reference" | grep -Eq '^[a-z0-9_-]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || \
+    fail "active template '$EXPECTED_TEMPLATE_NAME' returned an invalid immutable reference"
+  [ "$(printf '%s\n' "$template_reference" | wc -l | tr -d ' ')" = 1 ] || \
+    fail "active template '$EXPECTED_TEMPLATE_NAME' did not resolve uniquely"
+fi
+
+if [ "$MODE" = reference ]; then
+  printf '%s\n' "$template_reference"
+  exit 0
 fi
 
 printf '%s\n' \
-  "{\"engine_capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"max_active_sandboxes\":$EXPECTED,\"guest_vcpus\":$EXPECTED_VCPUS,\"guest_memory_mib\":$EXPECTED_MEMORY_MIB,\"guest_min_free_disk_mib\":$EXPECTED_FREE_DISK_MIB,\"guest_max_free_disk_mib\":$EXPECTED_MAX_FREE_DISK_MIB,\"active_base_template_verified\":$([ "$MODE" = verify ] && printf true || printf false)}"
+  "{\"engine_capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"max_active_sandboxes\":$EXPECTED,\"guest_vcpus\":$EXPECTED_VCPUS,\"guest_memory_mib\":$EXPECTED_MEMORY_MIB,\"guest_min_free_disk_mib\":$EXPECTED_FREE_DISK_MIB,\"guest_max_free_disk_mib\":$EXPECTED_MAX_FREE_DISK_MIB,\"active_template_name\":\"$EXPECTED_TEMPLATE_NAME\",\"active_template_verified\":$([ "$MODE" = verify ] && printf true || printf false)}"
