@@ -10,6 +10,8 @@ export const DAX_UPSTREAM = Object.freeze({
   scriptSha256: "58f4640ac170b366f87e8466a9ac1e9f50383faa59553246e4664c77af34d550",
 });
 const UPSTREAM_SCRIPT_URL = `https://raw.githubusercontent.com/computesdk/benchmarks/${DAX_UPSTREAM.commit}/benchmarks/scripts/dax-benchmark.sh`;
+const IMMUTABLE_BACKEND_TEMPLATE = /^[a-z0-9_-]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DAX_EXPECTED_GUEST_CPUS = 8;
 
 function optionalDigest(name, environment) {
   const value = environment[name];
@@ -123,6 +125,28 @@ export function summarizeAttempts(attempts) {
   };
 }
 
+export function validateDaxEnvironment(environment, expectedRevision) {
+  if (!environment || typeof environment !== "object" || Array.isArray(environment)) {
+    throw new Error("DAX environment preflight received an invalid environment resource");
+  }
+  if (typeof expectedRevision !== "string" || environment.revision_id !== expectedRevision) {
+    throw new Error("DAX environment preflight received a different environment revision");
+  }
+  if (typeof environment.template !== "string" || !IMMUTABLE_BACKEND_TEMPLATE.test(environment.template)) {
+    throw new Error(
+      "DAX environment must store an immutable templateID:buildID backend template; mutable aliases such as base are forbidden",
+    );
+  }
+  return environment;
+}
+
+export async function preflightDaxEnvironment(compute, expectedRevision) {
+  return validateDaxEnvironment(
+    await compute.environment.getByRevision(expectedRevision),
+    expectedRevision,
+  );
+}
+
 async function fetchPinnedScript() {
   const response = await fetch(UPSTREAM_SCRIPT_URL, { redirect: "error", signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(`upstream DAX script download failed with ${response.status}`);
@@ -142,8 +166,11 @@ async function qualifyGuest(compute) {
 cpus=$(getconf _NPROCESSORS_ONLN)
 memory_kib=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)
 free_root_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
+smt_active=unknown
+if test -r /sys/devices/system/cpu/smt/active; then smt_active=$(cat /sys/devices/system/cpu/smt/active); fi
 printf '{"cpus":%s,"memory_kib":%s,"free_root_kib":%s,"uid":%s,"architecture":"%s"}\n' "$cpus" "$memory_kib" "$free_root_kib" "$(id -u)" "$(uname -m)"
-test "$cpus" -ge 8
+test "$cpus" -eq ${DAX_EXPECTED_GUEST_CPUS}
+test "$smt_active" != 1
 test "$memory_kib" -ge 15728640
 test "$free_root_kib" -ge 16777216
 if test "$(id -u)" -ne 0; then command -v sudo >/dev/null; sudo -n true; fi
@@ -179,6 +206,7 @@ export async function run() {
     throw new Error("phase telemetry is diagnostic-only and cannot be enabled for paired benchmark slots");
   }
   const endpoint = new URL(process.env.BREZEL_API_URL);
+  await preflightDaxEnvironment(compute, environmentRevision);
   const before = await compute.sandbox.list();
   if (before.length !== 0) throw new Error("the dedicated DAX benchmark project must be empty before execution");
   const script = await fetchPinnedScript();

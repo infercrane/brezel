@@ -42,6 +42,15 @@ async function fixture(t, options = {}) {
     response.setHeader("Content-Type", "application/json");
     const parsedUrl = new URL(request.url, "http://127.0.0.1");
 
+    if (request.method === "GET" && request.url === "/v1/environments/envr_test") {
+      response.end(JSON.stringify(options.environmentResponse ?? {
+        revision_id: "envr_test",
+        name: "dax",
+        template: "dax-c4:018f47a2-4f5c-7d8e-9a0b-123456789abc",
+        created_at: "2026-09-14T00:00:00Z",
+      }));
+      return;
+    }
     if (request.method === "POST" && request.url === "/v1/sandboxes") {
       createPostCount += 1;
       if (options.createErrorStatus) {
@@ -177,6 +186,44 @@ test("implements the benchmark create, runCommand, and destroy lifecycle", async
   const commandRequest = requests.find((request) => request.url?.endsWith("/commands"));
   assert.deepEqual(JSON.parse(commandRequest.body).argv, ["/bin/sh", "-c", "node -v"]);
   for (const request of requests) assert.equal(request.body.includes(token), false);
+});
+
+test("reads the stored environment without allocating a sandbox", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t);
+  const compute = createBrezelCompute({
+    baseUrl,
+    tokenFile,
+    projectId: "project-test",
+    environmentRevision: "envr_test",
+  });
+
+  const environment = await compute.environment.getByRevision();
+  assert.equal(environment.template, "dax-c4:018f47a2-4f5c-7d8e-9a0b-123456789abc");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].method, "GET");
+  assert.equal(requests[0].url, "/v1/environments/envr_test");
+  assert.equal(requests[0].headers.authorization, `Bearer ${token}`);
+  assert.equal(requests[0].headers["x-project-id"], "project-test");
+});
+
+test("rejects an environment response for another revision", async (t) => {
+  const { baseUrl, tokenFile, requests } = await fixture(t, {
+    environmentResponse: {
+      revision_id: "envr_other",
+      name: "dax",
+      template: "dax-c4:018f47a2-4f5c-7d8e-9a0b-123456789abc",
+      created_at: "2026-09-14T00:00:00Z",
+    },
+  });
+  const compute = createBrezelCompute({
+    baseUrl,
+    tokenFile,
+    projectId: "project-test",
+    environmentRevision: "envr_test",
+  });
+
+  await assert.rejects(compute.environment.getByRevision(), /different environment revision/);
+  assert.equal(requests.some((request) => request.method === "POST" && request.url === "/v1/sandboxes"), false);
 });
 
 test("does not poll an immediate-running create response", async (t) => {

@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createPhaseObserver, pairedABIdentity, structuredLines, summarizeAttempts, transcriptValid } from "./dax-rehearsal.mjs";
+import {
+  createPhaseObserver,
+  pairedABIdentity,
+  preflightDaxEnvironment,
+  structuredLines,
+  summarizeAttempts,
+  transcriptValid,
+  validateDaxEnvironment,
+} from "./dax-rehearsal.mjs";
 
 const completeOutput = `BENCH_PHASE\tprepare\t10
 BENCH_CACHE\tguest_page_cache\tdropped
@@ -109,4 +117,59 @@ test("pairedABIdentity is absent or complete and rejects partial identity", () =
     configurationIdentitySha256: "3".repeat(64),
   });
   assert.throws(() => pairedABIdentity({ BREZEL_DAX_PAIRED_PLAN_ID: "1".repeat(64) }), /must be supplied together/);
+});
+
+test("DAX environment preflight rejects mutable backend template aliases", () => {
+  assert.throws(
+    () => validateDaxEnvironment({ revision_id: "envr_test", template: "base" }, "envr_test"),
+    /immutable templateID:buildID.+aliases such as base are forbidden/,
+  );
+});
+
+test("DAX environment preflight resolves and rejects an alias without allocating a sandbox", async () => {
+  let creates = 0;
+  const compute = {
+    environment: {
+      async getByRevision(revision) {
+        assert.equal(revision, "envr_test");
+        return { revision_id: revision, template: "base" };
+      },
+    },
+    sandbox: {
+      async create() {
+        creates += 1;
+        throw new Error("must not allocate");
+      },
+    },
+  };
+  await assert.rejects(preflightDaxEnvironment(compute, "envr_test"), /mutable aliases/);
+  assert.equal(creates, 0);
+});
+
+test("DAX environment preflight accepts an immutable template and build reference", () => {
+  const environment = {
+    revision_id: "envr_test",
+    template: "dax-c4:018f47a2-4f5c-7d8e-9a0b-123456789abc",
+  };
+  assert.equal(validateDaxEnvironment(environment, "envr_test"), environment);
+});
+
+test("DAX environment preflight rejects malformed or mismatched immutable references", () => {
+  for (const template of [
+    "",
+    "dax-c4:",
+    "dax-c4:not-a-build-id",
+    "DAX-C4:018f47a2-4f5c-7d8e-9a0b-123456789abc",
+    "dax-c4:018F47A2-4f5c-7d8e-9a0b-123456789abc",
+    "dax-c4:018f47a2-4f5c-7d8e-9a0b-123456789abc:extra",
+  ]) {
+    assert.throws(
+      () => validateDaxEnvironment({ revision_id: "envr_test", template }, "envr_test"),
+      /immutable templateID:buildID/,
+    );
+  }
+  assert.throws(
+    () => validateDaxEnvironment({ revision_id: "envr_other", template: "dax-c4:018f47a2-4f5c-7d8e-9a0b-123456789abc" }, "envr_test"),
+    /different environment revision/,
+  );
 });

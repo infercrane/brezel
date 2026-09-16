@@ -897,7 +897,11 @@ alias. The installer validates `BREZEL_ENGINE_BASE_TEMPLATE_NAME`, builds that
 exact name, resolves the resulting ready build, and atomically writes the
 immutable `templateID:buildID` reference to
 `.brezel/artifacts/base-template.reference`. Preserve that file before the next
-install and use its contents as the environment's `--template` value.
+install and use its contents as the environment's `--template` value. The DAX
+runner resolves the stored environment before its empty-project check or first
+sandbox allocation and fails closed unless that value has the immutable
+`templateID:buildID` form. Its guest preflight also requires exactly eight
+online vCPUs and rejects guest SMT when the kernel exposes that topology flag.
 
 Use a unique, never-reused name for each arm. Build the baseline with the ext4
 allowlist empty, save its receipt, and create its Brezel environment revision:

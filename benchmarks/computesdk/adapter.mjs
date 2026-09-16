@@ -285,6 +285,18 @@ function validateSandbox(wire) {
   return wire;
 }
 
+function validateEnvironment(wire) {
+  if (!wire || typeof wire !== "object" || Array.isArray(wire)) {
+    throw new Error("Brezel API returned an invalid environment resource");
+  }
+  for (const name of ["revision_id", "name", "template", "created_at"]) {
+    if (typeof wire[name] !== "string" || wire[name].length === 0) {
+      throw new Error(`Brezel API environment resource is missing ${name}`);
+    }
+  }
+  return wire;
+}
+
 function validateFilesystemPath(path) {
   if (typeof path !== "string" || path.length === 0) {
     throw new Error("filesystem path must be a non-empty string");
@@ -643,6 +655,23 @@ async function reconcileUnknownCreate(config, body, idempotencyKey, originalErro
 export function createBrezelCompute(configInput = {}) {
   const config = resolveConfig(configInput);
   return {
+    environment: {
+      async getByRevision(revision = config.environmentRevision) {
+        if (typeof revision !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(revision)) {
+          throw new Error("Brezel environment revision is invalid");
+        }
+        const wire = await requestJson(
+          config,
+          "GET",
+          `/v1/environments/${encodeURIComponent(revision)}`,
+        );
+        const environment = validateEnvironment(wire);
+        if (environment.revision_id !== revision) {
+          throw new Error("Brezel API returned a different environment revision");
+        }
+        return environment;
+      },
+    },
     sandbox: {
       async create(options = {}) {
         const unsupportedResources = ["vcpus", "memMiB", "diskMiB"].filter(
