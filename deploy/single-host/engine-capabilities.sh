@@ -83,14 +83,20 @@ check_source() {
     'env:"FIRECRACKER_SMT"' "the operator-owned guest SMT setting"
   require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
     'env:"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY"' "the opt-in exclusive CPU-topology setting"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation' "the fail-closed exclusive CPU-topology release gate"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
     'no NUMA node has %d distinct physical cores' "fail-closed same-NUMA physical-core selection"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
     'another Firecracker process holds the exclusive CPU lease' "host-wide single-Firecracker lease"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
     'Firecracker vCPU thread %d was not present after VM start' "complete vCPU-thread placement verification"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
+    'stabilizeExclusiveCPUPlacement' "bounded startup reconciliation for late Firecracker helper threads"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/process.go" \
-    'applyExclusiveCPUPlacement' "exclusive placement on create and snapshot resume"
+    'monitorExclusiveCPUPlacement' "continuous fail-closed CPU-affinity reconciliation"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/process.go" \
+    'reconcile exclusive Firecracker CPU topology' "runtime affinity-drift failure propagation"
   require_literal "$source_root/packages/orchestrator/pkg/server/main.go" \
     "resolveStartingSandboxesLimit" "the local concurrent-start limit resolver"
   require_literal "$source_root/packages/api/internal/orchestrator/placement/placement.go" \
@@ -161,7 +167,7 @@ check_source() {
   require_literal "$source_root/packages/envd/internal/services/process/handler/journal_test.go" \
     'TestEventJournalAtomicReplayToWaitHandoff' "the gap-free replay-to-live handoff regression test"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"single-sandbox-opt-in-fail-closed","host_lease":"one-firecracker","numa_scope":"one-node","vcpu_core_mapping":"one-to-one-host-visible"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"disabled-pending-cgroup-cpuset-qualification","experimental_affinity_code":"present-not-runnable"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
 }
 
 find_orchestrator_pid() {

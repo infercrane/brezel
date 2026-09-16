@@ -472,6 +472,30 @@ candidate image; only the preparation change is considered causal local
 evidence. A single native-volume candidate run completed in 326.327 s and did
 not beat the candidate overlay median, so it does not justify a storage change.
 
+The local harness can also sample Docker CPU, memory, process, block-I/O, and
+network counters and align them to the unchanged upstream phase markers. This
+instrumentation is diagnostic and perturbs timing, so do not mix instrumented
+and uninstrumented totals. A valid instrumented candidate run on the same
+machine separated the two remaining large phases: `install` averaged about
+34 percent of one CPU while receiving approximately 775 MB and writing
+approximately 2.73 GB, whereas `typecheck` averaged approximately 816 percent
+CPU, peaked near the Docker engine's available compute, used approximately
+15.75 GB, and received no network bytes. The evidence supports a writable-root
+and package-egress investigation for `install`, and CPU placement plus host CPU
+quality for `typecheck`; it does not justify attributing either phase to the Go
+API or SQLite path.
+
+A controlled local CPU-sensitivity diagnostic compared the same candidate
+image, overlay root, 16-GiB limit, and instrumented workload with four and
+eight visible CPUs. The single retained pair completed in 471.737 s and
+239.180 s respectively. Dependency installation changed by only 1.02x
+(`121.338 s` to `118.535 s`), while typecheck changed by 3.28x (`311.856 s`
+to `94.986 s`). This is one diagnostic pair, not a stable speedup estimate.
+It is sufficient to prioritize guest CPU quality and topology for typecheck
+while treating dependency installation as a separate network and writable-root
+investigation. Causal or release decisions require at least five randomized,
+paired, uninstrumented runs on the same qualified Linux/KVM host.
+
 After assigning Docker Desktop at least 16 GiB of memory, run the complete
 workload and controlled writable-root experiments locally:
 
@@ -488,6 +512,16 @@ node benchmarks/computesdk/local-dax-lab.mjs \
 node benchmarks/computesdk/local-dax-lab.mjs \
   --probe full --image candidate --storage tmpfs --iterations 3 \
   --output /tmp/brezel-dax-local-tmpfs.json
+
+node benchmarks/computesdk/local-dax-lab.mjs \
+  --probe full --image candidate --storage overlay --iterations 1 \
+  --telemetry-interval-ms 1000 \
+  --output /tmp/brezel-dax-local-profile.json
+
+node benchmarks/computesdk/local-dax-sensitivity.mjs \
+  /tmp/brezel-dax-local-4cpu-profile.json \
+  /tmp/brezel-dax-local-8cpu-profile.json \
+  > /tmp/brezel-dax-local-cpu-sensitivity.json
 ```
 
 Local promotion requires every requested run to complete every upstream phase,
@@ -495,7 +529,10 @@ reach the pinned OpenCode commit, and contain no structured or hidden execution
 failure. A winning local candidate must still be built as an immutable x86-64
 image and pass repeated full-workload qualification on the same Linux/KVM host
 as its baseline before changing a production profile. Only the qualified HTTPS
-provider path can produce leaderboard-comparable evidence.
+provider path can produce leaderboard-comparable evidence. The local phase
+markers are useful for diagnosis, but neither `commandCloseWallMs`,
+`lifecycleWallMs`, nor the sum of those internal markers is the ComputeSDK
+leaderboard's provider-observed total-duration boundary.
 
 #### Rehearsal commands
 

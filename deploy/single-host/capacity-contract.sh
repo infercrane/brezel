@@ -94,12 +94,7 @@ case "$EXCLUSIVE_CPU_TOPOLOGY" in
   *) fail "BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY must be true or false" ;;
 esac
 if [ "$EXCLUSIVE_CPU_TOPOLOGY" = true ]; then
-  [ "$FIRECRACKER_SMT" = false ] || \
-    fail "exclusive Firecracker CPU topology requires guest SMT to be disabled"
-  [ "$MAX_ACTIVE_TOTAL" -eq 1 ] || \
-    fail "exclusive Firecracker CPU topology is qualified only with one active sandbox"
-  [ "$MAX_STARTING_SANDBOXES" -eq 1 ] || \
-    fail "exclusive Firecracker CPU topology is qualified only with one starting sandbox"
+  fail "exclusive Firecracker CPU topology is disabled until cgroup cpuset isolation is qualified"
 fi
 if [ "$WARM_POOL_SIZE" -gt 0 ] && [ "$WARM_POOL_STRICT" = true ] && [ "$WARM_POOL_SIZE" -ne "$MAX_ACTIVE_TOTAL" ]; then
   fail "strict warm capacity must equal BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL"

@@ -1,5 +1,5 @@
 diff --git a/packages/orchestrator/pkg/cfg/model.go b/packages/orchestrator/pkg/cfg/model.go
-index f4c199d..f3ae292 100644
+index f4c199d..cf3f1c5 100644
 --- a/packages/orchestrator/pkg/cfg/model.go
 +++ b/packages/orchestrator/pkg/cfg/model.go
 @@ -25,16 +25,18 @@ const (
@@ -31,11 +31,31 @@ index f4c199d..f3ae292 100644
  
  	DefaultCacheDir string `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
  
+@@ -168,6 +170,9 @@ func Parse() (Config, error) {
+ 	if err != nil {
+ 		return config, err
+ 	}
++	if config.FirecrackerExclusiveCPUTopology {
++		return config, fmt.Errorf("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation")
++	}
+ 
+ 	if config.BuildCacheTTL < time.Hour {
+ 		return config, fmt.Errorf("BUILD_CACHE_TTL must be at least 1h")
+@@ -229,6 +234,9 @@ func ParseBuilder() (BuilderConfig, error) {
+ 	if err != nil {
+ 		return BuilderConfig{}, err
+ 	}
++	if model.FirecrackerExclusiveCPUTopology {
++		return BuilderConfig{}, fmt.Errorf("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation")
++	}
+ 
+ 	if err = makePathsAbsolute(&model); err != nil {
+ 		return BuilderConfig{}, err
 diff --git a/packages/orchestrator/pkg/cfg/model_test.go b/packages/orchestrator/pkg/cfg/model_test.go
-index 448eabc..f5c231b 100644
+index 448eabc..33b77d1 100644
 --- a/packages/orchestrator/pkg/cfg/model_test.go
 +++ b/packages/orchestrator/pkg/cfg/model_test.go
-@@ -17,6 +17,26 @@ func TestParse(t *testing.T) {
+@@ -17,6 +17,24 @@ func TestParse(t *testing.T) {
  		require.NoError(t, err)
  
  		assert.Equal(t, "/fc-vm", config.SandboxDir)
@@ -43,13 +63,11 @@ index 448eabc..f5c231b 100644
 +		assert.False(t, config.FirecrackerExclusiveCPUTopology)
 +	})
 +
-+	t.Run("exclusive Firecracker CPU topology can be enabled explicitly", func(t *testing.T) {
++	t.Run("exclusive Firecracker CPU topology fails closed until cpuset isolation is qualified", func(t *testing.T) {
 +		t.Setenv("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY", "true")
 +
-+		config, err := Parse()
-+		require.NoError(t, err)
-+
-+		assert.True(t, config.FirecrackerExclusiveCPUTopology)
++		_, err := Parse()
++		require.ErrorContains(t, err, "not qualified without cgroup cpuset isolation")
 +	})
 +
 +	t.Run("firecracker SMT can be enabled explicitly", func(t *testing.T) {
@@ -102,10 +120,10 @@ index 4753066..9233270 100644
  		VcpuCount:       &vCPUCount,
 diff --git a/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go
 new file mode 100644
-index 0000000..0a2937e
+index 0000000..c90700e
 --- /dev/null
 +++ b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,356 @@
 +//go:build linux
 +
 +package fc
@@ -117,6 +135,7 @@ index 0000000..0a2937e
 +	"sort"
 +	"strconv"
 +	"strings"
++	"time"
 +
 +	"golang.org/x/sys/unix"
 +)
@@ -134,7 +153,23 @@ index 0000000..0a2937e
 +	lease      *os.File
 +}
 +
++type firecrackerTask struct {
++	tid  int
++	name string
++}
++
++type taskCPUAssignment struct {
++	tid  int
++	name string
++	cpus []int
++}
++
 +const exclusiveCPULockPath = "/run/lock/brezel-firecracker-exclusive-cpu.lock"
++
++const (
++	exclusiveCPUPlacementStabilization = 250 * time.Millisecond
++	exclusiveCPUPlacementPollInterval  = 10 * time.Millisecond
++)
 +
 +func acquireExclusiveCPUPlacement(vcpuCount int) (*exclusiveCPUPlacement, error) {
 +	lease, err := acquireExclusiveCPULease(exclusiveCPULockPath)
@@ -217,41 +252,81 @@ index 0000000..0a2937e
 +}
 +
 +func applyExclusiveCPUPlacement(pid int, placement *exclusiveCPUPlacement) error {
-+	tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
++	tasks, err := readFirecrackerTasks(pid)
 +	if err != nil {
-+		return fmt.Errorf("list Firecracker tasks: %w", err)
++		return err
 +	}
-+	found := make([]bool, len(placement.vcpuCPUs))
-+	for _, task := range tasks {
-+		tid, err := strconv.Atoi(task.Name())
++	assignments, err := exclusiveCPUAssignments(tasks, placement)
++	if err != nil {
++		return err
++	}
++	for _, assignment := range assignments {
++		if err := setTaskAffinity(assignment.tid, assignment.cpus); err != nil {
++			return fmt.Errorf("pin Firecracker task %q: %w", assignment.name, err)
++		}
++	}
++	return nil
++}
++
++func readFirecrackerTasks(pid int) ([]firecrackerTask, error) {
++	entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
++	if err != nil {
++		return nil, fmt.Errorf("list Firecracker tasks: %w", err)
++	}
++	tasks := make([]firecrackerTask, 0, len(entries))
++	for _, entry := range entries {
++		tid, err := strconv.Atoi(entry.Name())
 +		if err != nil {
 +			continue
 +		}
 +		nameBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/comm", pid, tid))
 +		if err != nil {
-+			return fmt.Errorf("read Firecracker task %d name: %w", tid, err)
++			return nil, fmt.Errorf("read Firecracker task %d name: %w", tid, err)
 +		}
-+		name := strings.TrimSpace(string(nameBytes))
-+		if index, ok := firecrackerVCPUIndex(name); ok {
++		tasks = append(tasks, firecrackerTask{tid: tid, name: strings.TrimSpace(string(nameBytes))})
++	}
++	return tasks, nil
++}
++
++func exclusiveCPUAssignments(tasks []firecrackerTask, placement *exclusiveCPUPlacement) ([]taskCPUAssignment, error) {
++	if placement == nil {
++		return nil, fmt.Errorf("exclusive CPU placement is nil")
++	}
++	found := make([]bool, len(placement.vcpuCPUs))
++	assignments := make([]taskCPUAssignment, 0, len(tasks))
++	for _, task := range tasks {
++		if index, ok := firecrackerVCPUIndex(task.name); ok {
 +			if index >= len(placement.vcpuCPUs) {
-+				return fmt.Errorf("Firecracker exposed unexpected vCPU thread %q", name)
++				return nil, fmt.Errorf("Firecracker exposed unexpected vCPU thread %q", task.name)
 +			}
-+			if err := setTaskAffinity(tid, []int{placement.vcpuCPUs[index]}); err != nil {
-+				return fmt.Errorf("pin %s: %w", name, err)
-+			}
++			assignments = append(assignments, taskCPUAssignment{tid: task.tid, name: task.name, cpus: []int{placement.vcpuCPUs[index]}})
 +			found[index] = true
 +			continue
 +		}
-+		if err := setTaskAffinity(tid, placement.helperCPUs); err != nil {
-+			return fmt.Errorf("pin Firecracker helper thread %q: %w", name, err)
-+		}
++		assignments = append(assignments, taskCPUAssignment{tid: task.tid, name: task.name, cpus: append([]int(nil), placement.helperCPUs...)})
 +	}
 +	for index, present := range found {
 +		if !present {
-+			return fmt.Errorf("Firecracker vCPU thread %d was not present after VM start", index)
++			return nil, fmt.Errorf("Firecracker vCPU thread %d was not present after VM start", index)
 +		}
 +	}
-+	return nil
++	return assignments, nil
++}
++
++// Firecracker and KVM create a small number of helper threads after the vCPU
++// threads become visible. Reconcile for a bounded startup window before the VM
++// is exposed as ready; the process monitor handles any still-later threads.
++func stabilizeExclusiveCPUPlacement(pid int, placement *exclusiveCPUPlacement) error {
++	deadline := time.Now().Add(exclusiveCPUPlacementStabilization)
++	for {
++		if err := applyExclusiveCPUPlacement(pid, placement); err != nil {
++			return err
++		}
++		if !time.Now().Before(deadline) {
++			return nil
++		}
++		time.Sleep(exclusiveCPUPlacementPollInterval)
++	}
 +}
 +
 +func firecrackerVCPUIndex(name string) (int, bool) {
@@ -407,17 +482,19 @@ index 0000000..0a2937e
 +}
 diff --git a/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go
 new file mode 100644
-index 0000000..0d345b5
+index 0000000..3d98568
 --- /dev/null
 +++ b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,174 @@
 +//go:build linux
 +
 +package fc
 +
 +import (
++	"errors"
 +	"path/filepath"
 +	"testing"
++	"time"
 +
 +	"github.com/stretchr/testify/require"
 +	"golang.org/x/sys/unix"
@@ -495,21 +572,161 @@ index 0000000..0d345b5
 +	_, ok = firecrackerVCPUIndex("fc_api")
 +	require.False(t, ok)
 +}
++
++func TestExclusiveCPUAssignmentsMoveLateHelpersOffVCPUCores(t *testing.T) {
++	t.Parallel()
++
++	placement := &exclusiveCPUPlacement{vcpuCPUs: []int{2, 3}, helperCPUs: []int{0, 1, 4, 5}}
++	initial, err := exclusiveCPUAssignments([]firecrackerTask{
++		{tid: 100, name: "firecracker"},
++		{tid: 101, name: "fc_vcpu 0"},
++		{tid: 102, name: "fc_vcpu 1"},
++	}, placement)
++	require.NoError(t, err)
++	require.Equal(t, []taskCPUAssignment{
++		{tid: 100, name: "firecracker", cpus: []int{0, 1, 4, 5}},
++		{tid: 101, name: "fc_vcpu 0", cpus: []int{2}},
++		{tid: 102, name: "fc_vcpu 1", cpus: []int{3}},
++	}, initial)
++
++	reconciled, err := exclusiveCPUAssignments([]firecrackerTask{
++		{tid: 100, name: "firecracker"},
++		{tid: 101, name: "fc_vcpu 0"},
++		{tid: 102, name: "fc_vcpu 1"},
++		{tid: 103, name: "kvm-nx-lpage-re"},
++	}, placement)
++	require.NoError(t, err)
++	require.Equal(t, taskCPUAssignment{tid: 103, name: "kvm-nx-lpage-re", cpus: []int{0, 1, 4, 5}}, reconciled[3])
++}
++
++func TestExclusiveCPUAssignmentsFailClosedWhenVCPUDisappears(t *testing.T) {
++	t.Parallel()
++
++	placement := &exclusiveCPUPlacement{vcpuCPUs: []int{2, 3}, helperCPUs: []int{0, 1}}
++	_, err := exclusiveCPUAssignments([]firecrackerTask{
++		{tid: 100, name: "firecracker"},
++		{tid: 101, name: "fc_vcpu 0"},
++	}, placement)
++	require.ErrorContains(t, err, "vCPU thread 1 was not present")
++}
++
++func TestMonitorExclusiveCPUPlacementFailsClosed(t *testing.T) {
++	t.Parallel()
++
++	exited := make(chan struct{})
++	stopped := make(chan struct{})
++	ticks := make(chan time.Time, 2)
++	want := errors.New("affinity drift")
++	failed := make(chan error, 1)
++	done := make(chan struct{})
++	applications := 0
++	go func() {
++		monitorExclusiveCPUPlacement(exited, stopped, ticks, func() error {
++			applications++
++			if applications == 1 {
++				return nil
++			}
++			return want
++		}, func(err error) {
++			failed <- err
++		})
++		close(done)
++	}()
++
++	ticks <- time.Now()
++	ticks <- time.Now()
++	require.ErrorIs(t, <-failed, want)
++	<-done
++	require.Equal(t, 2, applications)
++}
++
++func TestMonitorExclusiveCPUPlacementStopsBeforeApplying(t *testing.T) {
++	t.Parallel()
++
++	exited := make(chan struct{})
++	stopped := make(chan struct{})
++	ticks := make(chan time.Time, 1)
++	done := make(chan struct{})
++	go func() {
++		monitorExclusiveCPUPlacement(exited, stopped, ticks, func() error {
++			t.Fatal("placement was applied after the monitor stopped")
++			return nil
++		}, func(error) {
++			t.Fatal("monitor reported a failure after it stopped")
++		})
++		close(done)
++	}()
++
++	close(stopped)
++	<-done
++}
 diff --git a/packages/orchestrator/pkg/sandbox/fc/process.go b/packages/orchestrator/pkg/sandbox/fc/process.go
-index da50e37..ac190b0 100644
+index da50e37..0ce8f6d 100644
 --- a/packages/orchestrator/pkg/sandbox/fc/process.go
 +++ b/packages/orchestrator/pkg/sandbox/fc/process.go
-@@ -159,7 +159,8 @@ type Process struct {
+@@ -10,6 +10,7 @@ import (
+ 	"io"
+ 	"os"
+ 	"os/exec"
++	"sync"
+ 	"sync/atomic"
+ 	"syscall"
+ 	"time"
+@@ -159,13 +160,24 @@ type Process struct {
  
  	Exit *utils.ErrorOnce
  
 -	client *apiClient
 +	client       *apiClient
 +	cpuPlacement *exclusiveCPUPlacement
++	// Firecracker and KVM may create helper threads after VM start. A failed
++	// reconciliation is retained so the process waiter reports a hard runtime
++	// failure instead of treating the fail-closed SIGKILL as a clean stop.
++	cpuPlacementFailure         atomic.Pointer[exclusiveCPUPlacementFailure]
++	cpuPlacementMonitorStop     chan struct{}
++	cpuPlacementMonitorStopOnce sync.Once
  
  	// balloonAccum is the cumulative virtio-balloon snapshot summed by the
  	// metrics-reader goroutine (FC's SharedIncMetric resets per flush).
-@@ -289,6 +290,7 @@ func (p *Process) configure(
+ 	balloonAccum atomic.Pointer[BalloonMetricsSnapshot]
+ }
+ 
++type exclusiveCPUPlacementFailure struct {
++	err error
++}
++
+ func validateFirecrackerBinary(versions Config, config cfg.BuilderConfig) error {
+ 	firecrackerPath := versions.FirecrackerPath(config)
+ 	_, err := os.Stat(firecrackerPath)
+@@ -227,16 +239,17 @@ func NewProcess(
+ 	)
+ 
+ 	p := &Process{
+-		Versions:              versions,
+-		Exit:                  utils.NewErrorOnce(),
+-		cmd:                   cmd,
+-		firecrackerSocketPath: files.SandboxFirecrackerSocketPath(),
+-		metricsPath:           files.SandboxMetricsFifoPath(),
+-		config:                config,
+-		client:                newApiClient(files.SandboxFirecrackerSocketPath()),
+-		rootfsProvider:        rootfsProvider,
+-		files:                 files,
+-		slot:                  slot,
++		Versions:                versions,
++		Exit:                    utils.NewErrorOnce(),
++		cmd:                     cmd,
++		firecrackerSocketPath:   files.SandboxFirecrackerSocketPath(),
++		metricsPath:             files.SandboxMetricsFifoPath(),
++		config:                  config,
++		client:                  newApiClient(files.SandboxFirecrackerSocketPath()),
++		cpuPlacementMonitorStop: make(chan struct{}),
++		rootfsProvider:          rootfsProvider,
++		files:                   files,
++		slot:                    slot,
+ 
+ 		kernelPath: startScript.KernelPath,
+ 		rootfsPath: startScript.RootfsPath,
+@@ -289,6 +302,7 @@ func (p *Process) configure(
  
  	err := p.cmd.Start()
  	if err != nil {
@@ -517,7 +734,7 @@ index da50e37..ac190b0 100644
  		// cmd.Process is nil when Start fails, so Stop() won't reach the FIFO cleanup.
  		// Remove the FIFO here to avoid leaving it behind.
  		_ = os.Remove(p.metricsPath)
-@@ -300,6 +302,7 @@ func (p *Process) configure(
+@@ -300,10 +314,18 @@ func (p *Process) configure(
  	defer cancelStart(errors.New("fc finished starting"))
  
  	go func() {
@@ -525,7 +742,18 @@ index da50e37..ac190b0 100644
  		defer stderrWriter.Close()
  		defer stdoutWriter.Close()
  
-@@ -361,6 +364,13 @@ func (p *Process) Create(
+ 		waitErr := p.cmd.Wait()
++		if placementFailure := p.cpuPlacementFailure.Load(); placementFailure != nil {
++			logger.L().Error(ctx, "Firecracker CPU placement monitor failed", zap.Error(placementFailure.err), logger.WithSandboxID(p.files.SandboxID))
++			p.Exit.SetError(placementFailure.err)
++			cancelStart(placementFailure.err)
++
++			return
++		}
+ 		if waitErr != nil {
+ 			if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
+ 				// Check if the process was killed by a signal
+@@ -361,6 +383,13 @@ func (p *Process) Create(
  	if err != nil {
  		return fmt.Errorf("error symlinking rootfs: %w", err)
  	}
@@ -539,7 +767,7 @@ index da50e37..ac190b0 100644
  
  	err = p.configure(
  		ctx,
-@@ -432,7 +442,7 @@ func (p *Process) Create(
+@@ -432,7 +461,7 @@ func (p *Process) Create(
  	}
  	telemetry.ReportEvent(ctx, "set fc network config")
  
@@ -548,7 +776,7 @@ index da50e37..ac190b0 100644
  	if err != nil {
  		fcStopErr := p.Stop(ctx)
  
-@@ -481,12 +491,27 @@ func (p *Process) Create(
+@@ -481,12 +510,28 @@ func (p *Process) Create(
  		telemetry.ReportEvent(ctx, "set fc mmds metadata")
  	}
  
@@ -567,16 +795,17 @@ index da50e37..ac190b0 100644
  		return errors.Join(fmt.Errorf("error starting fc: %w", err), fcStopErr)
  	}
 +	if p.cpuPlacement != nil {
-+		if err := applyExclusiveCPUPlacement(p.cmd.Process.Pid, p.cpuPlacement); err != nil {
++		if err := stabilizeExclusiveCPUPlacement(p.cmd.Process.Pid, p.cpuPlacement); err != nil {
 +			fcStopErr := p.Stop(ctx)
 +
 +			return errors.Join(fmt.Errorf("error applying exclusive Firecracker CPU topology: %w", err), fcStopErr)
 +		}
++		p.startExclusiveCPUPlacementMonitor(ctx)
 +	}
  
  	telemetry.ReportEvent(ctx, "started fc")
  
-@@ -513,6 +538,7 @@ func (p *Process) ResumeInPlace(
+@@ -513,6 +558,7 @@ func (p *Process) ResumeInPlace(
  func (p *Process) Resume(
  	ctx context.Context,
  	sbxMetadata sbxlogger.SandboxMetadata,
@@ -584,7 +813,7 @@ index da50e37..ac190b0 100644
  	uffdSocketPath string,
  	snapfile template.File,
  	uffdReady chan struct{},
-@@ -531,6 +557,13 @@ func (p *Process) Resume(
+@@ -531,6 +577,13 @@ func (p *Process) Resume(
  	if err != nil {
  		return fmt.Errorf("error symlinking rootfs: %w", err)
  	}
@@ -598,7 +827,7 @@ index da50e37..ac190b0 100644
  
  	// create errgroup with context that handled socket wait + rootfs symlink
  	eg, egCtx := errgroup.WithContext(ctx)
-@@ -592,6 +625,14 @@ func (p *Process) Resume(
+@@ -592,6 +645,14 @@ func (p *Process) Resume(
  		return errors.Join(fmt.Errorf("error waiting for uffd socket or symlinking rootfs: %w", err), fcStopErr)
  	}
  
@@ -613,21 +842,22 @@ index da50e37..ac190b0 100644
  	// Start the metrics reader goroutine before calling setMetrics (same ordering as Create).
  	p.startMetricsReader(ctx)
  
-@@ -616,6 +657,13 @@ func (p *Process) Resume(
+@@ -616,6 +677,14 @@ func (p *Process) Resume(
  
  		return errors.Join(fmt.Errorf("error loading snapshot: %w", err), fcStopErr)
  	}
 +	if p.cpuPlacement != nil {
-+		if err := applyExclusiveCPUPlacement(p.cmd.Process.Pid, p.cpuPlacement); err != nil {
++		if err := stabilizeExclusiveCPUPlacement(p.cmd.Process.Pid, p.cpuPlacement); err != nil {
 +			fcStopErr := p.Stop(ctx)
 +
 +			return errors.Join(fmt.Errorf("error applying exclusive Firecracker CPU topology: %w", err), fcStopErr)
 +		}
++		p.startExclusiveCPUPlacementMonitor(ctx)
 +	}
  
  	// Always apply/reset rate limits before resuming so any limits
  	// persisted in the snapshot are overwritten by the current config.
-@@ -668,6 +716,13 @@ func (p *Process) Resume(
+@@ -668,6 +737,78 @@ func (p *Process) Resume(
  	return nil
  }
  
@@ -638,9 +868,82 @@ index da50e37..ac190b0 100644
 +	return p.cpuPlacement.release()
 +}
 +
++func (p *Process) startExclusiveCPUPlacementMonitor(ctx context.Context) {
++	if p.cpuPlacement == nil || p.cmd.Process == nil {
++		return
++	}
++	pid := p.cmd.Process.Pid
++	go func() {
++		ticker := time.NewTicker(time.Second)
++		defer ticker.Stop()
++		monitorExclusiveCPUPlacement(
++			p.Exit.Done(),
++			p.cpuPlacementMonitorStop,
++			ticker.C,
++			func() error { return applyExclusiveCPUPlacement(pid, p.cpuPlacement) },
++			func(err error) {
++				failure := &exclusiveCPUPlacementFailure{err: fmt.Errorf("reconcile exclusive Firecracker CPU topology: %w", err)}
++				if p.cpuPlacementFailure.CompareAndSwap(nil, failure) {
++					logger.L().Error(ctx, "terminating Firecracker after CPU placement failure", zap.Error(failure.err), logger.WithSandboxID(p.files.SandboxID))
++					if killErr := p.cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
++						logger.L().Error(ctx, "failed to terminate Firecracker after CPU placement failure", zap.Error(killErr), logger.WithSandboxID(p.files.SandboxID))
++					}
++				}
++			},
++		)
++	}()
++}
++
++func monitorExclusiveCPUPlacement(
++	exited <-chan struct{},
++	stopped <-chan struct{},
++	ticks <-chan time.Time,
++	apply func() error,
++	fail func(error),
++) {
++	for {
++		select {
++		case <-exited:
++			return
++		case <-stopped:
++			return
++		case <-ticks:
++			if err := apply(); err != nil {
++				select {
++				case <-exited:
++					return
++				case <-stopped:
++					return
++				default:
++				}
++				fail(err)
++
++				return
++			}
++		}
++	}
++}
++
++func (p *Process) stopExclusiveCPUPlacementMonitor() {
++	if p.cpuPlacementMonitorStop == nil {
++		return
++	}
++	p.cpuPlacementMonitorStopOnce.Do(func() {
++		close(p.cpuPlacementMonitorStop)
++	})
++}
++
  func (p *Process) Pid() (int, error) {
  	if p.cmd.Process == nil {
  		return 0, errors.New("fc process not started")
+@@ -680,6 +821,7 @@ func (p *Process) Stop(ctx context.Context) error {
+ 	if p.cmd.Process == nil {
+ 		return errors.New("fc process not started")
+ 	}
++	p.stopExclusiveCPUPlacementMonitor()
+ 
+ 	// Always remove the metrics FIFO, even if the process already exited,
+ 	// to avoid leaving orphaned files behind.
 diff --git a/packages/orchestrator/pkg/sandbox/sandbox.go b/packages/orchestrator/pkg/sandbox/sandbox.go
 index f4eddf3..d6e0574 100644
 --- a/packages/orchestrator/pkg/sandbox/sandbox.go

@@ -227,7 +227,7 @@ write_manifest() {
     if [ -n "$orchestrator_cpu_topology_patch_sha256" ]; then
       printf 'artifact.orchestrator.cpu_topology_patch_sha256=%s\n' "$orchestrator_cpu_topology_patch_sha256"
       printf 'artifact.orchestrator.guest_smt=operator-configured-default-disabled\n'
-      printf 'artifact.orchestrator.exclusive_cpu_topology=single-sandbox-opt-in\n'
+      printf 'artifact.orchestrator.exclusive_cpu_topology=disabled-pending-cpuset\n'
     fi
     if [ -n "$envd_process_tag_patch_sha256" ]; then
       printf 'artifact.envd.process_tag_patch_sha256=%s\n' "$envd_process_tag_patch_sha256"

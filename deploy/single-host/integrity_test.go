@@ -422,8 +422,8 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 		t.Fatalf("capacity contract accepted an invalid exclusive CPU-topology setting: %s", output)
 	}
 	if output, err := run("plan", "BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true"); err == nil {
-		t.Fatalf("capacity contract accepted exclusive CPU placement for concurrent sandboxes: %s", output)
-	} else if !strings.Contains(string(output), "only with one active sandbox") {
+		t.Fatalf("capacity contract accepted unqualified exclusive CPU placement: %s", output)
+	} else if !strings.Contains(string(output), "disabled until cgroup cpuset isolation is qualified") {
 		t.Fatalf("exclusive CPU-topology failure was unclear: %s", output)
 	}
 	if output, err := run("plan",
@@ -434,10 +434,10 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 		"BREZEL_GUEST_VCPUS=8",
 		"BREZEL_MIN_SYSTEM_CPUS=8",
 		"BREZEL_ENGINE_HUGEPAGES=5120",
-	); err != nil {
-		t.Fatalf("capacity contract rejected coherent exclusive CPU placement: %v: %s", err, output)
-	} else if !strings.Contains(string(output), `"max_numa_physical_cores":8`) || !strings.Contains(string(output), `"host_physical_cores":16`) {
-		t.Fatalf("exclusive CPU topology evidence was incomplete: %s", output)
+	); err == nil {
+		t.Fatalf("capacity contract accepted affinity-only exclusive CPU placement: %s", output)
+	} else if !strings.Contains(string(output), "disabled until cgroup cpuset isolation is qualified") {
+		t.Fatalf("exclusive CPU-topology failure was unclear: %s", output)
 	}
 	if output, err := run("plan",
 		"BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true",
@@ -447,7 +447,7 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 		"BREZEL_ENGINE_MAX_STARTING_SANDBOXES=1",
 	); err == nil {
 		t.Fatalf("capacity contract accepted exclusive CPU placement with guest SMT: %s", output)
-	} else if !strings.Contains(string(output), "requires guest SMT to be disabled") {
+	} else if !strings.Contains(string(output), "disabled until cgroup cpuset isolation is qualified") {
 		t.Fatalf("exclusive SMT failure was unclear: %s", output)
 	}
 	if output, err := run("plan", "BREZEL_TEST_AVAILABLE_DISK_KIB=1024"); err == nil {
@@ -803,7 +803,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.envd.process_output_recovery=generation-bound-cursor-journal",
 		"artifact.orchestrator.cpu_topology_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.guest_smt=operator-configured-default-disabled",
-		"artifact.orchestrator.exclusive_cpu_topology=single-sandbox-opt-in",
+		"artifact.orchestrator.exclusive_cpu_topology=disabled-pending-cpuset",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -975,9 +975,9 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
 		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
-		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
-		"packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go":                "no NUMA node has %d distinct physical cores\nanother Firecracker process holds the exclusive CPU lease\nFirecracker vCPU thread %d was not present after VM start\n",
-		"packages/orchestrator/pkg/sandbox/fc/process.go":                     "applyExclusiveCPUPlacement\n",
+		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nFIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
+		"packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go":                "no NUMA node has %d distinct physical cores\nanother Firecracker process holds the exclusive CPU lease\nFirecracker vCPU thread %d was not present after VM start\nstabilizeExclusiveCPUPlacement\n",
+		"packages/orchestrator/pkg/sandbox/fc/process.go":                     "monitorExclusiveCPUPlacement\nreconcile exclusive Firecracker CPU topology\n",
 		"packages/orchestrator/pkg/server/main.go":                            "resolveStartingSandboxesLimit\n",
 		"packages/api/internal/orchestrator/placement/placement.go":           "resourceExhaustedRetryDelay\n",
 		"packages/api/internal/orchestrator/placement/config.go":              "resourceExhaustedBackoffMax\n",
@@ -1106,7 +1106,7 @@ func TestInstallerPinsAndAttestsNFSDurabilityPatch(t *testing.T) {
 	for _, required := range []string{
 		"0005-make-nfs-writes-crash-durable.patch",
 		"orchestrator_nfs_durability_patch_sha256",
-		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NFS_DURABILITY_PATCH"`,
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NFS_DURABILITY_PATCH"`,
 		`"$ENGINE_NFS_DURABILITY_PATCH_SHA256"`,
 		"engine orchestrator NFS durability patch verification failed",
 	} {
@@ -1142,7 +1142,7 @@ func TestInstallerPinsAndValidatesStartAdmissionPatch(t *testing.T) {
 		"0006-bound-start-admission-retries.patch",
 		"engine_start_admission_patch_sha256",
 		"BREZEL_ENGINE_MAX_STARTING_SANDBOXES:-3",
-		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_START_ADMISSION_PATCH"`,
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_START_ADMISSION_PATCH"`,
 		`"$ENGINE_NFS_DURABILITY_PATCH_SHA256" "$ENGINE_START_ADMISSION_PATCH_SHA256"`,
 		"engine start-admission patch verification failed",
 	} {
@@ -1202,7 +1202,7 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 	for _, required := range []string{
 		"0007-scale-local-resource-pools-and-template-shape.patch",
 		"engine_local_capacity_patch_sha256",
-		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_LOCAL_CAPACITY_PATCH"`,
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_LOCAL_CAPACITY_PATCH"`,
 		`BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT="$INSTALL_DIR/artifacts/build-base-template.mjs"`,
 		`BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256=$(sha256sum "$BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT"`,
 		"BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE must name an immutable OCI image manifest by SHA-256 digest",
@@ -1279,7 +1279,7 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 	for _, required := range []string{
 		"0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
 		"orchestrator_cpu_topology_patch_sha256",
-		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPU_TOPOLOGY_PATCH"`,
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPU_TOPOLOGY_PATCH"`,
 		"engine Firecracker CPU-topology patch verification failed",
 		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"`,
 	} {
@@ -1312,8 +1312,12 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 		`env:"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY"`,
 		"no NUMA node has %d distinct physical cores",
 		"Firecracker vCPU thread %d was not present after VM start",
-		`"exclusive_placement":"single-sandbox-opt-in-fail-closed"`,
-		`"host_lease":"one-firecracker"`,
+		"stabilizeExclusiveCPUPlacement",
+		"monitorExclusiveCPUPlacement",
+		"reconcile exclusive Firecracker CPU topology",
+		"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation",
+		`"exclusive_placement":"disabled-pending-cgroup-cpuset-qualification"`,
+		`"experimental_affinity_code":"present-not-runnable"`,
 	} {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("engine capability probe is missing CPU-topology contract %q", required)
@@ -1328,7 +1332,7 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 	for _, required := range []string{
 		"artifact.orchestrator.cpu_topology_patch_sha256",
 		"artifact.orchestrator.guest_smt=operator-configured-default-disabled",
-		"artifact.orchestrator.exclusive_cpu_topology=single-sandbox-opt-in",
+		"artifact.orchestrator.exclusive_cpu_topology=disabled-pending-cpuset",
 		"the CPU-topology patch requires the local-capacity patch identity",
 	} {
 		if !strings.Contains(supplyChain, required) {
@@ -1348,8 +1352,8 @@ func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 		"0009-add-bounded-process-output-replay.patch",
 		"envd_process_tag_patch_sha256",
 		"envd_process_replay_patch_sha256",
-		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_TAG_PATCH"`,
-		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_REPLAY_PATCH"`,
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_TAG_PATCH"`,
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROCESS_REPLAY_PATCH"`,
 		`BREZEL_ENGINE_ENVD_IMAGE="brezel/engine-envd:`,
 		`-f "$SCRIPT_DIR/envd.Dockerfile"`,
 		`BREZEL_ENGINE_ENVD_BINARY="$INSTALL_DIR/artifacts/envd"`,
@@ -1454,7 +1458,7 @@ func TestInstallerPinsAndValidatesSnapshotDiffCachePolicy(t *testing.T) {
 		"BREZEL_BUILD_CACHE_TTL must be between 1h and 168h",
 		"BREZEL_BUILD_CACHE_MAX_BYTES must be at least 1073741824",
 		"BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 50 and 90",
-		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CACHE_PATCH"`,
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CACHE_PATCH"`,
 		`"$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$ENGINE_ORCHESTRATOR_PATCH_SHA256" "$ENGINE_CACHE_PATCH_SHA256"`,
 	} {
 		if !strings.Contains(installer, required) {
