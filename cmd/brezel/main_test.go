@@ -66,6 +66,44 @@ func TestSimpleLifecycleClientUsesProductAPI(t *testing.T) {
 	}
 }
 
+func TestSimpleLifecycleClientPreservesImmutableTemplateReference(t *testing.T) {
+	const template = "template_123:01234567-89ab-cdef-0123-456789abcdef"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/environments":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "bad body", http.StatusBadRequest)
+				return
+			}
+			name, _ := body["name"].(string)
+			if body["template"] != template || !strings.HasPrefix(name, "brezel-") || strings.Contains(name, ":") {
+				http.Error(w, "immutable template identity was not separated from display name", http.StatusBadRequest)
+				return
+			}
+			if r.Header.Get("Idempotency-Key") != stableKey("environment", template) {
+				http.Error(w, "unstable environment key", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"resource": map[string]any{"revision_id": "envr_exact"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/sandboxes":
+			_ = json.NewEncoder(w).Encode(map[string]any{"resource": map[string]any{"id": "sbx_exact", "state": "running"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := newClient(server.URL, "a-service-token-that-is-long-enough", "project-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.newSandbox([]string{"--template", template}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWorkspaceClientUsesProductAPI(t *testing.T) {
 	var created bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

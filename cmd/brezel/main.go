@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -32,6 +33,8 @@ type client struct {
 	project string
 	http    *http.Client
 }
+
+var safeEnvironmentName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 
 type apiError struct {
 	Error struct {
@@ -187,7 +190,12 @@ func (c *client) ensureEnvironment(ctx context.Context, template string) (string
 	if template == "" {
 		return "", usageError("--template cannot be empty")
 	}
-	body := map[string]any{"name": template, "template": template}
+	name := template
+	if !safeEnvironmentName.MatchString(name) {
+		digest := sha256.Sum256([]byte(template))
+		name = "brezel-" + hex.EncodeToString(digest[:8])
+	}
+	body := map[string]any{"name": name, "template": template}
 	var result struct {
 		Resource struct {
 			RevisionID string `json:"revision_id"`
