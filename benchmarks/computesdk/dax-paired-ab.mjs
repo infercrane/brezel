@@ -161,6 +161,9 @@ export function validateConfig(value) {
   if (config.arms.baseline.configurationIdentitySha256 === config.arms.candidate.configurationIdentitySha256) {
     fail("baseline and candidate configuration identities must differ");
   }
+  if (canonicalJSON(config.arms.baseline.guest) !== canonicalJSON(config.arms.candidate.guest)) {
+    fail("baseline and candidate guest shapes must be identical");
+  }
   return config;
 }
 

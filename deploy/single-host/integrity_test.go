@@ -532,6 +532,24 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 	} else if !strings.Contains(string(output), `"firecracker_cpuset_cpus":"0,1,2,3,4,5,6,7,8,20,21,22,23,24,25,26,27,28"`) {
 		t.Fatalf("capacity contract did not normalize the qualified CPU set: %s", output)
 	}
+	for _, variable := range []string{
+		"BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS",
+		"BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS",
+		"BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS",
+		"BREZEL_ENGINE_FIRECRACKER_VMM_CPUS",
+	} {
+		malformedContract := append([]string(nil), exclusiveContract...)
+		for index, value := range malformedContract {
+			if strings.HasPrefix(value, variable+"=") {
+				malformedContract[index] = variable + "=bad"
+			}
+		}
+		if output, err := run("plan", malformedContract...); err == nil {
+			t.Fatalf("capacity contract accepted malformed %s: %s", variable, output)
+		} else if !strings.Contains(string(output), variable+" is invalid") {
+			t.Fatalf("malformed %s failure was unclear: %s", variable, output)
+		}
+	}
 	multiSandboxContract := append([]string{}, exclusiveContract...)
 	for index, value := range multiSandboxContract {
 		if strings.HasPrefix(value, "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=") {

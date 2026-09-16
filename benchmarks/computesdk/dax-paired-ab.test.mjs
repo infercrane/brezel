@@ -42,7 +42,7 @@ function config(overrides = {}) {
       candidate: {
         environmentRevision: "envr_candidate",
         configurationIdentitySha256: CANDIDATE_IDENTITY,
-        guest: { cpus: 16, architecture: "x86_64", memoryKiB: 33_584_000, minimumFreeRootKiB: 16_777_216, uid: 0 },
+        guest: { cpus: 8, architecture: "x86_64", memoryKiB: 16_792_000, minimumFreeRootKiB: 16_777_216, uid: 0 },
       },
     },
     ...overrides,
@@ -178,6 +178,12 @@ test("buildPlan creates a deterministic balanced randomized paired schedule", ()
   assert.equal(first.schedule.filter((slot) => slot.position === 1 && slot.arm === "candidate").length, 2);
   assert.notDeepEqual(first.schedule, buildPlan(config({ seed: "different-seed" })).schedule);
   assert.match(first.planId, /^[0-9a-f]{64}$/);
+});
+
+test("buildPlan rejects guest-shape drift between arms", () => {
+  const input = config();
+  input.arms.candidate.guest.cpus += 1;
+  assert.throws(() => buildPlan(input), /baseline and candidate guest shapes must be identical/);
 });
 
 test("validatePlan rejects schedule and identity tampering", () => {

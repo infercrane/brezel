@@ -709,8 +709,9 @@ node benchmarks/computesdk/dax-rehearsal.mjs > dax-report.json
 
 #### Same-host paired DAX experiments
 
-Use `dax-paired-ab.mjs` when a host, guest-shape, image, or storage change needs
-a causal before/after answer. The harness creates an immutable, seeded schedule
+Use `dax-paired-ab.mjs` when an image, storage, runtime, or host-tuning change
+needs a causal before/after answer. Both arms must retain the exact same guest
+shape. The harness creates an immutable, seeded schedule
 of baseline/candidate pairs, validates every raw pinned-DAX transcript, and
 merges only a complete chronological schedule. It deliberately does not change
 the host or deploy a profile. The operator must activate and requalify the arm
@@ -741,7 +742,7 @@ Start with at least five pairs. Put only non-secret identities in the config:
     "candidate": {
       "environmentRevision": "envr_candidate",
       "configurationIdentitySha256": "<sha256-of-rendered-candidate-profile-and-image-manifest>",
-      "guest": { "cpus": 16, "architecture": "x86_64", "memoryKiB": 32784008, "minimumFreeRootKiB": 16777216, "uid": 0 }
+      "guest": { "cpus": 8, "architecture": "x86_64", "memoryKiB": 16392004, "minimumFreeRootKiB": 16777216, "uid": 0 }
     }
   }
 }

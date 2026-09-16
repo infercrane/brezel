@@ -30,7 +30,7 @@ non_negative_integer() {
 
 normalize_index_set() {
   value=$1
-  printf '%s\n' "$value" | awk '
+  expanded=$(printf '%s\n' "$value" | awk '
     BEGIN { valid=1 }
     {
       count=split($0, parts, ",")
@@ -45,7 +45,9 @@ normalize_index_set() {
       }
     }
     END { if (!valid) exit 2 }
-  ' | sort -n -u | paste -sd, -
+  ') || return 1
+  [ -n "$expanded" ] || return 1
+  printf '%s\n' "$expanded" | sort -n -u | paste -sd, -
 }
 
 set_has() {
@@ -144,6 +146,10 @@ if [ "$EXCLUSIVE_CPU_TOPOLOGY" = true ]; then
   normalized_cpuset_mems=$(normalize_index_set "$FIRECRACKER_CPUSET_MEMS") || fail "BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS is invalid"
   normalized_vcpu_cpus=$(normalize_index_set "$FIRECRACKER_VCPU_CPUS") || fail "BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS is invalid"
   normalized_vmm_cpus=$(normalize_index_set "$FIRECRACKER_VMM_CPUS") || fail "BREZEL_ENGINE_FIRECRACKER_VMM_CPUS is invalid"
+  [ -n "$normalized_cpuset_cpus" ] || fail "BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS is invalid"
+  [ -n "$normalized_cpuset_mems" ] || fail "BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS is invalid"
+  [ -n "$normalized_vcpu_cpus" ] || fail "BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS is invalid"
+  [ -n "$normalized_vmm_cpus" ] || fail "BREZEL_ENGINE_FIRECRACKER_VMM_CPUS is invalid"
   case "$normalized_cpuset_mems" in ""|*,*) fail "exclusive placement requires exactly one NUMA memory node" ;; esac
   vcpu_count=$(printf '%s\n' "$normalized_vcpu_cpus" | awk -F, '{print NF}')
   [ "$vcpu_count" -eq "$GUEST_VCPUS" ] || fail "exclusive placement assigns $vcpu_count host CPUs to a $GUEST_VCPUS-vCPU guest"

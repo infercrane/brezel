@@ -26,7 +26,7 @@ log "Brezel virtual-memory policy applied (overcommit_memory=$have_overcommit)"
 
 normalize_index_set() {
   value=$1
-  printf '%s\n' "$value" | awk '
+  expanded=$(printf '%s\n' "$value" | awk '
     BEGIN { valid=1 }
     {
       count=split($0, parts, ",")
@@ -41,7 +41,9 @@ normalize_index_set() {
       }
     }
     END { if (!valid) exit 2 }
-  ' | sort -n -u | paste -sd, -
+  ') || return 1
+  [ -n "$expanded" ] || return 1
+  printf '%s\n' "$expanded" | sort -n -u | paste -sd, -
 }
 
 if [ "${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}" = true ]; then
@@ -51,6 +53,8 @@ if [ "${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}" = true ]; then
   [ -n "$requested_mems" ] || die "exclusive CPU topology has no NUMA memory set" "set BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS to one qualified NUMA node"
   normalized_cpus=$(normalize_index_set "$requested_cpus") || die "invalid exclusive CPU set" "use Linux cpulist syntax such as 2-19"
   normalized_mems=$(normalize_index_set "$requested_mems") || die "invalid exclusive NUMA memory set" "use a single numeric NUMA node"
+  [ -n "$normalized_cpus" ] || die "invalid exclusive CPU set" "use Linux cpulist syntax such as 2-19"
+  [ -n "$normalized_mems" ] || die "invalid exclusive NUMA memory set" "use a single numeric NUMA node"
   case "$normalized_mems" in
     ""|*,*) die "exclusive CPU topology requires exactly one NUMA memory node" "choose one NUMA node containing all guest and VMM cores" ;;
   esac
