@@ -22,6 +22,7 @@ ENGINE_ENVD_PROCESS_REPLAY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0009
 ENGINE_CPU_TOPOLOGY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0010-disable-smt-and-pin-exclusive-cpu-topology.patch"
 ENGINE_ROOTFS_READ_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0011-reduce-rootfs-read-amplification.patch"
 ENGINE_NBD_MULTIQUEUE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0012-harden-nbd-multiqueue-lifecycle.patch"
+ENGINE_ROOTFS_COALESCING_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0013-coalesce-rootfs-lower-layer-reads.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
@@ -137,9 +138,10 @@ ENGINE_LOCAL_CAPACITY_PATCH_SHA256=$(read_lock engine_local_capacity_patch_sha25
 ENGINE_CPU_TOPOLOGY_PATCH_SHA256=$(read_lock orchestrator_cpu_topology_patch_sha256)
 ENGINE_ROOTFS_READ_PATCH_SHA256=$(read_lock orchestrator_rootfs_read_patch_sha256)
 ENGINE_NBD_MULTIQUEUE_PATCH_SHA256=$(read_lock orchestrator_nbd_multiqueue_patch_sha256)
+ENGINE_ROOTFS_COALESCING_PATCH_SHA256=$(read_lock orchestrator_rootfs_coalescing_patch_sha256)
 ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256=$(read_lock envd_process_tag_patch_sha256)
 ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256=$(read_lock envd_process_replay_patch_sha256)
-if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
+if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_COALESCING_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
   echo "invalid engine.lock" >&2
   exit 1
 fi
@@ -284,6 +286,10 @@ if [ "$(sha256sum "$ENGINE_NBD_MULTIQUEUE_PATCH" | awk '{print $1}')" != "$ENGIN
   echo "engine NBD multiqueue patch verification failed" >&2
   exit 1
 fi
+if [ "$(sha256sum "$ENGINE_ROOTFS_COALESCING_PATCH" | awk '{print $1}')" != "$ENGINE_ROOTFS_COALESCING_PATCH_SHA256" ]; then
+  echo "engine rootfs coalescing patch verification failed" >&2
+  exit 1
+fi
 if [ "$(sha256sum "$ENGINE_ENVD_PROCESS_TAG_PATCH" | awk '{print $1}')" != "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ]; then
   echo "engine envd process-tag patch verification failed" >&2
   exit 1
@@ -411,6 +417,7 @@ patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ENVD_PROC
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPU_TOPOLOGY_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_READ_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NBD_MULTIQUEUE_PATCH"
+patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_COALESCING_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 
 # The upstream base-template service executes a JavaScript helper embedded in
@@ -564,7 +571,7 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
   "$BREZEL_ENGINE_ORCHESTRATOR_SHA256" "$ENGINE_ORCHESTRATOR_PATCH_SHA256" "$ENGINE_CACHE_PATCH_SHA256" \
   "$ENGINE_NFS_DURABILITY_PATCH_SHA256" "$ENGINE_START_ADMISSION_PATCH_SHA256" "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" \
   "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" \
-  "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" \
+  "$ENGINE_ROOTFS_COALESCING_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" \
   "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256"
 
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \

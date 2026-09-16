@@ -29,18 +29,19 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		t.Fatalf("engine.lock commit %q differs from audited adapter revision %q", values["commit"], e2b.AuditedRevision)
 	}
 	patches := map[string]string{
-		"api_patch_sha256":                         "0001-harden-volume-secrets-and-cleanup.patch",
-		"api_build_patch_sha256":                   "0002-pin-api-build-images.patch",
-		"orchestrator_lifecycle_patch_sha256":      "0003-acknowledge-delete-after-sandbox-teardown.patch",
-		"orchestrator_cache_patch_sha256":          "0004-bound-snapshot-diff-cache.patch",
-		"orchestrator_nfs_durability_patch_sha256": "0005-make-nfs-writes-crash-durable.patch",
-		"engine_start_admission_patch_sha256":      "0006-bound-start-admission-retries.patch",
-		"engine_local_capacity_patch_sha256":       "0007-scale-local-resource-pools-and-template-shape.patch",
-		"envd_process_tag_patch_sha256":            "0008-fix-envd-process-tag-resolution.patch",
-		"envd_process_replay_patch_sha256":         "0009-add-bounded-process-output-replay.patch",
-		"orchestrator_cpu_topology_patch_sha256":   "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
-		"orchestrator_rootfs_read_patch_sha256":    "0011-reduce-rootfs-read-amplification.patch",
-		"orchestrator_nbd_multiqueue_patch_sha256": "0012-harden-nbd-multiqueue-lifecycle.patch",
+		"api_patch_sha256":                            "0001-harden-volume-secrets-and-cleanup.patch",
+		"api_build_patch_sha256":                      "0002-pin-api-build-images.patch",
+		"orchestrator_lifecycle_patch_sha256":         "0003-acknowledge-delete-after-sandbox-teardown.patch",
+		"orchestrator_cache_patch_sha256":             "0004-bound-snapshot-diff-cache.patch",
+		"orchestrator_nfs_durability_patch_sha256":    "0005-make-nfs-writes-crash-durable.patch",
+		"engine_start_admission_patch_sha256":         "0006-bound-start-admission-retries.patch",
+		"engine_local_capacity_patch_sha256":          "0007-scale-local-resource-pools-and-template-shape.patch",
+		"envd_process_tag_patch_sha256":               "0008-fix-envd-process-tag-resolution.patch",
+		"envd_process_replay_patch_sha256":            "0009-add-bounded-process-output-replay.patch",
+		"orchestrator_cpu_topology_patch_sha256":      "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
+		"orchestrator_rootfs_read_patch_sha256":       "0011-reduce-rootfs-read-amplification.patch",
+		"orchestrator_nbd_multiqueue_patch_sha256":    "0012-harden-nbd-multiqueue-lifecycle.patch",
+		"orchestrator_rootfs_coalescing_patch_sha256": "0013-coalesce-rootfs-lower-layer-reads.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -795,6 +796,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		patchDigest,
 		patchDigest,
 		patchDigest,
+		patchDigest,
 		hex.EncodeToString(envdDigest[:]), patchDigest,
 		patchDigest,
 	)
@@ -820,6 +822,8 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.orchestrator.nbd_multiqueue_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.nbd_connections_per_device=operator-configured-default-one-range-one-to-four",
 		"artifact.orchestrator.nbd_lifecycle=attempt-owned-idempotent-cleanup",
+		"artifact.orchestrator.rootfs_coalescing_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.rootfs_lower_read=homogeneous-range-single-source-with-generation-validation",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -988,8 +992,11 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/shared/pkg/featureflags/flags.go":                           "NewStringFlag(\"resume-prefetch-source\", \"init\")\n",
 		"packages/shared/pkg/storage/sandbox.go":                              "fmt.Sprintf(\"rootfs-%s-%s.cow\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/sandbox\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/template\"\n",
 		"packages/orchestrator/pkg/sandbox/block/local.go":                    "d.f.ReadAt(p[:length], off)\n",
-		"packages/orchestrator/pkg/sandbox/block/overlay.go":                  "if cacheRangeValid && length > o.blockSize && length%o.blockSize == 0 {\n",
+		"packages/orchestrator/pkg/sandbox/block/cache.go":                    "func (c *Cache) rangePresence\n",
+		"packages/orchestrator/pkg/sandbox/block/tracker.go":                  "func (t *Tracker) Presence\n",
+		"packages/orchestrator/pkg/sandbox/block/overlay.go":                  "if cacheRangeValid && length > o.blockSize && length%o.blockSize == 0 {\ntryCoalescedLowerRead\nmutationState atomic.Uint64\n",
 		"packages/orchestrator/pkg/sandbox/block/overlay_read_test.go":        "TestOverlayReadAtMixedWritableAndBaseBlocks\n",
+		"packages/orchestrator/pkg/sandbox/block/overlay_coalesced_test.go":   "TestOverlayCoalescedBaseReadRetriesAfterConcurrentWrite\nTestOverlayCoalescedBaseReadRetriesAfterConcurrentSwapAndWrite\n",
 		"packages/orchestrator/pkg/sandbox/network/pool.go":                   "NewSlotsPoolSize    = 32\nReusedSlotsPoolSize = 100\n",
 		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
@@ -1480,6 +1487,59 @@ func TestInstallerPinsAndValidatesNBDMultiqueueLifecyclePatch(t *testing.T) {
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("distribution manifest writer is missing NBD lifecycle identity %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsAndValidatesRootfsCoalescingPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0013-coalesce-rootfs-lower-layer-reads.patch",
+		"orchestrator_rootfs_coalescing_patch_sha256",
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_COALESCING_PATCH"`,
+		"engine rootfs coalescing patch verification failed",
+		`"$ENGINE_ROOTFS_COALESCING_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing rootfs coalescing invariant %q", required)
+		}
+	}
+
+	probeData, err := os.ReadFile("engine-capabilities.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := string(probeData)
+	for _, required := range []string{
+		"the allocation-free rootfs range classifier",
+		"the internally consistent rootfs presence snapshot",
+		"the homogeneous lower-layer rootfs read path",
+		"the concurrent-mutation generation guard",
+		"TestOverlayCoalescedBaseReadRetriesAfterConcurrentWrite",
+		"TestOverlayCoalescedBaseReadRetriesAfterConcurrentSwapAndWrite",
+		`"homogeneous_lower_range":"single-source-read-with-generation-validation"`,
+	} {
+		if !strings.Contains(probe, required) {
+			t.Fatalf("engine capability probe is missing rootfs coalescing contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.rootfs_coalescing_patch_sha256",
+		"artifact.orchestrator.rootfs_lower_read=homogeneous-range-single-source-with-generation-validation",
+		"the rootfs-coalescing patch requires the NBD-multiqueue patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("distribution manifest writer is missing rootfs coalescing identity %q", required)
 		}
 	}
 }

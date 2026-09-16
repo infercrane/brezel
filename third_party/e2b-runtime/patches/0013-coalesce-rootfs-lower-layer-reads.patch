@@ -1,0 +1,543 @@
+diff --git a/packages/orchestrator/pkg/sandbox/block/cache.go b/packages/orchestrator/pkg/sandbox/block/cache.go
+index 4a00dbba1..458d5b921 100644
+--- a/packages/orchestrator/pkg/sandbox/block/cache.go
++++ b/packages/orchestrator/pkg/sandbox/block/cache.go
+@@ -520,10 +520,24 @@ func (c *Cache) sliceDirect(off, length int64) ([]byte, error) {
+ 
+ // Zero blocks are treated as cached: the mmap region reads back as zero (punched).
+ func (c *Cache) isCached(off, length int64) bool {
++	all, _ := c.rangePresence(off, length)
++
++	return all
++}
++
++// rangePresence classifies a range without copying bytes. dirtyFile caches
++// contain their complete backing file; sparse writable caches consult their
++// disjoint tracker bitmaps once so the result is an internally consistent
++// all/none/mixed snapshot.
++func (c *Cache) rangePresence(off, length int64) (all, none bool) {
++	if c.dirtyFile {
++		return true, false
++	}
++
+ 	start := uint32(header.BlockIdx(off, c.blockSize))
+ 	end := uint32(header.BlockCeilIdx(min(off+length, c.size), c.blockSize))
+ 
+-	return c.tracker.Present(start, end)
++	return c.tracker.Presence(start, end)
+ }
+ 
+ func (c *Cache) setIsCached(off, length int64) {
+diff --git a/packages/orchestrator/pkg/sandbox/block/overlay.go b/packages/orchestrator/pkg/sandbox/block/overlay.go
+index 40c8be6f3..6437d48f1 100644
+--- a/packages/orchestrator/pkg/sandbox/block/overlay.go
++++ b/packages/orchestrator/pkg/sandbox/block/overlay.go
+@@ -25,6 +25,12 @@ type Overlay struct {
+ 	sealing      atomic.Pointer[Cache]
+ 	cacheEjected atomic.Bool
+ 	blockSize    int64
++
++	// mutationState packs a generation into the high 32 bits and the active
++	// mutation count into the low 32 bits. Mutations never wait for remote I/O:
++	// a reader accepts lower-source bytes only when this exact state remains a
++	// quiescent (active == 0) snapshot across selection and I/O.
++	mutationState atomic.Uint64
+ }
+ 
+ var _ Device = (*Overlay)(nil)
+@@ -53,6 +59,102 @@ func isCacheClosed(err error) bool {
+ 	return errors.As(err, &closed)
+ }
+ 
++func (o *Overlay) beginMutation() {
++	// One atomic transition publishes both a new generation and active writer.
++	o.mutationState.Add(1<<32 | 1)
++}
++
++func (o *Overlay) endMutation() {
++	// Increment the generation again while decrementing the active count. Since
++	// beginMutation has already made the low word non-zero, subtraction cannot
++	// borrow from the generation word.
++	o.mutationState.Add(1<<32 - 1)
++}
++
++func mutationQuiescent(state uint64) bool {
++	return uint32(state) == 0
++}
++
++func (o *Overlay) mutationStable(state uint64) bool {
++	return mutationQuiescent(state) && o.mutationState.Load() == state
++}
++
++const maxCoalescedReadAttempts = 2
++
++// tryCoalescedLowerRead serves homogeneous ranges from one lower-precedence
++// source. It never holds an overlay or cache lock across base-device I/O. If a
++// concurrent write, swap, fold, release, eject, close, or header change could
++// invalidate source precedence, the generation check rejects the bytes and the
++// operation retries or falls back to the block walk.
++func (o *Overlay) tryCoalescedLowerRead(ctx context.Context, p []byte, off int64) (handled bool, n int, err error) {
++	length := int64(len(p))
++	if length <= o.blockSize || length%o.blockSize != 0 || o.cacheEjected.Load() {
++		return false, 0, nil
++	}
++
++	for range maxCoalescedReadAttempts {
++		mutationState := o.mutationState.Load()
++		if !mutationQuiescent(mutationState) {
++			return false, 0, nil
++		}
++
++		cache := o.cache.Load()
++		if cache == nil || cache.isClosed() || off < 0 || off > cache.size || length > cache.size-off {
++			return false, 0, nil
++		}
++
++		allWritable, noWritable := cache.rangePresence(off, length)
++		if allWritable || !noWritable {
++			return false, 0, nil
++		}
++
++		sealing := o.sealing.Load()
++		readSealing := false
++		if sealing != nil {
++			if sealing.isClosed() {
++				return false, 0, nil
++			}
++
++			allSealing, noSealing := sealing.rangePresence(off, length)
++			switch {
++			case allSealing:
++				readSealing = true
++			case !noSealing:
++				return false, 0, nil
++			}
++		}
++
++		if !o.mutationStable(mutationState) {
++			continue
++		}
++
++		if readSealing {
++			n, err = sealing.ReadAt(p, off)
++		} else {
++			n, err = o.device.ReadAt(ctx, p, off)
++		}
++
++		if !o.mutationStable(mutationState) {
++			continue
++		}
++
++		if err != nil {
++			if readSealing && isCacheClosed(err) {
++				return false, 0, nil
++			}
++			if readSealing {
++				return true, n, fmt.Errorf("error reading from sealing cache: %w", err)
++			}
++
++			return true, n, fmt.Errorf("error reading from device: %w", err)
++		}
++
++		return true, len(p), nil
++	}
++
++	return false, 0, nil
++}
++
+ func (o *Overlay) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+ 	// Snapshot both cache pointers once so a concurrent SwapCache/collapse can't
+ 	// change the layering mid-read.
+@@ -71,6 +173,16 @@ func (o *Overlay) ReadAt(ctx context.Context, p []byte, off int64) (int, error)
+ 			return 0, fmt.Errorf("error reading from cache: %w", err)
+ 		}
+ 	}
++	if cacheRangeValid && length > o.blockSize && length%o.blockSize == 0 && !o.cacheEjected.Load() {
++		if handled, n, err := o.tryCoalescedLowerRead(ctx, p, off); handled {
++			return n, err
++		}
++
++		// A rejected optimistic read may have observed a concurrent swap or fold.
++		// Refresh both pointers before entering the established block path.
++		cache = o.cache.Load()
++		sealing = o.sealing.Load()
++	}
+ 
+ 	// Iterate offsets directly. header.BlocksOffsets allocated an offsets slice
+ 	// proportional to the request size on every cache miss.
+@@ -131,6 +243,9 @@ func (o *Overlay) ReadAt(ctx context.Context, p []byte, off int64) (int, error)
+ // has not yet been released via ReleaseSealing. The caller must ensure no writes
+ // are in flight during the swap (the VM is FC-paused at snapshot time).
+ func (o *Overlay) SwapCache(newCache *Cache) (*Cache, error) {
++	o.beginMutation()
++	defer o.endMutation()
++
+ 	if o.cacheEjected.Load() {
+ 		return nil, errors.New("cache ejected")
+ 	}
+@@ -155,6 +270,13 @@ func (o *Overlay) SwapCache(newCache *Cache) (*Cache, error) {
+ // base device can already serve the sealing cache's blocks (see FoldSealing)
+ // before closing it, so in-flight reads that fall through don't miss data.
+ func (o *Overlay) ReleaseSealing() *Cache {
++	o.beginMutation()
++	defer o.endMutation()
++
++	return o.releaseSealing()
++}
++
++func (o *Overlay) releaseSealing() *Cache {
+ 	return o.sealing.Swap(nil)
+ }
+ 
+@@ -167,6 +289,9 @@ func (o *Overlay) ReleaseSealing() *Cache {
+ // On fold error the sealing cache is left attached (reads stay correct via the
+ // sealing fallback) and the error is returned; the caller must not close it.
+ func (o *Overlay) FoldSealing() (*Cache, error) {
++	o.beginMutation()
++	defer o.endMutation()
++
+ 	sealing := o.sealing.Load()
+ 	if sealing == nil {
+ 		return nil, nil
+@@ -176,10 +301,13 @@ func (o *Overlay) FoldSealing() (*Cache, error) {
+ 		return nil, err
+ 	}
+ 
+-	return o.ReleaseSealing(), nil
++	return o.releaseSealing(), nil
+ }
+ 
+ func (o *Overlay) EjectCache() (*Cache, error) {
++	o.beginMutation()
++	defer o.endMutation()
++
+ 	if !o.cacheEjected.CompareAndSwap(false, true) {
+ 		return nil, errors.New("cache already ejected")
+ 	}
+@@ -207,10 +335,16 @@ func (o *Overlay) Slice(_ context.Context, _, _ int64) ([]byte, error) {
+ }
+ 
+ func (o *Overlay) WriteAt(p []byte, off int64) (int, error) {
++	o.beginMutation()
++	defer o.endMutation()
++
+ 	return o.cache.Load().WriteAt(p, off)
+ }
+ 
+ func (o *Overlay) WriteZeroesAt(off, length int64) (int, error) {
++	o.beginMutation()
++	defer o.endMutation()
++
+ 	return o.cache.Load().WriteZeroesAt(off, length)
+ }
+ 
+@@ -223,6 +357,9 @@ func (o *Overlay) BlockSize() int64 {
+ }
+ 
+ func (o *Overlay) Close() error {
++	o.beginMutation()
++	defer o.endMutation()
++
+ 	var errs []error
+ 
+ 	// Close any outstanding sealing cache first; it is never ejected (only the
+@@ -243,5 +380,8 @@ func (o *Overlay) Header() *header.Header {
+ }
+ 
+ func (o *Overlay) SwapHeader(h *header.Header) {
++	o.beginMutation()
++	defer o.endMutation()
++
+ 	o.device.SwapHeader(h)
+ }
+diff --git a/packages/orchestrator/pkg/sandbox/block/overlay_coalesced_test.go b/packages/orchestrator/pkg/sandbox/block/overlay_coalesced_test.go
+new file mode 100644
+index 000000000..7202c0eb0
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/block/overlay_coalesced_test.go
+@@ -0,0 +1,167 @@
++//go:build linux
++
++package block
++
++import (
++	"context"
++	"sync"
++	"sync/atomic"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
++)
++
++type blockingOriginalDevice struct {
++	fakeOriginalDevice
++
++	started chan struct{}
++	release chan struct{}
++	once    sync.Once
++	calls   atomic.Int64
++}
++
++func (d *blockingOriginalDevice) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
++	d.calls.Add(1)
++	d.once.Do(func() { close(d.started) })
++	select {
++	case <-d.release:
++	case <-ctx.Done():
++		return 0, ctx.Err()
++	}
++
++	return copy(p, d.data[off:]), nil
++}
++
++func TestOverlayReadAtCoalescesSealingRange(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	size := int64(32) * blockSize
++	base := &fakeOriginalDevice{data: fill(size, 0x11)}
++	sealing, err := NewCache(size, blockSize, t.TempDir()+"/sealing", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, sealing)
++	t.Cleanup(func() { require.NoError(t, overlay.Close()) })
++
++	want := fill(size, 0xA5)
++	_, err = overlay.WriteAt(want, 0)
++	require.NoError(t, err)
++	fresh, err := NewCache(size, blockSize, t.TempDir()+"/fresh", false)
++	require.NoError(t, err)
++	_, err = overlay.SwapCache(fresh)
++	require.NoError(t, err)
++
++	got := make([]byte, size)
++	n, err := overlay.ReadAt(t.Context(), got, 0)
++	require.NoError(t, err)
++	require.Equal(t, len(got), n)
++	require.Equal(t, want, got)
++	require.Zero(t, base.reads, "an all-sealing range must not reach the base")
++}
++
++func TestOverlayCoalescedBaseReadRetriesAfterConcurrentWrite(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	size := int64(32) * blockSize
++	base := &blockingOriginalDevice{
++		fakeOriginalDevice: fakeOriginalDevice{data: fill(size, 0x11)},
++		started:            make(chan struct{}),
++		release:            make(chan struct{}),
++	}
++	cache, err := NewCache(size, blockSize, t.TempDir()+"/cache", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, cache)
++	t.Cleanup(func() { require.NoError(t, overlay.Close()) })
++
++	type readResult struct {
++		data []byte
++		n    int
++		err  error
++	}
++	result := make(chan readResult, 1)
++	go func() {
++		data := make([]byte, size)
++		n, err := overlay.ReadAt(t.Context(), data, 0)
++		result <- readResult{data: data, n: n, err: err}
++	}()
++
++	<-base.started
++	want := fill(size, 0xA5)
++	_, err = overlay.WriteAt(want, 0)
++	require.NoError(t, err, "writes must not wait for lower-source I/O")
++	close(base.release)
++
++	got := <-result
++	require.NoError(t, got.err)
++	require.Equal(t, len(got.data), got.n)
++	require.Equal(t, want, got.data, "a completed concurrent write must invalidate stale base bytes")
++	require.EqualValues(t, 1, base.calls.Load(), "the retry should resolve from the writable cache")
++}
++
++func TestOverlayCoalescedBaseReadRetriesAfterConcurrentSwapAndWrite(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	size := int64(32) * blockSize
++	base := &blockingOriginalDevice{
++		fakeOriginalDevice: fakeOriginalDevice{data: fill(size, 0x11)},
++		started:            make(chan struct{}),
++		release:            make(chan struct{}),
++	}
++	initial, err := NewCache(size, blockSize, t.TempDir()+"/initial", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, initial)
++	t.Cleanup(func() { require.NoError(t, overlay.Close()) })
++
++	type readResult struct {
++		data []byte
++		n    int
++		err  error
++	}
++	result := make(chan readResult, 1)
++	go func() {
++		data := make([]byte, size)
++		n, err := overlay.ReadAt(t.Context(), data, 0)
++		result <- readResult{data: data, n: n, err: err}
++	}()
++
++	<-base.started
++	fresh, err := NewCache(size, blockSize, t.TempDir()+"/fresh", false)
++	require.NoError(t, err)
++	_, err = overlay.SwapCache(fresh)
++	require.NoError(t, err)
++	want := fill(size, 0xB6)
++	_, err = overlay.WriteAt(want, 0)
++	require.NoError(t, err)
++	close(base.release)
++
++	got := <-result
++	require.NoError(t, got.err)
++	require.Equal(t, len(got.data), got.n)
++	require.Equal(t, want, got.data)
++	require.EqualValues(t, 1, base.calls.Load())
++}
++
++func TestOverlayMutationStateTracksOverlappingWriters(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	base := &fakeOriginalDevice{data: make([]byte, blockSize)}
++	cache, err := NewCache(blockSize, blockSize, t.TempDir()+"/cache", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, cache)
++	t.Cleanup(func() { require.NoError(t, overlay.Close()) })
++
++	overlay.beginMutation()
++	overlay.beginMutation()
++	require.EqualValues(t, 2, uint32(overlay.mutationState.Load()))
++	require.False(t, mutationQuiescent(overlay.mutationState.Load()))
++	overlay.endMutation()
++	require.EqualValues(t, 1, uint32(overlay.mutationState.Load()))
++	require.False(t, mutationQuiescent(overlay.mutationState.Load()))
++	overlay.endMutation()
++	require.True(t, mutationQuiescent(overlay.mutationState.Load()))
++}
+diff --git a/packages/orchestrator/pkg/sandbox/block/overlay_read_bench_test.go b/packages/orchestrator/pkg/sandbox/block/overlay_read_bench_test.go
+index f31b7da2c..bceccf7ed 100644
+--- a/packages/orchestrator/pkg/sandbox/block/overlay_read_bench_test.go
++++ b/packages/orchestrator/pkg/sandbox/block/overlay_read_bench_test.go
+@@ -15,15 +15,18 @@ var overlayReadBenchmarkSink byte
+ func BenchmarkOverlayReadAt(b *testing.B) {
+ 	for _, size := range []int64{4 << 10, 128 << 10, 1 << 20} {
+ 		b.Run(fmt.Sprintf("all-writable/%dKiB", size>>10), func(b *testing.B) {
+-			benchmarkOverlayReadAt(b, size, true)
++			benchmarkOverlayReadAt(b, size, "writable")
++		})
++		b.Run(fmt.Sprintf("all-sealing/%dKiB", size>>10), func(b *testing.B) {
++			benchmarkOverlayReadAt(b, size, "sealing")
+ 		})
+ 		b.Run(fmt.Sprintf("all-base/%dKiB", size>>10), func(b *testing.B) {
+-			benchmarkOverlayReadAt(b, size, false)
++			benchmarkOverlayReadAt(b, size, "base")
+ 		})
+ 	}
+ }
+ 
+-func benchmarkOverlayReadAt(b *testing.B, size int64, writable bool) {
++func benchmarkOverlayReadAt(b *testing.B, size int64, source string) {
+ 	b.Helper()
+ 
+ 	base := &fakeOriginalDevice{data: make([]byte, size)}
+@@ -31,10 +34,9 @@ func benchmarkOverlayReadAt(b *testing.B, size int64, writable bool) {
+ 	if err != nil {
+ 		b.Fatal(err)
+ 	}
+-	b.Cleanup(func() { _ = cache.Close() })
+-
+ 	overlay := NewOverlay(base, cache)
+-	if writable {
++	b.Cleanup(func() { _ = overlay.Close() })
++	if source == "writable" || source == "sealing" {
+ 		data := make([]byte, size)
+ 		for i := range data {
+ 			data[i] = byte(i)
+@@ -43,6 +45,15 @@ func benchmarkOverlayReadAt(b *testing.B, size int64, writable bool) {
+ 			b.Fatal(err)
+ 		}
+ 	}
++	if source == "sealing" {
++		fresh, err := NewCache(size, int64(header.PageSize), b.TempDir()+"/fresh", false)
++		if err != nil {
++			b.Fatal(err)
++		}
++		if _, err := overlay.SwapCache(fresh); err != nil {
++			b.Fatal(err)
++		}
++	}
+ 
+ 	buf := make([]byte, size)
+ 	ctx := context.Background()
+diff --git a/packages/orchestrator/pkg/sandbox/block/overlay_read_test.go b/packages/orchestrator/pkg/sandbox/block/overlay_read_test.go
+index 134228fe9..35f053471 100644
+--- a/packages/orchestrator/pkg/sandbox/block/overlay_read_test.go
++++ b/packages/orchestrator/pkg/sandbox/block/overlay_read_test.go
+@@ -37,7 +37,7 @@ func TestOverlayReadAtWholeWritableRange(t *testing.T) {
+ 	require.Zero(t, base.reads, "an all-writable read must not reach the base device")
+ }
+ 
+-func TestOverlayReadAtAllBaseRetainsBlockFallback(t *testing.T) {
++func TestOverlayReadAtAllBaseCoalescesHomogeneousRange(t *testing.T) {
+ 	t.Parallel()
+ 
+ 	const blocks = int64(32)
+@@ -58,7 +58,7 @@ func TestOverlayReadAtAllBaseRetainsBlockFallback(t *testing.T) {
+ 	require.NoError(t, err)
+ 	require.Equal(t, len(got), n)
+ 	require.Equal(t, want, got)
+-	require.EqualValues(t, blocks, base.reads, "base fallback remains block-granular")
++	require.Equal(t, 1, base.reads, "a homogeneous base range should use one source read")
+ }
+ 
+ func TestOverlayReadAtMixedWritableAndBaseBlocks(t *testing.T) {
+diff --git a/packages/orchestrator/pkg/sandbox/block/tracker.go b/packages/orchestrator/pkg/sandbox/block/tracker.go
+index 9d455ae53..23eed239e 100644
+--- a/packages/orchestrator/pkg/sandbox/block/tracker.go
++++ b/packages/orchestrator/pkg/sandbox/block/tracker.go
+@@ -278,8 +278,18 @@ func (t *Tracker) HasRange(start, end uint32, state State) bool {
+ // Present reports whether every index in [start, end) has been observed
+ // (i.e., is not NotPresent).
+ func (t *Tracker) Present(start, end uint32) bool {
++	all, _ := t.Presence(start, end)
++
++	return all
++}
++
++// Presence reports whether every or no index in [start, end) has been
++// observed. The two answers let the overlay distinguish homogeneous ranges,
++// which can be read from one lower source, from mixed ranges that still need
++// block-by-block precedence checks.
++func (t *Tracker) Presence(start, end uint32) (all, none bool) {
+ 	if end <= start {
+-		return end == start
++		return end == start, end == start
+ 	}
+ 
+ 	t.mu.RLock()
+@@ -287,10 +297,12 @@ func (t *Tracker) Present(start, end uint32) bool {
+ 
+ 	s, e := uint64(start), uint64(end)
+ 	// The state bitmaps are disjoint by invariant, so the cardinalities sum.
+-	return t.dirty.CardinalityInRange(s, e)+
+-		t.zero.CardinalityInRange(s, e)+
+-		t.removed.CardinalityInRange(s, e)+
+-		t.clean.CardinalityInRange(s, e) == e-s
++	present := t.dirty.CardinalityInRange(s, e) +
++		t.zero.CardinalityInRange(s, e) +
++		t.removed.CardinalityInRange(s, e) +
++		t.clean.CardinalityInRange(s, e)
++
++	return present == e-s, present == 0
+ }
+ 
+ // Export returns clones of the dirty and empty bitmaps. Zero and Removed
