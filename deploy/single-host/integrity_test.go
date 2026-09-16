@@ -223,6 +223,25 @@ func TestDeploymentScriptsParse(t *testing.T) {
 	}
 }
 
+func TestQualificationAndBenchmarkBindInstalledTemplateIdentity(t *testing.T) {
+	for _, script := range []string{"qualify.sh", "benchmark.sh"} {
+		data, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := string(data)
+		for _, required := range []string{
+			`DISTRIBUTION_MANIFEST="$INSTALL_DIR/distribution.manifest"`,
+			`artifact.template.name`,
+			`BREZEL_ENGINE_BASE_TEMPLATE_NAME=$INSTALLED_TEMPLATE_NAME`,
+		} {
+			if !strings.Contains(content, required) {
+				t.Fatalf("%s does not bind capacity verification to installed template identity %q", script, required)
+			}
+		}
+	}
+}
+
 func TestEngineCapacityUpdateVerifiesEffectiveLimitBeforeCommit(t *testing.T) {
 	data, err := os.ReadFile("engine-capacity-contract.sh")
 	if err != nil {

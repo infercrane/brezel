@@ -6,6 +6,7 @@ REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 INSTALL_DIR=${BREZEL_INSTALL_DIR:-"$REPO_DIR/.brezel"}
 TOKEN_FILE="$INSTALL_DIR/secrets/service.token"
 TEMPLATE_REFERENCE_FILE="$INSTALL_DIR/artifacts/base-template.reference"
+DISTRIBUTION_MANIFEST="$INSTALL_DIR/distribution.manifest"
 QUALIFICATION_DIR="$INSTALL_DIR/qualification"
 ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
 ENGINE_ENV="$INSTALL_DIR/engine/embed/compose/.env"
@@ -33,6 +34,20 @@ printf '%s\n' "$TEMPLATE_REFERENCE" | grep -Eq '^[a-z0-9_-]+:[0-9a-f]{8}-[0-9a-f
   echo "immutable base-template reference is invalid; run install.sh again" >&2
   exit 1
 }
+[ -s "$DISTRIBUTION_MANIFEST" ] || {
+  echo "installed distribution manifest is missing; run install.sh again" >&2
+  exit 1
+}
+INSTALLED_TEMPLATE_NAME=$(awk -F= '$1 == "artifact.template.name" { if (++count > 1) exit 2; print substr($0, index($0, "=") + 1) } END { if (count != 1) exit 1 }' "$DISTRIBUTION_MANIFEST") || {
+  echo "installed distribution manifest has no unique base-template name" >&2
+  exit 1
+}
+case "$INSTALLED_TEMPLATE_NAME" in
+  ""|*[!a-z0-9_-]*|[-_]*)
+    echo "installed distribution manifest has an invalid base-template name" >&2
+    exit 1
+    ;;
+esac
 
 TARGET=${BREZEL_CONFORMANCE_TARGET:-"developer-single-host-$(hostname)-$(date -u +%Y%m%dT%H%M%SZ)"}
 case "$TARGET" in
@@ -92,6 +107,7 @@ preflight_capacity_contract() {
     -e "BREZEL_GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}" \
     -e "BREZEL_GUEST_MIN_FREE_DISK_MIB=${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}" \
     -e "BREZEL_GUEST_MAX_FREE_DISK_MIB=${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}" \
+    -e "BREZEL_ENGINE_BASE_TEMPLATE_NAME=$INSTALLED_TEMPLATE_NAME" \
     postgres sh -s -- verify < "$ENGINE_CAPACITY_PROBE")
 }
 
@@ -310,6 +326,7 @@ run_engine_fast_path_qualification() {
     -e "BREZEL_GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}" \
     -e "BREZEL_GUEST_MIN_FREE_DISK_MIB=${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}" \
     -e "BREZEL_GUEST_MAX_FREE_DISK_MIB=${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}" \
+    -e "BREZEL_ENGINE_BASE_TEMPLATE_NAME=$INSTALLED_TEMPLATE_NAME" \
     postgres sh -s -- verify < "$ENGINE_CAPACITY_PROBE")
 
   if ! capability_json=$(engine_compose exec -T orchestrator \

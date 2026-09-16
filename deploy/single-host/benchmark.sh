@@ -34,6 +34,7 @@ ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
 ENGINE_ENV="$INSTALL_DIR/engine/embed/compose/.env"
+DISTRIBUTION_MANIFEST="$INSTALL_DIR/distribution.manifest"
 MAX_ACTIVE_SANDBOXES_TOTAL=${BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL:-32}
 MAX_ACTIVE_SANDBOXES_PER_PROJECT=${BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT:-32}
 
@@ -162,9 +163,20 @@ fi
 if ! curl --fail --silent --show-error --max-time 5 "$BASE_URL/readyz" >/dev/null; then
   fail "runtime API is not ready at $BASE_URL"
 fi
+[ -s "$DISTRIBUTION_MANIFEST" ] || fail "installed distribution manifest is missing; run install.sh again"
+INSTALLED_TEMPLATE_NAME=$(awk -F= '$1 == "artifact.template.name" { if (++count > 1) exit 2; print substr($0, index($0, "=") + 1) } END { if (count != 1) exit 1 }' "$DISTRIBUTION_MANIFEST") || \
+  fail "installed distribution manifest has no unique base-template name"
+case "$INSTALLED_TEMPLATE_NAME" in
+  ""|*[!a-z0-9_-]*|[-_]*) fail "installed distribution manifest has an invalid base-template name" ;;
+esac
 "$CAPACITY_PROBE" live >/dev/null
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" exec -T \
   -e "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=$MAX_ACTIVE_SANDBOXES_TOTAL" \
+  -e "BREZEL_GUEST_VCPUS=${BREZEL_GUEST_VCPUS:-2}" \
+  -e "BREZEL_GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}" \
+  -e "BREZEL_GUEST_MIN_FREE_DISK_MIB=${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}" \
+  -e "BREZEL_GUEST_MAX_FREE_DISK_MIB=${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}" \
+  -e "BREZEL_ENGINE_BASE_TEMPLATE_NAME=$INSTALLED_TEMPLATE_NAME" \
   postgres sh -s -- verify < "$ENGINE_CAPACITY_PROBE" >/dev/null
 
 started_compact=$(date -u +%Y%m%dT%H%M%SZ)
