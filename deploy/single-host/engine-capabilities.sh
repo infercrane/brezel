@@ -191,7 +191,7 @@ check_source() {
   require_literal "$source_root/embed/compose/scripts/node/build-base-template.mjs" \
     "BASE_TEMPLATE_NAME" "the validated base-template identity"
   require_literal "$source_root/embed/compose/scripts/node/build-base-template.mjs" \
-    "immutable reference" "the exact template and build identity receipt"
+    "name: templateName" "the selected base-template name"
   require_literal "$source_root/embed/compose/scripts/node/build-base-template.mjs" \
     "minFreeDiskMb" "the base-template free disk request"
 

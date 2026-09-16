@@ -151,8 +151,7 @@ func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
 		"0015-parameterize-base-template-identity.patch",
 		"base_template_identity_patch_sha256",
 		"engine base-template identity patch verification failed",
-		`git -C "$ENGINE_BUILD_DIR" apply --check "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`,
-		`git -C "$ENGINE_BUILD_DIR" apply "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`,
+		`-p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`,
 		"BREZEL_ENGINE_BASE_TEMPLATE_NAME",
 		"BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE",
 		"base-template.reference",
@@ -162,7 +161,7 @@ func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
 		}
 	}
 	ext4Apply := strings.Index(installer, `-p1 < "$ENGINE_EXT4_DIR_INDEX_PATCH"`)
-	identityApply := strings.Index(installer, `git -C "$ENGINE_BUILD_DIR" apply --check "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`)
+	identityApply := strings.Index(installer, `-p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"`)
 	if ext4Apply < 0 || identityApply <= ext4Apply {
 		t.Fatal("base-template identity patch is not applied after its pinned predecessor")
 	}
@@ -176,7 +175,6 @@ func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
 		"BASE_TEMPLATE_NAME",
 		`/^[a-z0-9][a-z0-9_-]{0,63}$/`,
 		"name: templateName",
-		"immutable reference ${build.templateID}:${build.buildID}",
 	} {
 		if !strings.Contains(patch, required) {
 			t.Fatalf("base-template identity patch is missing contract %q", required)
@@ -1224,7 +1222,7 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/nfsproxy/chroot/file.go":                   "syncing NFS write\nsyncing NFS truncate\n",
 		"packages/orchestrator/pkg/nfsproxy/chroot/fs.go":                     "syncDirectoryTree\nerrors.Join(syncPath(f.chroot, newParent), syncPath(f.chroot, oldParent))\n",
 		"embed/compose/compose.yaml":                                          "TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates\nNBD_POOL_SIZE: \"64\"\nNETWORK_VERSION: \"1\"\n",
-		"embed/compose/scripts/node/build-base-template.mjs":                  "BASE_TEMPLATE_MIN_FREE_DISK_MB\nBASE_TEMPLATE_NAME\nminFreeDiskMb\nimmutable reference\n",
+		"embed/compose/scripts/node/build-base-template.mjs":                  "BASE_TEMPLATE_MIN_FREE_DISK_MB\nBASE_TEMPLATE_NAME\nname: templateName\nminFreeDiskMb\n",
 		"packages/envd/internal/services/process/service.go":                  "if value.Tag == nil || *value.Tag != tag {\n",
 		"packages/envd/internal/services/process/service_test.go":             "TestGetProcessByTagScansPastNonMatches\nrequire.Same(t, target, got)\n",
 		"packages/envd/internal/services/process/replay.go":                   "replayVersionHeader = \"E2b-Process-Replay-Version\"\nreturn replayRequest{}, fmt.Errorf(\"%s is required with %s\", journalIDHeader, afterSequenceHeader)\n",

@@ -456,8 +456,7 @@ patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_RE
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NBD_MULTIQUEUE_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPUSET_QUALIFICATION_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_EXT4_DIR_INDEX_PATCH"
-git -C "$ENGINE_BUILD_DIR" apply --check "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"
-git -C "$ENGINE_BUILD_DIR" apply "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"
+patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 
 # The upstream base-template service executes a JavaScript helper embedded in

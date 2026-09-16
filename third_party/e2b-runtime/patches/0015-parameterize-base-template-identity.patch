@@ -51,10 +51,3 @@ index f9cfc347f..4d30c0325 100644
            cpuCount,
            memoryMB,
            minFreeDiskMb,
-@@ -100,5 +105,6 @@ async function main() {
-     if (status.status !== 'building' && status.status !== 'waiting') throw new Error(`unexpected template build status: ${status.status}`)
-     await new Promise((resolve) => setTimeout(resolve, 1_000))
-   }
-+  console.log(`build-base-template: immutable reference ${build.templateID}:${build.buildID}`)
-   console.log(`build-base-template: done in ${Math.round((Date.now() - started) / 1000)}s`)
- }
