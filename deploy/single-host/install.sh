@@ -28,6 +28,7 @@ ENGINE_BASE_TEMPLATE_IDENTITY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0
 ENGINE_DIRECT_ROOTFS_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0016-opt-in-direct-rootfs-provider.patch"
 ENGINE_RESUME_CLEANUP_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0017-bound-resume-failure-cleanup.patch"
 ENGINE_NBD_PROVIDER_SCOPE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0018-scope-nbd-pool-to-nbd-runtime.patch"
+ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0019-reject-rootfs-cache-mount-shadowing.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
@@ -81,6 +82,7 @@ BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS=${BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLAT
 BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=${BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER:-nbd}
 BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR=${BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR:-}
 BREZEL_ENGINE_SANDBOX_CACHE_DIR=${BREZEL_ENGINE_SANDBOX_CACHE_DIR:-}
+BREZEL_ENGINE_SANDBOX_DIR=${BREZEL_ENGINE_SANDBOX_DIR:-/fc-vm}
 export BREZEL_GUEST_VCPUS BREZEL_GUEST_MEMORY_MIB BREZEL_GUEST_MIN_FREE_DISK_MIB BREZEL_GUEST_MAX_FREE_DISK_MIB
 export BREZEL_ENGINE_HUGEPAGES BREZEL_ENGINE_NETWORK_NEW_SLOTS BREZEL_ENGINE_NETWORK_REUSED_SLOTS BREZEL_ENGINE_NBD_POOL_SIZE
 export BREZEL_LIFECYCLE_HEADROOM_SANDBOXES BREZEL_MIN_SYSTEM_MEMORY_MIB BREZEL_MIN_SYSTEM_CPUS
@@ -99,6 +101,7 @@ export BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS
 export BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER
 export BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR
 export BREZEL_ENGINE_SANDBOX_CACHE_DIR
+export BREZEL_ENGINE_SANDBOX_DIR
 
 private_directory_mode() {
   stat -c '%a' -- "$1" 2>/dev/null || stat -f '%Lp' "$1"
@@ -222,9 +225,71 @@ finally:
 PY
 }
 
+clean_absolute_path() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "$1" <<'PY'
+import os
+import sys
+
+path = sys.argv[1]
+if not os.path.isabs(path):
+    raise SystemExit(1)
+cleaned = os.path.normpath(path)
+if cleaned != path:
+    raise SystemExit(1)
+print(cleaned)
+PY
+}
+
+require_outside_sandbox_mount() {
+  candidate_name=$1
+  candidate_path=$2
+  sandbox_dir=$3
+  case "$candidate_path" in
+    "$sandbox_dir"|"$sandbox_dir"/*)
+      echo "$candidate_name must be outside BREZEL_ENGINE_SANDBOX_DIR because Firecracker mounts tmpfs there" >&2
+      exit 1
+      ;;
+  esac
+}
+
 case "$BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER" in
   nbd|direct)
     BREZEL_ENGINE_SANDBOX_CACHE_DIR=${BREZEL_ENGINE_SANDBOX_CACHE_DIR:-/orchestrator/sandbox}
+    ;;
+  reflink)
+    case "$BREZEL_ENGINE_SANDBOX_CACHE_DIR" in
+      /*) ;;
+      *) echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR must be an explicit absolute path for reflink mode" >&2; exit 1 ;;
+    esac
+    ;;
+  *) echo "BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER must be nbd, direct, or reflink" >&2; exit 1 ;;
+esac
+
+sandbox_dir_clean=$(clean_absolute_path "$BREZEL_ENGINE_SANDBOX_DIR") || {
+  echo "BREZEL_ENGINE_SANDBOX_DIR must be a clean absolute path" >&2
+  exit 1
+}
+[ "$sandbox_dir_clean" != / ] || {
+  echo "BREZEL_ENGINE_SANDBOX_DIR cannot be root" >&2
+  exit 1
+}
+case "$BREZEL_ENGINE_SANDBOX_CACHE_DIR" in
+  /*) ;;
+  *) echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR must be a clean absolute path" >&2; exit 1 ;;
+esac
+[ "$BREZEL_ENGINE_SANDBOX_CACHE_DIR" != / ] || {
+  echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR cannot be root" >&2
+  exit 1
+}
+sandbox_cache_clean=$(clean_absolute_path "$BREZEL_ENGINE_SANDBOX_CACHE_DIR") || {
+  echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR must be a clean absolute path" >&2
+  exit 1
+}
+require_outside_sandbox_mount BREZEL_ENGINE_SANDBOX_CACHE_DIR "$sandbox_cache_clean" "$sandbox_dir_clean"
+
+case "$BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER" in
+  nbd|direct)
     ;;
   reflink)
     case "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" in
@@ -235,14 +300,11 @@ case "$BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER" in
       echo "BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR cannot be root" >&2
       exit 1
     }
-    case "$BREZEL_ENGINE_SANDBOX_CACHE_DIR" in
-      /*) ;;
-      *) echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR must be an explicit absolute path for reflink mode" >&2; exit 1 ;;
-    esac
-    [ "$BREZEL_ENGINE_SANDBOX_CACHE_DIR" != / ] || {
-      echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR cannot be root" >&2
+    reflink_cache_clean=$(clean_absolute_path "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR") || {
+      echo "BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR must be a clean absolute path for reflink mode" >&2
       exit 1
     }
+    require_outside_sandbox_mount BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR "$reflink_cache_clean" "$sandbox_dir_clean"
     require_private_directory BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR"
     require_private_directory BREZEL_ENGINE_SANDBOX_CACHE_DIR "$BREZEL_ENGINE_SANDBOX_CACHE_DIR"
     reflink_cache_canonical=$(canonical_private_directory "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR") || {
@@ -257,6 +319,8 @@ case "$BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER" in
       echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR and BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR must be distinct directories" >&2
       exit 1
     }
+    require_outside_sandbox_mount BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR "$reflink_cache_canonical" "$sandbox_dir_clean"
+    require_outside_sandbox_mount BREZEL_ENGINE_SANDBOX_CACHE_DIR "$sandbox_cache_canonical" "$sandbox_dir_clean"
     reflink_cache_device=$(directory_device_id "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR") || {
       echo "cannot inspect the filesystem for BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" >&2
       exit 1
@@ -350,9 +414,10 @@ ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256=$(read_lock base_template_identity_pa
 ENGINE_DIRECT_ROOTFS_PATCH_SHA256=$(read_lock orchestrator_direct_rootfs_patch_sha256)
 ENGINE_RESUME_CLEANUP_PATCH_SHA256=$(read_lock orchestrator_resume_cleanup_patch_sha256)
 ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256=$(read_lock orchestrator_nbd_provider_scope_patch_sha256)
+ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256=$(read_lock orchestrator_rootfs_mount_boundary_patch_sha256)
 ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256=$(read_lock envd_process_tag_patch_sha256)
 ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256=$(read_lock envd_process_replay_patch_sha256)
-if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256" ] || [ -z "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" ] || [ -z "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" ] || [ -z "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" ] || [ -z "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
+if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256" ] || [ -z "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" ] || [ -z "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" ] || [ -z "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" ] || [ -z "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
   echo "invalid engine.lock" >&2
   exit 1
 fi
@@ -521,6 +586,10 @@ if [ "$(sha256sum "$ENGINE_NBD_PROVIDER_SCOPE_PATCH" | awk '{print $1}')" != "$E
   echo "engine NBD provider-scope patch verification failed" >&2
   exit 1
 fi
+if [ "$(sha256sum "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH" | awk '{print $1}')" != "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256" ]; then
+  echo "engine rootfs mount-boundary patch verification failed" >&2
+  exit 1
+fi
 if [ "$(sha256sum "$ENGINE_ENVD_PROCESS_TAG_PATCH" | awk '{print $1}')" != "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ]; then
   echo "engine envd process-tag patch verification failed" >&2
   exit 1
@@ -658,6 +727,7 @@ patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_BASE_TEMP
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_DIRECT_ROOTFS_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_RESUME_CLEANUP_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NBD_PROVIDER_SCOPE_PATCH"
+patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 
 # The upstream base-template service executes a JavaScript helper embedded in
@@ -830,7 +900,8 @@ export BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE
   "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" \
   "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" \
   "$BREZEL_ENGINE_BASE_TEMPLATE_NAME" "$BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE" \
-  "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256"
+  "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256" \
+  "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256"
 
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
   exec -T ready sh -c 'cat /run/e2b/team-api-key' > "$SECRETS_DIR/engine.token"

@@ -30,24 +30,25 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		t.Fatalf("engine.lock commit %q differs from audited adapter revision %q", values["commit"], e2b.AuditedRevision)
 	}
 	patches := map[string]string{
-		"api_patch_sha256":                               "0001-harden-volume-secrets-and-cleanup.patch",
-		"api_build_patch_sha256":                         "0002-pin-api-build-images.patch",
-		"orchestrator_lifecycle_patch_sha256":            "0003-acknowledge-delete-after-sandbox-teardown.patch",
-		"orchestrator_cache_patch_sha256":                "0004-bound-snapshot-diff-cache.patch",
-		"orchestrator_nfs_durability_patch_sha256":       "0005-make-nfs-writes-crash-durable.patch",
-		"engine_start_admission_patch_sha256":            "0006-bound-start-admission-retries.patch",
-		"engine_local_capacity_patch_sha256":             "0007-scale-local-resource-pools-and-template-shape.patch",
-		"envd_process_tag_patch_sha256":                  "0008-fix-envd-process-tag-resolution.patch",
-		"envd_process_replay_patch_sha256":               "0009-add-bounded-process-output-replay.patch",
-		"orchestrator_cpu_topology_patch_sha256":         "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
-		"orchestrator_rootfs_read_patch_sha256":          "0011-reduce-rootfs-read-amplification.patch",
-		"orchestrator_nbd_multiqueue_patch_sha256":       "0012-harden-nbd-multiqueue-lifecycle.patch",
-		"orchestrator_cpuset_qualification_patch_sha256": "0013-qualify-cpuset-exclusive-cpu-topology.patch",
-		"orchestrator_ext4_dir_index_patch_sha256":       "0014-opt-in-ext4-dir-index.patch",
-		"base_template_identity_patch_sha256":            "0015-parameterize-base-template-identity.patch",
-		"orchestrator_direct_rootfs_patch_sha256":        "0016-opt-in-direct-rootfs-provider.patch",
-		"orchestrator_resume_cleanup_patch_sha256":       "0017-bound-resume-failure-cleanup.patch",
-		"orchestrator_nbd_provider_scope_patch_sha256":   "0018-scope-nbd-pool-to-nbd-runtime.patch",
+		"api_patch_sha256":                                "0001-harden-volume-secrets-and-cleanup.patch",
+		"api_build_patch_sha256":                          "0002-pin-api-build-images.patch",
+		"orchestrator_lifecycle_patch_sha256":             "0003-acknowledge-delete-after-sandbox-teardown.patch",
+		"orchestrator_cache_patch_sha256":                 "0004-bound-snapshot-diff-cache.patch",
+		"orchestrator_nfs_durability_patch_sha256":        "0005-make-nfs-writes-crash-durable.patch",
+		"engine_start_admission_patch_sha256":             "0006-bound-start-admission-retries.patch",
+		"engine_local_capacity_patch_sha256":              "0007-scale-local-resource-pools-and-template-shape.patch",
+		"envd_process_tag_patch_sha256":                   "0008-fix-envd-process-tag-resolution.patch",
+		"envd_process_replay_patch_sha256":                "0009-add-bounded-process-output-replay.patch",
+		"orchestrator_cpu_topology_patch_sha256":          "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
+		"orchestrator_rootfs_read_patch_sha256":           "0011-reduce-rootfs-read-amplification.patch",
+		"orchestrator_nbd_multiqueue_patch_sha256":        "0012-harden-nbd-multiqueue-lifecycle.patch",
+		"orchestrator_cpuset_qualification_patch_sha256":  "0013-qualify-cpuset-exclusive-cpu-topology.patch",
+		"orchestrator_ext4_dir_index_patch_sha256":        "0014-opt-in-ext4-dir-index.patch",
+		"base_template_identity_patch_sha256":             "0015-parameterize-base-template-identity.patch",
+		"orchestrator_direct_rootfs_patch_sha256":         "0016-opt-in-direct-rootfs-provider.patch",
+		"orchestrator_resume_cleanup_patch_sha256":        "0017-bound-resume-failure-cleanup.patch",
+		"orchestrator_nbd_provider_scope_patch_sha256":    "0018-scope-nbd-pool-to-nbd-runtime.patch",
+		"orchestrator_rootfs_mount_boundary_patch_sha256": "0019-reject-rootfs-cache-mount-shadowing.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -262,6 +263,9 @@ func TestInstallerPinsOptInDirectRootfsProviderPatch(t *testing.T) {
 	if !strings.Contains(string(overrideData), "SANDBOX_CACHE_DIR: ${BREZEL_ENGINE_SANDBOX_CACHE_DIR:-/orchestrator/sandbox}") {
 		t.Fatal("engine override does not preserve the packaged sandbox-cache default")
 	}
+	if !strings.Contains(string(overrideData), "SANDBOX_DIR: ${BREZEL_ENGINE_SANDBOX_DIR:-/fc-vm}") {
+		t.Fatal("engine override does not bind installer validation to the Firecracker mountpoint")
+	}
 	for _, required := range []string{
 		"BREZEL_ENGINE_SANDBOX_CACHE_DIR",
 		"must be private (no group or other permissions)",
@@ -271,6 +275,7 @@ func TestInstallerPinsOptInDirectRootfsProviderPatch(t *testing.T) {
 		"non-interactive sudo is required to verify root-owned reflink cache directories",
 		"sudo -n python3",
 		"fcntl.ioctl(destination_fd, FICLONE, source_fd)",
+		"must be outside BREZEL_ENGINE_SANDBOX_DIR because Firecracker mounts tmpfs there",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing reflink sandbox-cache contract %q", required)
@@ -289,6 +294,62 @@ func TestInstallerPinsOptInDirectRootfsProviderPatch(t *testing.T) {
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("artifact manifest is missing direct-rootfs contract %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsRootfsMountBoundaryPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0019-reject-rootfs-cache-mount-shadowing.patch",
+		"orchestrator_rootfs_mount_boundary_patch_sha256",
+		"engine rootfs mount-boundary patch verification failed",
+		`-p1 < "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing rootfs mount-boundary integrity binding %q", required)
+		}
+	}
+	scopeApply := strings.Index(installer, `-p1 < "$ENGINE_NBD_PROVIDER_SCOPE_PATCH"`)
+	boundaryApply := strings.Index(installer, `-p1 < "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH"`)
+	if scopeApply < 0 || boundaryApply <= scopeApply {
+		t.Fatal("rootfs mount-boundary patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0019-reject-rootfs-cache-mount-shadowing.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		"validateSandboxRootfsMountBoundary",
+		"config.SandboxRootfsReflinkCacheDir",
+		"config.StorageConfig.SandboxCacheDir",
+		"must be outside SANDBOX_DIR",
+		"nbd rootfs rejects a sandbox cache below the Firecracker mountpoint",
+		"direct rootfs rejects a sandbox cache below the Firecracker mountpoint",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("rootfs mount-boundary patch is missing contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.rootfs_mount_boundary_patch_sha256",
+		"artifact.orchestrator.rootfs_mount_boundary=all-sandbox-caches-and-reflink-base-outside-firecracker-sandbox-dir",
+		"the rootfs mount-boundary patch requires the NBD provider-scope patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing rootfs mount-boundary contract %q", required)
 		}
 	}
 }
@@ -426,6 +487,7 @@ func TestInstallerRejectsReflinkWithoutPreparedCacheBeforeHostMutation(t *testin
 		"BREZEL_INSTALL_DIR="+t.TempDir(),
 		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink",
 		"BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR=",
+		"BREZEL_ENGINE_SANDBOX_CACHE_DIR="+t.TempDir(),
 	)
 	output, err := command.CombinedOutput()
 	if err == nil {
@@ -498,6 +560,63 @@ func TestInstallerRejectsReflinkWithoutPreparedSandboxCacheBeforeHostMutation(t 
 	}
 	if strings.Contains(string(output), "Docker Engine is required") || strings.Contains(string(output), "This host cannot run") {
 		t.Fatalf("installer reached host preflight before rejecting the sandbox cache: %s", output)
+	}
+}
+
+func TestInstallerRejectsReflinkCachesShadowedBySandboxDirBeforeHostMutation(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		provider         string
+		baseCache        string
+		sandboxCache     string
+		wantErrorSetting string
+	}{
+		{
+			name:             "base below mountpoint",
+			provider:         "reflink",
+			baseCache:        "/fc-vm/reflink-cache",
+			sandboxCache:     filepath.Join(t.TempDir(), "sandboxes"),
+			wantErrorSetting: "BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR",
+		},
+		{
+			name:             "sandbox cache equals mountpoint",
+			provider:         "reflink",
+			baseCache:        filepath.Join(t.TempDir(), "reflink-cache"),
+			sandboxCache:     "/fc-vm",
+			wantErrorSetting: "BREZEL_ENGINE_SANDBOX_CACHE_DIR",
+		},
+		{
+			name:             "NBD sandbox cache below mountpoint",
+			provider:         "nbd",
+			sandboxCache:     "/fc-vm/sandboxes",
+			wantErrorSetting: "BREZEL_ENGINE_SANDBOX_CACHE_DIR",
+		},
+		{
+			name:             "direct sandbox cache below mountpoint",
+			provider:         "direct",
+			sandboxCache:     "/fc-vm/sandboxes",
+			wantErrorSetting: "BREZEL_ENGINE_SANDBOX_CACHE_DIR",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := exec.Command("sh", "install.sh")
+			command.Env = append(os.Environ(),
+				"BREZEL_INSTALL_DIR="+t.TempDir(),
+				"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER="+test.provider,
+				"BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR="+test.baseCache,
+				"BREZEL_ENGINE_SANDBOX_CACHE_DIR="+test.sandboxCache,
+			)
+			output, err := command.CombinedOutput()
+			if err == nil {
+				t.Fatal("installer accepted a reflink cache shadowed by SANDBOX_DIR")
+			}
+			if !strings.Contains(string(output), test.wantErrorSetting+" must be outside BREZEL_ENGINE_SANDBOX_DIR") {
+				t.Fatalf("installer returned the wrong mount-shadowing error: %s", output)
+			}
+			if strings.Contains(string(output), "Docker Engine is required") || strings.Contains(string(output), "This host cannot run") {
+				t.Fatalf("installer reached host preflight before rejecting mount shadowing: %s", output)
+			}
+		})
 	}
 }
 
@@ -1629,7 +1748,8 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 	files := map[string]string{
 		"packages/orchestrator/pkg/sandbox/fc/client.go":                      "models.MemoryBackendBackendTypeUffd\nOperations.LoadSnapshot\nResumeVM:            false\n",
 		"packages/orchestrator/pkg/sandbox/uffd/uffd.go":                      "userfaultfd.NewUserfaultfdFromFd\n",
-		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"NBD_CONNECTIONS_PER_DEVICE\"\nNBD_CONNECTIONS_PER_DEVICE must be between 1 and 4\nenv:\"SANDBOX_ROOTFS_PROVIDER\" envDefault:\"nbd\"\nenv:\"SANDBOX_ROOTFS_REFLINK_CACHE_DIR\"\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nenv:\"FIRECRACKER_CPUSET_CPUS\"\nis required when FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\nenv:\"BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS\"\nBuildExt4DirIndexForTemplate\n",
+		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"NBD_CONNECTIONS_PER_DEVICE\"\nNBD_CONNECTIONS_PER_DEVICE must be between 1 and 4\nenv:\"SANDBOX_ROOTFS_PROVIDER\" envDefault:\"nbd\"\nenv:\"SANDBOX_ROOTFS_REFLINK_CACHE_DIR\"\nvalidateSandboxRootfsMountBoundary\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nenv:\"FIRECRACKER_CPUSET_CPUS\"\nis required when FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\nenv:\"BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS\"\nBuildExt4DirIndexForTemplate\n",
+		"packages/orchestrator/pkg/cfg/model_test.go":                         "reflink base is below Firecracker mountpoint\nsandbox cache is below Firecracker mountpoint\nnbd rootfs rejects a sandbox cache below the Firecracker mountpoint\ndirect rootfs rejects a sandbox cache below the Firecracker mountpoint\n",
 		"packages/orchestrator/pkg/template/build/builder.go":                 "builders = append(builders, optimizeBuilder)\nfeatureflags.BuildExt4DirIndex\n",
 		"packages/orchestrator/pkg/template/build/buildcontext/context.go":    "Ext4DirIndex bool\n",
 		"packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go":      "DirIndex: r.buildContext.Rootfs.Ext4DirIndex\n",
@@ -1742,6 +1862,7 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"SANDBOX_ROOTFS_PROVIDER",
 		"SANDBOX_ROOTFS_REFLINK_CACHE_DIR",
 		"SANDBOX_CACHE_DIR",
+		"validateSandboxRootfsMountBoundary",
 		"NewSlotsPoolSize",
 		"anon_inode:[userfaultfd]",
 		"NETWORK_NEW_SLOTS_POOL_SIZE",

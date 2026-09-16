@@ -69,6 +69,16 @@ check_source() {
     'env:"SANDBOX_ROOTFS_PROVIDER" envDefault:"nbd"' "the default-off direct rootfs provider selection"
   require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
     'env:"SANDBOX_ROOTFS_REFLINK_CACHE_DIR"' "the explicit reflink-cache boundary"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'validateSandboxRootfsMountBoundary' "the Firecracker mount-shadowing configuration gate"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model_test.go" \
+    'reflink base is below Firecracker mountpoint' "the reflink base mount-shadowing regression test"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model_test.go" \
+    'sandbox cache is below Firecracker mountpoint' "the per-sandbox cache mount-shadowing regression test"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model_test.go" \
+    'nbd rootfs rejects a sandbox cache below the Firecracker mountpoint' "the NBD sandbox-cache mount-shadowing regression test"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model_test.go" \
+    'direct rootfs rejects a sandbox cache below the Firecracker mountpoint' "the direct sandbox-cache mount-shadowing regression test"
   require_literal "$source_root/packages/shared/pkg/storage/sandbox.go" \
     'env:"SANDBOX_CACHE_DIR,expand"' "the explicit per-sandbox cache boundary"
   require_literal "$source_root/packages/shared/pkg/storage/sandbox.go" \

@@ -212,9 +212,13 @@ services:
       # opt-in arm is a persistence or resume claim.
       SANDBOX_ROOTFS_PROVIDER: ${BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER:-nbd}
       SANDBOX_ROOTFS_REFLINK_CACHE_DIR: ${BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR:-}
-      # Reflink clones must be created on the same filesystem as their
-      # immutable base. NBD and direct preserve the packaged default.
+      # Every provider creates its per-sandbox rootfs link here; this path must
+      # remain outside SANDBOX_DIR. Reflink additionally requires it to share a
+      # filesystem with the immutable base. NBD/direct preserve the default.
       SANDBOX_CACHE_DIR: ${BREZEL_ENGINE_SANDBOX_CACHE_DIR:-/orchestrator/sandbox}
+      # Firecracker mounts tmpfs at this path in its private mount namespace.
+      # All per-sandbox rootfs links and every reflink base must stay outside.
+      SANDBOX_DIR: ${BREZEL_ENGINE_SANDBOX_DIR:-/fc-vm}
       # Keep the guest topology honest. Exclusive placement is opt-in because
       # this single-host release has no multi-VM physical-core allocator yet.
       FIRECRACKER_SMT: ${BREZEL_ENGINE_FIRECRACKER_SMT:-false}

@@ -65,10 +65,10 @@ packaged `/orchestrator/sandbox` cache default. Reflink is explicit opt-in and
 requires two host paths on the same qualified XFS or Btrfs filesystem:
 
 ```sh
-sudo install -d -m 0700 /fc-vm/reflink-cache /fc-vm/sandbox
+sudo install -d -m 0700 /brezel-rootfs/reflink-cache /brezel-rootfs/sandbox
 export BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink
-export BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR=/fc-vm/reflink-cache
-export BREZEL_ENGINE_SANDBOX_CACHE_DIR=/fc-vm/sandbox
+export BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR=/brezel-rootfs/reflink-cache
+export BREZEL_ENGINE_SANDBOX_CACHE_DIR=/brezel-rootfs/sandbox
 ```
 
 Both paths must already exist, be absolute private non-symlink directories,
@@ -77,4 +77,7 @@ base images. `BREZEL_ENGINE_SANDBOX_CACHE_DIR` holds the per-sandbox reflink
 clones. The installer validates this boundary, including a self-cleaning live
 `FICLONE` probe, before service mutation, and the runtime repeats the
 same-filesystem and no-follow checks.
+Neither cache may equal or sit below `SANDBOX_DIR` (`/fc-vm` by default):
+Firecracker mounts tmpfs there in its private mount namespace, which would hide
+the host rootfs source before it can be linked into the VM launch directory.
 Selecting reflink does not establish a persistence, snapshot, or resume claim.

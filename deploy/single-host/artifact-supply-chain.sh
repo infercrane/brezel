@@ -158,6 +158,7 @@ write_manifest() {
   orchestrator_direct_rootfs_patch_sha256=${23:-}
   orchestrator_resume_cleanup_patch_sha256=${24:-}
   orchestrator_nbd_provider_scope_patch_sha256=${25:-}
+  orchestrator_rootfs_mount_boundary_patch_sha256=${26:-}
   verify_host_artifacts "$artifact_lock" "$host_root" "$orchestrator_override_sha256" "$envd_override_sha256"
   if [ -n "$orchestrator_patch_sha256" ]; then
     require_sha256 "$orchestrator_patch_sha256" "orchestrator patch SHA-256"
@@ -216,6 +217,10 @@ write_manifest() {
   if [ -n "$orchestrator_nbd_provider_scope_patch_sha256" ]; then
     [ -n "$orchestrator_resume_cleanup_patch_sha256" ] || fail "the NBD provider-scope patch requires the resume-cleanup patch identity"
     require_sha256 "$orchestrator_nbd_provider_scope_patch_sha256" "orchestrator NBD provider-scope patch SHA-256"
+  fi
+  if [ -n "$orchestrator_rootfs_mount_boundary_patch_sha256" ]; then
+    [ -n "$orchestrator_nbd_provider_scope_patch_sha256" ] || fail "the rootfs mount-boundary patch requires the NBD provider-scope patch identity"
+    require_sha256 "$orchestrator_rootfs_mount_boundary_patch_sha256" "orchestrator rootfs mount-boundary patch SHA-256"
   fi
   if [ -n "$envd_override_sha256" ]; then
     [ -n "$envd_process_tag_patch_sha256" ] || fail "the envd override requires the process-tag patch identity"
@@ -320,6 +325,10 @@ write_manifest() {
       printf 'artifact.orchestrator.nbd_provider_scope_patch_sha256=%s\n' "$orchestrator_nbd_provider_scope_patch_sha256"
       printf 'artifact.orchestrator.nbd_pool_scope=runtime-provider-or-template-manager-only\n'
     fi
+    if [ -n "$orchestrator_rootfs_mount_boundary_patch_sha256" ]; then
+      printf 'artifact.orchestrator.rootfs_mount_boundary_patch_sha256=%s\n' "$orchestrator_rootfs_mount_boundary_patch_sha256"
+      printf 'artifact.orchestrator.rootfs_mount_boundary=all-sandbox-caches-and-reflink-base-outside-firecracker-sandbox-dir\n'
+    fi
     if [ -n "$envd_process_tag_patch_sha256" ]; then
       printf 'artifact.envd.process_tag_patch_sha256=%s\n' "$envd_process_tag_patch_sha256"
       printf 'artifact.envd.live_tag_resolution=complete-map-scan\n'
@@ -335,7 +344,7 @@ write_manifest() {
 }
 
 usage() {
-  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ORCHESTRATOR_CPU_TOPOLOGY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_READ_PATCH_SHA256 ORCHESTRATOR_NBD_MULTIQUEUE_PATCH_SHA256 ORCHESTRATOR_CPUSET_QUALIFICATION_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256 ENVD_PROCESS_REPLAY_PATCH_SHA256 ORCHESTRATOR_EXT4_DIR_INDEX_PATCH_SHA256 BASE_TEMPLATE_IDENTITY_PATCH_SHA256 BASE_TEMPLATE_NAME BASE_TEMPLATE_REFERENCE ORCHESTRATOR_DIRECT_ROOTFS_PATCH_SHA256 ORCHESTRATOR_RESUME_CLEANUP_PATCH_SHA256 ORCHESTRATOR_NBD_PROVIDER_SCOPE_PATCH_SHA256]" >&2
+  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ORCHESTRATOR_CPU_TOPOLOGY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_READ_PATCH_SHA256 ORCHESTRATOR_NBD_MULTIQUEUE_PATCH_SHA256 ORCHESTRATOR_CPUSET_QUALIFICATION_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256 ENVD_PROCESS_REPLAY_PATCH_SHA256 ORCHESTRATOR_EXT4_DIR_INDEX_PATCH_SHA256 BASE_TEMPLATE_IDENTITY_PATCH_SHA256 BASE_TEMPLATE_NAME BASE_TEMPLATE_REFERENCE ORCHESTRATOR_DIRECT_ROOTFS_PATCH_SHA256 ORCHESTRATOR_RESUME_CLEANUP_PATCH_SHA256 ORCHESTRATOR_NBD_PROVIDER_SCOPE_PATCH_SHA256 ORCHESTRATOR_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256]" >&2
   exit 2
 }
 
@@ -358,8 +367,8 @@ case "$command" in
     verify_host_artifacts "$2" "$3" "${4:-}" "${5:-}"
     ;;
   manifest)
-    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 13 ] || [ "$#" -eq 19 ] || [ "$#" -eq 20 ] || [ "$#" -eq 23 ] || [ "$#" -eq 24 ] || [ "$#" -eq 25 ]; } || usage
-    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}" "${15:-}" "${16:-}" "${17:-}" "${18:-}" "${19:-}" "${20:-}" "${21:-}" "${22:-}" "${23:-}" "${24:-}" "${25:-}"
+    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 13 ] || [ "$#" -eq 19 ] || [ "$#" -eq 20 ] || [ "$#" -eq 23 ] || [ "$#" -eq 24 ] || [ "$#" -eq 25 ] || [ "$#" -eq 26 ]; } || usage
+    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}" "${15:-}" "${16:-}" "${17:-}" "${18:-}" "${19:-}" "${20:-}" "${21:-}" "${22:-}" "${23:-}" "${24:-}" "${25:-}" "${26:-}"
     ;;
   *) usage ;;
 esac

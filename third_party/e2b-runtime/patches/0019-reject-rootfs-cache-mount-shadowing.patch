@@ -1,0 +1,146 @@
+diff --git a/packages/orchestrator/pkg/cfg/model.go b/packages/orchestrator/pkg/cfg/model.go
+index 52f23304..4aab51b9 100644
+--- a/packages/orchestrator/pkg/cfg/model.go
++++ b/packages/orchestrator/pkg/cfg/model.go
+@@ -115,6 +115,45 @@ func validateSandboxRootfsReflinkConfig(provider, cacheDir string) error {
+ 	return nil
+ }
+ 
++func pathIsEqualOrBelow(path, root string) (bool, error) {
++	relative, err := filepath.Rel(root, path)
++	if err != nil {
++		return false, err
++	}
++
++	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))), nil
++}
++
++// validateSandboxRootfsMountBoundary prevents the Firecracker mount namespace
++// from hiding a per-sandbox rootfs link or a reflink base. startScriptV2 mounts
++// tmpfs at SANDBOX_DIR before linking the host rootfs into that directory, so a
++// source below the mountpoint becomes unreachable in that namespace.
++func validateSandboxRootfsMountBoundary(config BuilderConfig) error {
++	paths := []struct {
++		name string
++		path string
++	}{
++		{name: "SANDBOX_CACHE_DIR", path: config.StorageConfig.SandboxCacheDir},
++	}
++	if config.SandboxRootfsProvider == "reflink" {
++		paths = append(paths, struct {
++			name string
++			path string
++		}{name: "SANDBOX_ROOTFS_REFLINK_CACHE_DIR", path: config.SandboxRootfsReflinkCacheDir})
++	}
++	for _, candidate := range paths {
++		shadowed, err := pathIsEqualOrBelow(candidate.path, config.SandboxDir)
++		if err != nil {
++			return fmt.Errorf("failed to compare %s with SANDBOX_DIR: %w", candidate.name, err)
++		}
++		if shadowed {
++			return fmt.Errorf("%s must be outside SANDBOX_DIR because Firecracker mounts tmpfs at SANDBOX_DIR", candidate.name)
++		}
++	}
++
++	return nil
++}
++
+ // SandboxRootfsProviderName keeps zero-value BuilderConfig users on the safe
+ // NBD default. Parsed production configuration still validates an explicit
+ // value before the factory can create a sandbox.
+@@ -309,6 +348,9 @@ func Parse() (Config, error) {
+ 	}
+ 
+ 	config.BuilderConfig = bc
++	if err = validateSandboxRootfsMountBoundary(config.BuilderConfig); err != nil {
++		return config, err
++	}
+ 
+ 	if err = config.BuilderConfig.NetworkConfig.Validate(); err != nil {
+ 		return config, err
+@@ -354,6 +396,9 @@ func ParseBuilder() (BuilderConfig, error) {
+ 	if err = makePathsAbsolute(&model); err != nil {
+ 		return BuilderConfig{}, err
+ 	}
++	if err = validateSandboxRootfsMountBoundary(model); err != nil {
++		return BuilderConfig{}, err
++	}
+ 
+ 	if err = model.NetworkConfig.Validate(); err != nil {
+ 		return BuilderConfig{}, err
+diff --git a/packages/orchestrator/pkg/cfg/model_test.go b/packages/orchestrator/pkg/cfg/model_test.go
+index bd41537a..8b49ec1f 100644
+--- a/packages/orchestrator/pkg/cfg/model_test.go
++++ b/packages/orchestrator/pkg/cfg/model_test.go
+@@ -99,6 +99,7 @@ func TestParse(t *testing.T) {
+ 	t.Run("reflink rootfs provider requires a clean explicit cache directory", func(t *testing.T) {
+ 		t.Setenv("SANDBOX_ROOTFS_PROVIDER", "reflink")
+ 		t.Setenv("SANDBOX_ROOTFS_REFLINK_CACHE_DIR", "/var/lib/brezel/rootfs-reflink")
++		t.Setenv("SANDBOX_CACHE_DIR", "/var/lib/brezel/sandboxes")
+ 
+ 		config, err := Parse()
+ 		require.NoError(t, err)
+@@ -106,6 +107,63 @@ func TestParse(t *testing.T) {
+ 		assert.Equal(t, "/var/lib/brezel/rootfs-reflink", config.SandboxRootfsReflinkCacheDir)
+ 	})
+ 
++	for _, test := range []struct {
++		name             string
++		baseCache        string
++		sandboxCache     string
++		wantErrorSetting string
++	}{
++		{
++			name:             "reflink base equals Firecracker mountpoint",
++			baseCache:        "/fc-vm",
++			sandboxCache:     "/brezel-rootfs/sandboxes",
++			wantErrorSetting: "SANDBOX_ROOTFS_REFLINK_CACHE_DIR",
++		},
++		{
++			name:             "reflink base is below Firecracker mountpoint",
++			baseCache:        "/fc-vm/reflink-cache",
++			sandboxCache:     "/brezel-rootfs/sandboxes",
++			wantErrorSetting: "SANDBOX_ROOTFS_REFLINK_CACHE_DIR",
++		},
++		{
++			name:             "sandbox cache equals Firecracker mountpoint",
++			baseCache:        "/brezel-rootfs/reflink-cache",
++			sandboxCache:     "/fc-vm",
++			wantErrorSetting: "SANDBOX_CACHE_DIR",
++		},
++		{
++			name:             "sandbox cache is below Firecracker mountpoint",
++			baseCache:        "/brezel-rootfs/reflink-cache",
++			sandboxCache:     "/fc-vm/sandboxes",
++			wantErrorSetting: "SANDBOX_CACHE_DIR",
++		},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			t.Setenv("SANDBOX_ROOTFS_PROVIDER", "reflink")
++			t.Setenv("SANDBOX_ROOTFS_REFLINK_CACHE_DIR", test.baseCache)
++			t.Setenv("SANDBOX_CACHE_DIR", test.sandboxCache)
++
++			_, err := Parse()
++			require.ErrorContains(t, err, test.wantErrorSetting+" must be outside SANDBOX_DIR")
++		})
++	}
++
++	for _, test := range []struct {
++		name     string
++		provider string
++	}{
++		{name: "nbd rootfs rejects a sandbox cache below the Firecracker mountpoint", provider: "nbd"},
++		{name: "direct rootfs rejects a sandbox cache below the Firecracker mountpoint", provider: "direct"},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			t.Setenv("SANDBOX_ROOTFS_PROVIDER", test.provider)
++			t.Setenv("SANDBOX_CACHE_DIR", "/fc-vm/sandboxes")
++
++			_, err := Parse()
++			require.ErrorContains(t, err, "SANDBOX_CACHE_DIR must be outside SANDBOX_DIR")
++		})
++	}
++
+ 	for _, cacheDir := range []string{"", "relative", "/", "/var/lib/../tmp/reflink"} {
+ 		t.Run("reflink rejects cache directory "+cacheDir, func(t *testing.T) {
+ 			t.Setenv("SANDBOX_ROOTFS_PROVIDER", "reflink")
