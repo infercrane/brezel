@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 import { createBrezelComputeFromEnv } from "./adapter.mjs";
-import { definitiveExecutionFailures } from "./output-validation.mjs";
+import { DAX_PHASES, parseDaxTranscript, validateDaxTranscript } from "./dax-transcript.mjs";
 
 const UPSTREAM_COMMIT = "273927519c0ac6558d3e545eed9d59eb56a47ec7";
 const UPSTREAM_SCRIPT_SHA256 = "58f4640ac170b366f87e8466a9ac1e9f50383faa59553246e4664c77af34d550";
@@ -24,134 +24,15 @@ export function percentile(values, fraction) {
   return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
 }
 
-const REQUIRED_PHASES = ["prepare", "cache_clear", "bun_download", "bun_unpack", "clone", "install", "typecheck", "total"];
-const REQUIRED_CACHE_STATES = Object.freeze({
-  workspace: "fresh",
-  bun: "empty",
-  turbo: "empty",
-});
-const EXPECTED_WORKLOAD_COMMIT = "08fb47373509ba64b13441061314eeacf4264f51";
-const EXPECTED_BUN_VERSION = "1.3.14";
-const EXPECTED_NODE_VERSION = "v24.14.1";
-const FULL_MARKER_SEQUENCE = [
-  "phase:prepare",
-  "cache:guest_page_cache", "cache:workspace", "cache:bun", "cache:turbo",
-  "phase:cache_clear",
-  "meta:commit", "meta:architecture", "meta:kernel", "meta:logical_cpus", "meta:cpu_model", "meta:memory_kib",
-  "phase:bun_download", "phase:bun_unpack", "meta:bun_version", "meta:node_version",
-  "phase:clone", "disk:after_clone", "phase:install", "disk:after_install",
-  "phase:typecheck", "disk:after_typecheck", "done", "phase:total",
-];
-
-function recordOnce(target, counts, kind, key, value, issues) {
-  counts[key] = (counts[key] ?? 0) + 1;
-  if (counts[key] > 1) {
-    issues.push(`duplicate ${kind} key ${key}`);
-    return;
-  }
-  target[key] = value;
-}
-
-export function structuredLines(stdout, stderr = "") {
-  const phases = {};
-  const metadata = {};
-  const disk = {};
-  const cache = {};
-  const counts = { phases: {}, metadata: {}, disk: {}, cache: {}, done: 0 };
-  const failures = [];
-  const errors = [];
-  const parseIssues = [];
-  const markerSequence = [];
-  let completedCommit = "";
-  for (const line of stdout.split("\n")) {
-    if (!line.startsWith("BENCH_")) continue;
-    const parts = line.split("\t");
-    const [kind, key, value] = parts;
-    if (kind === "BENCH_PHASE") {
-      const parsed = Number(value);
-      if (parts.length !== 3 || !/^[a-z_]+$/.test(key ?? "") || !/^(0|[1-9][0-9]*)$/.test(value ?? "") || !Number.isSafeInteger(parsed)) {
-        parseIssues.push(`malformed BENCH_PHASE line for ${key || "unknown"}`);
-      } else {
-        recordOnce(phases, counts.phases, "phase", key, parsed, parseIssues);
-        markerSequence.push(`phase:${key}`);
-      }
-    } else if (kind === "BENCH_META") {
-      const emptyValueAllowed = key === "cpu_model";
-      if (parts.length !== 3 || !/^[a-z_]+$/.test(key ?? "") || value === undefined || (!emptyValueAllowed && value === "")) {
-        parseIssues.push(`malformed BENCH_META line for ${key || "unknown"}`);
-      } else {
-        recordOnce(metadata, counts.metadata, "metadata", key, value, parseIssues);
-        markerSequence.push(`meta:${key}`);
-      }
-    } else if (kind === "BENCH_DISK") {
-      const parsed = Number(value);
-      if (parts.length !== 3 || !/^[a-z_]+$/.test(key ?? "") ||
-          !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e\+[0-9]+)?$/.test(value ?? "") || !Number.isSafeInteger(parsed)) {
-        parseIssues.push(`malformed BENCH_DISK line for ${key || "unknown"}`);
-      } else {
-        recordOnce(disk, counts.disk, "disk", key, parsed, parseIssues);
-        markerSequence.push(`disk:${key}`);
-      }
-    } else if (kind === "BENCH_CACHE") {
-      if (parts.length !== 3 || !/^[a-z_]+$/.test(key ?? "") || !/^[a-z_]+$/.test(value ?? "")) {
-        parseIssues.push(`malformed BENCH_CACHE line for ${key || "unknown"}`);
-      } else {
-        recordOnce(cache, counts.cache, "cache", key, value, parseIssues);
-        markerSequence.push(`cache:${key}`);
-      }
-    } else if (kind === "BENCH_DONE") {
-      counts.done += 1;
-      if (parts.length !== 2 || !/^[0-9a-f]{40}$/.test(key ?? "") || counts.done > 1) parseIssues.push("malformed or duplicate BENCH_DONE line");
-      else {
-        completedCommit = key;
-        markerSequence.push("done");
-      }
-    } else if (kind === "BENCH_FAIL") {
-      if (parts.length !== 2 || !/^[a-z_]+$/.test(key ?? "")) parseIssues.push("malformed BENCH_FAIL line");
-      else failures.push(key);
-    } else if (kind === "BENCH_ERROR") {
-      parseIssues.push(`BENCH_ERROR must be emitted on stderr, not stdout (${key || "unknown"})`);
-    } else {
-      parseIssues.push(`unsupported structured line ${kind}`);
-    }
-  }
-  for (const line of String(stderr).split("\n")) {
-    if (!line.startsWith("BENCH_")) continue;
-    const parts = line.split("\t");
-    const [kind, key, value] = parts;
-    if (kind !== "BENCH_ERROR" || parts.length !== 3 || !/^[a-z_]+$/.test(key ?? "") || value === "") {
-      parseIssues.push(`unexpected stderr marker ${kind || "unknown"}`);
-    } else {
-      errors.push(`${key}:${value}`);
-    }
-  }
-  return { phases, metadata, disk, cache, failures, errors, parseIssues, markerSequence, completedCommit };
-}
-
-function cacheStateValid(cache) {
-  if (!(["dropped", "unavailable"].includes(cache.guest_page_cache))) return false;
-  return Object.entries(REQUIRED_CACHE_STATES).every(([key, value]) => cache[key] === value);
-}
-
-function arraysEqual(left, right) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
+export { parseDaxTranscript as structuredLines };
 
 export function transcriptValid(result, guest) {
-  const diskMonotonic = Number.isSafeInteger(result.disk.after_clone) && result.disk.after_clone > 0 &&
-    Number.isSafeInteger(result.disk.after_install) && result.disk.after_install >= result.disk.after_clone &&
-    Number.isSafeInteger(result.disk.after_typecheck) && result.disk.after_typecheck >= result.disk.after_install;
-  const metadataValid = result.metadata.commit === EXPECTED_WORKLOAD_COMMIT &&
-    result.metadata.bun_version === EXPECTED_BUN_VERSION && result.metadata.node_version === EXPECTED_NODE_VERSION &&
-    result.metadata.architecture === guest.architecture &&
-    /^(0|[1-9][0-9]*)$/.test(result.metadata.logical_cpus ?? "") && Number(result.metadata.logical_cpus) === guest.cpus &&
-    /^(0|[1-9][0-9]*)$/.test(result.metadata.memory_kib ?? "") && Number(result.metadata.memory_kib) >= 15728640 &&
-    typeof result.metadata.kernel === "string" && result.metadata.kernel !== "" &&
-    typeof result.metadata.cpu_model === "string";
-  return result.parseIssues.length === 0 && arraysEqual(result.markerSequence, FULL_MARKER_SEQUENCE) &&
-    result.completedCommit === EXPECTED_WORKLOAD_COMMIT && result.failures.length === 0 && result.errors.length === 0 &&
-    REQUIRED_PHASES.every((name) => Number.isSafeInteger(result.phases[name]) && result.phases[name] >= 0) &&
-    cacheStateValid(result.cache) && metadataValid && diskMonotonic;
+  return validateDaxTranscript(result, {
+    architecture: guest.architecture,
+    logicalCPUs: guest.cpus,
+    minimumMemoryKiB: 15728640,
+    allowEmptyCPUModel: true,
+  });
 }
 
 export function summarizeAttempts(attempts) {
@@ -159,7 +40,7 @@ export function summarizeAttempts(attempts) {
   const totals = successful.map((attempt) => attempt.totalMs);
   if (totals.length === 0) return null;
   const phaseMs = {};
-  for (const phase of REQUIRED_PHASES) {
+  for (const phase of DAX_PHASES) {
     const values = successful.map((attempt) => attempt.result.phases[phase]);
     phaseMs[phase] = {
       samples: values.length,
@@ -252,8 +133,7 @@ export async function run() {
       attempt.totalMs = performance.now() - started;
       attempt.buildFinishedAt = new Date().toISOString();
       attempt.exitCode = result.exitCode;
-      attempt.result = structuredLines(result.stdout, result.stderr);
-      attempt.result.executionFailures = definitiveExecutionFailures(result.stderr);
+      attempt.result = parseDaxTranscript(result.stdout, result.stderr);
       attempt.stderrTail = result.stderr.trim().split("\n").slice(-40).join("\n");
       if (result.exitCode !== 0 || attempt.result.executionFailures.length !== 0 || !transcriptValid(attempt.result, guest)) {
         throw new Error(`DAX iteration ${iteration} did not complete the pinned workload`);
@@ -302,7 +182,7 @@ export async function run() {
       concurrency: 1,
       sandboxState: "fresh sandbox per iteration",
       scoredBoundary: "runCommand request through complete command result",
-      upstreamPhaseOrder: REQUIRED_PHASES,
+      upstreamPhaseOrder: DAX_PHASES,
       cleanupBoundary: "destroy confirmation followed by empty-project inventory",
     },
     guest,

@@ -6,7 +6,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { writeFileSync } from "node:fs";
 
-import { definitiveExecutionFailures } from "./output-validation.mjs";
+import {
+  DAX_PHASES,
+  parseDaxTranscript,
+  validateDaxPrepareProbeTranscript,
+  validateDaxTranscript,
+} from "./dax-transcript.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UPSTREAM_COMMIT = "273927519c0ac6558d3e545eed9d59eb56a47ec7";
@@ -14,133 +19,13 @@ const UPSTREAM_SCRIPT_SHA256 = "58f4640ac170b366f87e8466a9ac1e9f50383faa59553246
 const UPSTREAM_SCRIPT_URL = `https://raw.githubusercontent.com/computesdk/benchmarks/${UPSTREAM_COMMIT}/benchmarks/scripts/dax-benchmark.sh`;
 const BASELINE_IMAGE = "node:24.14.1-bookworm@sha256:80fc934952c8f1b2b4d39907af7211f8a9fff1a4c2cf673fb49099292c251cec";
 const CANDIDATE_IMAGE = "brezel/dax-dev:local";
-const EXPECTED_WORKLOAD_COMMIT = "08fb47373509ba64b13441061314eeacf4264f51";
-const EXPECTED_BUN_VERSION = "1.3.14";
-const EXPECTED_NODE_VERSION = "v24.14.1";
-const FULL_MARKER_SEQUENCE = [
-  "phase:prepare", "phase:cache_clear",
-  "meta:commit", "meta:architecture", "meta:kernel", "meta:logical_cpus", "meta:cpu_model", "meta:memory_kib",
-  "phase:bun_download", "phase:bun_unpack", "meta:bun_version", "meta:node_version",
-  "phase:clone", "disk:after_clone", "phase:install", "disk:after_install",
-  "phase:typecheck", "disk:after_typecheck", "done", "phase:total",
-];
-const PREPARE_MARKER_PREFIX = FULL_MARKER_SEQUENCE.slice(0, FULL_MARKER_SEQUENCE.indexOf("phase:clone") + 1);
 const GIB = 1024 ** 3;
 const OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
 const RUN_TIMEOUT_MS = 600_000;
 const activeContainers = new Set();
 const activeVolumes = new Set();
 
-export function parseStructuredOutput(stdout, stderr = "") {
-  const result = {
-    phases: {}, metadata: {}, disk: {}, failures: [], errors: [], completedCommit: "",
-    markerSequence: [], transcriptErrors: [],
-  };
-  const seen = new Set();
-  const recordOnce = (identity, line) => {
-    if (seen.has(identity)) {
-      result.transcriptErrors.push(`duplicate ${identity}: ${line}`);
-      return false;
-    }
-    seen.add(identity);
-    return true;
-  };
-  for (const line of String(stdout).split("\n")) {
-    if (!line.startsWith("BENCH_")) continue;
-    const [kind, key, value] = line.split("\t");
-    if (kind === "BENCH_CACHE") continue;
-    if (kind === "BENCH_PHASE") {
-      if (!/^[a-z_]+$/.test(key ?? "") || !/^(0|[1-9][0-9]*)$/.test(value ?? "")) {
-        result.transcriptErrors.push(`malformed phase marker: ${line}`);
-        continue;
-      }
-      const parsed = Number(value);
-      if (!Number.isSafeInteger(parsed) || !recordOnce(`phase:${key}`, line)) continue;
-      result.phases[key] = parsed;
-      result.markerSequence.push(`phase:${key}`);
-      continue;
-    }
-    if (kind === "BENCH_META") {
-      const emptyValueAllowed = key === "cpu_model";
-      if (!/^[a-z_]+$/.test(key ?? "") || value === undefined || (!emptyValueAllowed && value === "") || !recordOnce(`meta:${key}`, line)) {
-        if (!result.transcriptErrors.some((entry) => entry.endsWith(line))) result.transcriptErrors.push(`malformed metadata marker: ${line}`);
-        continue;
-      }
-      result.metadata[key] = value;
-      result.markerSequence.push(`meta:${key}`);
-      continue;
-    }
-    if (kind === "BENCH_DISK") {
-      // POSIX awk may render large integer byte counts in decimal scientific
-      // notation. Accept that one bounded decimal grammar, but never hex,
-      // Infinity, NaN, signs, or arbitrary JavaScript Number syntax.
-      if (!/^[a-z_]+$/.test(key ?? "") || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e\+[0-9]+)?$/.test(value ?? "")) {
-        result.transcriptErrors.push(`malformed disk marker: ${line}`);
-        continue;
-      }
-      const parsed = Number(value);
-      if (!Number.isSafeInteger(parsed)) {
-        result.transcriptErrors.push(`unsafe disk marker: ${line}`);
-        continue;
-      }
-      if (!recordOnce(`disk:${key}`, line)) continue;
-      result.disk[key] = parsed;
-      result.markerSequence.push(`disk:${key}`);
-      continue;
-    }
-    if (kind === "BENCH_DONE") {
-      if (!/^[0-9a-f]{40}$/.test(key ?? "") || value !== undefined || !recordOnce("done", line)) {
-        result.transcriptErrors.push(`malformed completion marker: ${line}`);
-        continue;
-      }
-      result.completedCommit = key;
-      result.markerSequence.push("done");
-      continue;
-    }
-    if (kind === "BENCH_FAIL") {
-      if (!/^[a-z_]+$/.test(key ?? "") || value !== undefined || !recordOnce(`fail:${key}`, line)) {
-        result.transcriptErrors.push(`malformed failure marker: ${line}`);
-        continue;
-      }
-      result.failures.push(key);
-      continue;
-    }
-    result.transcriptErrors.push(`unknown stdout marker: ${line}`);
-  }
-  for (const line of String(stderr).split("\n")) {
-    if (!line.startsWith("BENCH_")) continue;
-    const [kind, key, value] = line.split("\t");
-    if (kind !== "BENCH_ERROR" || !/^[a-z_]+$/.test(key ?? "") || value === undefined || value === "") {
-      result.transcriptErrors.push(`unexpected stderr marker: ${line}`);
-      continue;
-    }
-    result.errors.push(`${key}:${value}`);
-  }
-  result.executionFailures = definitiveExecutionFailures(stderr);
-  return result;
-}
-
-function arraysEqual(left, right) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-export function validateFullTranscript(result, expected = {}) {
-  const expectedArchitecture = expected.architecture ?? "";
-  const expectedLogicalCPUs = expected.logicalCPUs;
-  const requiredMetadata = ["commit", "architecture", "kernel", "logical_cpus", "memory_kib", "bun_version", "node_version"];
-  const diskMonotonic = Number.isSafeInteger(result.disk.after_clone) && Number.isSafeInteger(result.disk.after_install) &&
-    Number.isSafeInteger(result.disk.after_typecheck) && result.disk.after_clone > 0 &&
-    result.disk.after_install >= result.disk.after_clone && result.disk.after_typecheck >= result.disk.after_install;
-  return result.transcriptErrors.length === 0 && arraysEqual(result.markerSequence, FULL_MARKER_SEQUENCE) &&
-    requiredMetadata.every((key) => typeof result.metadata[key] === "string" && result.metadata[key] !== "") &&
-    (expected.allowEmptyCPUModel === true || (typeof result.metadata.cpu_model === "string" && result.metadata.cpu_model !== "")) &&
-    result.metadata.commit === EXPECTED_WORKLOAD_COMMIT && result.completedCommit === EXPECTED_WORKLOAD_COMMIT &&
-    (!expectedArchitecture || result.metadata.architecture === expectedArchitecture) &&
-    (!Number.isFinite(expectedLogicalCPUs) || result.metadata.logical_cpus === String(expectedLogicalCPUs)) &&
-    /^(0|[1-9][0-9]*)$/.test(result.metadata.memory_kib) && Number(result.metadata.memory_kib) >= 4 * 1024 * 1024 &&
-    result.metadata.bun_version === EXPECTED_BUN_VERSION && result.metadata.node_version === EXPECTED_NODE_VERSION &&
-    diskMonotonic;
-}
+export { parseDaxTranscript as parseStructuredOutput, validateDaxTranscript as validateFullTranscript };
 
 export function percentile(values, fraction) {
   if (values.length === 0) return null;
@@ -150,11 +35,10 @@ export function percentile(values, fraction) {
 
 export function summarizeAttempts(attempts) {
   const successful = attempts.filter((attempt) => attempt.valid);
-  const phaseNames = ["prepare", "cache_clear", "bun_download", "bun_unpack", "clone", "install", "typecheck", "total"];
   return {
     requested: attempts.length,
     succeeded: successful.length,
-    phaseMedianMs: Object.fromEntries(phaseNames.map((phase) => [
+    phaseMedianMs: Object.fromEntries(DAX_PHASES.map((phase) => [
       phase,
       percentile(successful.map((attempt) => attempt.result.phases[phase]).filter(Number.isFinite), 0.5),
     ])),
@@ -560,22 +444,15 @@ async function runAttempt({ script, image, imageArchitecture, reportedLogicalCPU
   const lifecycleWallMs = performance.now() - started;
   const stdout = execution?.stdout ?? "";
   const stderr = execution?.stderr ?? "";
-  const result = parseStructuredOutput(stdout, stderr);
-  const fullTranscriptValid = validateFullTranscript(result, {
+  const result = parseDaxTranscript(stdout, stderr);
+  const transcriptPolicy = {
     architecture: normalizedArchitecture(imageArchitecture),
     logicalCPUs: reportedLogicalCPUs,
     allowEmptyCPUModel: process.platform !== "linux" || normalizedArchitecture(imageArchitecture) !== "x86_64",
-  });
-  const prepareTranscriptValid = result.transcriptErrors.length === 0 &&
-    arraysEqual(result.markerSequence, PREPARE_MARKER_PREFIX) && result.metadata.commit === EXPECTED_WORKLOAD_COMMIT &&
-    result.metadata.architecture === normalizedArchitecture(imageArchitecture) && result.metadata.logical_cpus === String(reportedLogicalCPUs) &&
-    result.metadata.bun_version === EXPECTED_BUN_VERSION && result.metadata.node_version === EXPECTED_NODE_VERSION;
-  const fullValid = execution?.status === 0 && !execution.error && fullTranscriptValid && result.failures.length === 0 &&
-    result.errors.length === 0 && result.executionFailures.length === 0 &&
-    result.completedCommit === EXPECTED_WORKLOAD_COMMIT;
-  const prepareValid = execution?.status === 1 && !execution.error && prepareTranscriptValid &&
-    result.failures.length === 1 && result.failures[0] === "clone" && result.errors.length === 0 &&
-    result.executionFailures.length === 0;
+  };
+  const fullValid = execution?.status === 0 && !execution.error && validateDaxTranscript(result, transcriptPolicy);
+  const prepareValid = execution?.status === 1 && !execution.error &&
+    validateDaxPrepareProbeTranscript(result, transcriptPolicy);
   const valid = cleanupErrors.length === 0 && (probe === "prepare" ? prepareValid : fullValid);
   return {
     iteration,

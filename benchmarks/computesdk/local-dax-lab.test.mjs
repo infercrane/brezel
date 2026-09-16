@@ -23,6 +23,10 @@ function completeTranscript(overrides = {}) {
   };
   return [
     "BENCH_PHASE\tprepare\t1200",
+    "BENCH_CACHE\tguest_page_cache\tdropped",
+    "BENCH_CACHE\tworkspace\tfresh",
+    "BENCH_CACHE\tbun\tempty",
+    "BENCH_CACHE\tturbo\tempty",
     "BENCH_PHASE\tcache_clear\t4",
     `BENCH_META\tcommit\t${values.commit}`,
     `BENCH_META\tarchitecture\t${values.architecture}`,
@@ -65,7 +69,9 @@ test("rejects duplicate, malformed, and out-of-order benchmark evidence", () => 
   assert.equal(validateFullTranscript(malformed, { architecture: "x86_64", logicalCPUs: 8 }), false);
 
   const reorderedLines = completeTranscript().split("\n");
-  [reorderedLines[12], reorderedLines[14]] = [reorderedLines[14], reorderedLines[12]];
+  const cloneIndex = reorderedLines.indexOf("BENCH_PHASE\tclone\t1000");
+  const installIndex = reorderedLines.indexOf("BENCH_PHASE\tinstall\t9000");
+  [reorderedLines[cloneIndex], reorderedLines[installIndex]] = [reorderedLines[installIndex], reorderedLines[cloneIndex]];
   const reordered = parseStructuredOutput(reorderedLines.join("\n"));
   assert.equal(validateFullTranscript(reordered, { architecture: "x86_64", logicalCPUs: 8 }), false);
 });
