@@ -560,26 +560,32 @@ hypothesis that Docker Desktop overlay storage alone explains the install gap.
 The Firecracker NBD path is different and still requires source-level call-count
 benchmarks followed by randomized KVM A/B runs.
 
-#### Rootfs lower-read microbenchmark
+#### Rejected rootfs lower-read experiment
 
-Patch `0013-coalesce-rootfs-lower-layer-reads.patch` was compared directly
-against the exact pinned engine with patches 0001 through 0012 on 2026-09-16.
-The adjacent Linux/ARM64 Docker microbenchmark is directional evidence, not a
-Firecracker or DAX result. Median homogeneous base reads changed as follows:
+An experimental homogeneous lower-read patch was compared directly against the
+exact pinned engine with patches 0001 through 0012 on 2026-09-16. The adjacent
+Linux/ARM64 Docker microbenchmark was directional evidence, not a Firecracker
+or DAX result. Median homogeneous base reads changed as follows:
 
-| Request | 0001–0012 | With 0013 | Lower-source calls | Allocations |
+| Request | Release | Experiment | Lower-source calls | Allocations |
 | --- | ---: | ---: | ---: | ---: |
 | 4 KiB | 345.65 ns | 347.30 ns | 1 → 1 | 2 → 2 |
 | 128 KiB | 15.307 µs | 4.827 µs | 32 → 1 | 66 → 2 |
 | 1 MiB | 108.406 µs | 39.245 µs | 256 → 1 | 514 → 2 |
 
-The 4 KiB read path is deliberately excluded from coalescing. Generation
-validation adds two atomic state transitions around writes; direct 4 KiB cache
-microbenchmarks showed a noisy 6–15 percent cost before the NBD and kernel
-path. Whether the large-read reduction is a net DAX improvement must therefore
-be decided by randomized, uninstrumented KVM A/B runs. Source-level race tests
-and forced write/swap interleavings establish correctness, not end-to-end
-performance.
+The 4 KiB read path was deliberately excluded from coalescing. Generation
+validation added two atomic state transitions around writes; direct 4 KiB cache
+microbenchmarks showed a noisy 6–15 percent cost before the NBD and kernel path.
+
+The KVM gate rejected the experiment. On the same qualified N2 host, three
+clean release attempts produced a 70.830 s upstream-workload median and three
+clean experimental attempts produced 71.623 s. Both variants passed every
+strict transcript and cleanup check, but the experiment was 1.12 percent
+slower and the distributions overlapped the retained five-run release
+baseline. The patch and its release identity were removed. The allocation-free
+local and whole-writable-range improvements remain. This is the intended
+promotion rule: source-level race tests establish correctness, while a real
+KVM workload decides whether hot-path complexity ships.
 
 #### Command-path diagnostics
 
