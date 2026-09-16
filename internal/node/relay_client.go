@@ -19,6 +19,7 @@ import (
 	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/nodeidentity"
 	"github.com/infercrane/brezel/internal/nodeledger"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 const (
@@ -42,11 +43,20 @@ var (
 // keeps authorizing product resources, while this client exchanges that
 // decision for one short-lived, request-bound operation capability.
 type RelayDataPlane struct {
-	baseURL  *url.URL
-	client   *http.Client
-	signer   *CapabilitySigner
-	audience string
-	nodeID   string
+	baseURL     *url.URL
+	client      *http.Client
+	signer      *CapabilitySigner
+	audience    string
+	nodeID      string
+	diagnostics telemetry.CommandDiagnosticObserver
+}
+
+type RelayDataPlaneOption func(*RelayDataPlane)
+
+// WithRelayCommandDiagnostics enables content-free benchmark diagnostics for
+// the API-side relay hop. It does not expose route or resource identities.
+func WithRelayCommandDiagnostics(observer telemetry.CommandDiagnosticObserver) RelayDataPlaneOption {
+	return func(dataPlane *RelayDataPlane) { dataPlane.diagnostics = observer }
 }
 
 // RequiresNodeAssignment lets the lifecycle service reject a relay
@@ -59,17 +69,17 @@ func (*RelayDataPlane) ownedNodeDataPlane() {}
 // NewRelayDataPlane requires an HTTPS endpoint and constructs the relay client
 // through the hardened mTLS identity boundary. Redirects are disabled so
 // credentials cannot cross origins.
-func NewRelayDataPlane(baseURL string, tlsConfig *tls.Config, signer *CapabilitySigner, audience, nodeID string) (*RelayDataPlane, error) {
+func NewRelayDataPlane(baseURL string, tlsConfig *tls.Config, signer *CapabilitySigner, audience, nodeID string, options ...RelayDataPlaneOption) (*RelayDataPlane, error) {
 	client, err := nodeidentity.NewDataHTTPClient(tlsConfig)
 	if err != nil {
 		return nil, err
 	}
-	return newRelayDataPlane(baseURL, client, signer, audience, nodeID)
+	return newRelayDataPlane(baseURL, client, signer, audience, nodeID, options...)
 }
 
 // newRelayDataPlane accepts an injected client for hermetic protocol tests.
 // Release wiring must use NewRelayDataPlane so TLS policy cannot be skipped.
-func newRelayDataPlane(baseURL string, client *http.Client, signer *CapabilitySigner, audience, nodeID string) (*RelayDataPlane, error) {
+func newRelayDataPlane(baseURL string, client *http.Client, signer *CapabilitySigner, audience, nodeID string, options ...RelayDataPlaneOption) (*RelayDataPlane, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("node relay requires an absolute HTTPS base URL without credentials, query, or fragment")
@@ -90,7 +100,13 @@ func newRelayDataPlane(baseURL string, client *http.Client, signer *CapabilitySi
 	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	copyURL := *parsed
 	copyURL.Path = strings.TrimSuffix(copyURL.Path, "/")
-	return &RelayDataPlane{baseURL: &copyURL, client: &copyClient, signer: signer, audience: audience, nodeID: nodeID}, nil
+	dataPlane := &RelayDataPlane{baseURL: &copyURL, client: &copyClient, signer: signer, audience: audience, nodeID: nodeID}
+	for _, option := range options {
+		if option != nil {
+			option(dataPlane)
+		}
+	}
+	return dataPlane, nil
 }
 
 func (d *RelayDataPlane) Capabilities() Capabilities {
@@ -129,11 +145,26 @@ func (d *RelayDataPlane) Ready(ctx context.Context) error {
 	return nil
 }
 
-func (d *RelayDataPlane) Run(ctx context.Context, binding SandboxBinding, request backend.CommandRequest, emit func(backend.CommandEvent) error) error {
+func (d *RelayDataPlane) Run(ctx context.Context, binding SandboxBinding, request backend.CommandRequest, emit func(backend.CommandEvent) error) (resultErr error) {
+	var observer telemetry.CommandDiagnosticObserver
+	if d != nil {
+		observer = d.diagnostics
+	}
+	trace := telemetry.StartCommandTrace(observer, telemetry.CommandDiagnosticRelayClient)
+	if trace != nil {
+		defer func() { trace.Finish(resultErr) }()
+	}
 	if emit == nil {
 		return errors.New("command event callback is required")
 	}
+	var routeStarted time.Time
+	if trace != nil {
+		routeStarted = trace.StartInterval()
+	}
 	resolved, err := d.authorizedRoute(ctx, binding)
+	if trace != nil {
+		trace.ObserveRouteLookup(routeStarted)
+	}
 	if err != nil {
 		return err
 	}
@@ -188,6 +219,9 @@ func (d *RelayDataPlane) Run(ctx context.Context, binding SandboxBinding, reques
 			exited = true
 		default:
 			return errors.New("node command stream contains an unsupported event")
+		}
+		if trace != nil {
+			trace.ObserveEvent(len(event.Data), event.Type == backend.CommandExited)
 		}
 		if err := emit(event); err != nil {
 			return err

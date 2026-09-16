@@ -32,6 +32,7 @@ type Client struct {
 	portMu            sync.Mutex
 	portCredentials   map[string]portCredential
 	observer          telemetry.Observer
+	diagnostics       telemetry.CommandDiagnosticObserver
 }
 
 type Option func(*Client) error
@@ -74,6 +75,15 @@ func WithDurableWorkspaces(enabled bool) Option {
 func WithPhaseObserver(observer telemetry.Observer) Option {
 	return func(c *Client) error {
 		c.observer = observer
+		return nil
+	}
+}
+
+// WithCommandDiagnostics enables opt-in, content-free timing and stream
+// counters for the guest command path.
+func WithCommandDiagnostics(observer telemetry.CommandDiagnosticObserver) Option {
+	return func(c *Client) error {
+		c.diagnostics = observer
 		return nil
 	}
 }

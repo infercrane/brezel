@@ -16,6 +16,7 @@ import (
 
 	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/nodeledger"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 const (
@@ -126,7 +127,8 @@ func TestRelayDataPlaneEndToEndProtocol(t *testing.T) {
 	})
 	server := httptest.NewTLSServer(handler)
 	defer server.Close()
-	client, err := newRelayDataPlane(server.URL, server.Client(), signer, testRelayAudience, testRelayNode)
+	diagnostics := &relayDiagnosticCollector{}
+	client, err := newRelayDataPlane(server.URL, server.Client(), signer, testRelayAudience, testRelayNode, WithRelayCommandDiagnostics(diagnostics))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,6 +143,7 @@ func TestRelayDataPlaneEndToEndProtocol(t *testing.T) {
 	if len(events) != 3 || string(events[1].Data) != "ok\n" {
 		t.Fatalf("unexpected command events: %#v", events)
 	}
+	assertRelayDiagnostic(t, diagnostics.samples, telemetry.CommandDiagnosticRelayClient, 3, 3)
 	info, err := client.WriteFile(context.Background(), binding, "/workspace/a", strings.NewReader("data"))
 	if err != nil || info.Size != 4 {
 		t.Fatalf("WriteFile()=%#v, %v", info, err)
@@ -202,9 +205,12 @@ func TestRelayDataPlaneRejectsStaleRouteBeforeOperation(t *testing.T) {
 
 func TestRelayClientAndServerEndToEnd(t *testing.T) {
 	harness := newRelayServerHarness(t)
+	serverDiagnostics := &relayDiagnosticCollector{}
+	harness.server.diagnostics = serverDiagnostics
 	server := httptest.NewTLSServer(harness.server)
 	defer server.Close()
-	client, err := newRelayDataPlane(server.URL, server.Client(), harness.signer, relayServerAudience, relayServerNodeID)
+	clientDiagnostics := &relayDiagnosticCollector{}
+	client, err := newRelayDataPlane(server.URL, server.Client(), harness.signer, relayServerAudience, relayServerNodeID, WithRelayCommandDiagnostics(clientDiagnostics))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +230,8 @@ func TestRelayClientAndServerEndToEnd(t *testing.T) {
 	if len(events) != 3 || harness.engine.lastEngineID != relayServerEngineID {
 		t.Fatalf("command events=%#v engine=%q", events, harness.engine.lastEngineID)
 	}
+	assertRelayDiagnostic(t, clientDiagnostics.samples, telemetry.CommandDiagnosticRelayClient, 3, 3)
+	assertRelayDiagnostic(t, serverDiagnostics.samples, telemetry.CommandDiagnosticRelayServer, 3, 3)
 	info, err := client.WriteFile(context.Background(), binding, "/workspace/e2e.txt", strings.NewReader("relay"))
 	if err != nil || info.Size != 5 || string(harness.engine.writtenData) != "relay" {
 		t.Fatalf("WriteFile()=%#v data=%q error=%v", info, harness.engine.writtenData, err)
@@ -246,6 +254,28 @@ func TestRelayClientAndServerEndToEnd(t *testing.T) {
 	}
 	if harness.engine.lastPortRequest.URL.EscapedPath() != "/api%2Fagent" || harness.engine.lastPortRequest.URL.RawQuery != "q=1" {
 		t.Fatalf("upstream URL=%q", harness.engine.lastPortRequest.URL.String())
+	}
+}
+
+type relayDiagnosticCollector struct {
+	samples []telemetry.CommandDiagnostic
+}
+
+func (c *relayDiagnosticCollector) ObserveCommandDiagnostic(sample telemetry.CommandDiagnostic) {
+	c.samples = append(c.samples, sample)
+}
+
+func assertRelayDiagnostic(t *testing.T, samples []telemetry.CommandDiagnostic, component telemetry.CommandDiagnosticComponent, events, bytes uint64) {
+	t.Helper()
+	if len(samples) != 1 {
+		t.Fatalf("%s diagnostic samples=%#v", component, samples)
+	}
+	sample := samples[0]
+	if sample.Component != component || sample.Outcome != telemetry.OutcomeSuccess || sample.StreamEvents != events || sample.StreamBytes != bytes || sample.FirstEventCount != 1 || sample.TerminalEventCount != 1 {
+		t.Fatalf("%s diagnostic=%#v", component, sample)
+	}
+	if sample.AcceptedToFirstEvent < 0 || sample.AcceptedToTerminal < sample.AcceptedToFirstEvent || sample.AcceptedToEOFReady < sample.AcceptedToTerminal {
+		t.Fatalf("%s diagnostic is not monotonic: %#v", component, sample)
 	}
 }
 

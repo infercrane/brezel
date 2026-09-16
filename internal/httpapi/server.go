@@ -34,18 +34,19 @@ const (
 )
 
 type Server struct {
-	service      *service.Service
-	authorizer   Authorizer
-	mux          *http.ServeMux
-	connector    http.Handler
-	leaseMu      sync.Mutex
-	leases       map[string]portLease
-	now          func() time.Time
-	maxInFlight  int
-	inFlight     chan struct{}
-	logger       *log.Logger
-	metrics      requestMetrics
-	phaseMetrics *telemetry.Registry
+	service            *service.Service
+	authorizer         Authorizer
+	mux                *http.ServeMux
+	connector          http.Handler
+	leaseMu            sync.Mutex
+	leases             map[string]portLease
+	now                func() time.Time
+	maxInFlight        int
+	inFlight           chan struct{}
+	logger             *log.Logger
+	metrics            requestMetrics
+	phaseMetrics       *telemetry.Registry
+	commandDiagnostics telemetry.CommandDiagnosticObserver
 }
 
 // Authorizer authenticates an opaque bearer credential and independently
@@ -98,6 +99,12 @@ func WithRequestLogger(logger *log.Logger) Option {
 // histograms to the existing Prometheus endpoint.
 func WithPhaseMetrics(metrics *telemetry.Registry) Option {
 	return func(s *Server) { s.phaseMetrics = metrics }
+}
+
+// WithCommandDiagnostics enables opt-in benchmark-path timing. The observer
+// receives only fixed components, monotonic durations, and byte/event counts.
+func WithCommandDiagnostics(observer telemetry.CommandDiagnosticObserver) Option {
+	return func(s *Server) { s.commandDiagnostics = observer }
 }
 
 func New(svc *service.Service, token string, options ...Option) (*Server, error) {
@@ -471,6 +478,12 @@ func (s *Server) listSandboxes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runCommand(w http.ResponseWriter, r *http.Request) {
+	trace := telemetry.StartCommandTrace(s.commandDiagnostics, telemetry.CommandDiagnosticPublicHandler)
+	var traceErr error
+	if trace != nil {
+		traceErr = errors.New("command handler did not complete")
+		defer func() { trace.Finish(traceErr) }()
+	}
 	var in service.RunCommandInput
 	if !decodeBody(w, r, &in) {
 		return
@@ -489,11 +502,20 @@ func (s *Server) runCommand(w http.ResponseWriter, r *http.Request) {
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
+		if trace != nil {
+			trace.ObserveEvent(len(event.Data), event.Type == backend.CommandExited)
+		}
 		return nil
 	}
 	executionID, err := s.service.RunCommand(r.Context(), project(r), r.PathValue("id"), in, emit)
 	if err == nil {
+		if trace != nil {
+			traceErr = nil
+		}
 		return
+	}
+	if trace != nil {
+		traceErr = err
 	}
 	if !wrote {
 		writeServiceError(w, err)

@@ -1799,6 +1799,56 @@ func TestCommandStreamMakesSuccessfulExitCodeExplicit(t *testing.T) {
 	}
 }
 
+func TestCommandDiagnosticsCaptureOnlyPublicStreamDurationsAndCounts(t *testing.T) {
+	h := newHarness(t)
+	defer h.close()
+	environment := createEnvironment(t, h, "project-private-diagnostic")
+	sandboxID, _ := createSandbox(t, h, "project-private-diagnostic", environment, "command-diagnostic-0001", nil)
+	collector := &apiCommandDiagnosticCollector{}
+	api, err := New(h.service, testToken, WithCommandDiagnostics(collector))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+
+	body := strings.NewReader(`{"argv":["/bin/sh","-c","printf private-command"],"timeout_seconds":30}`)
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/sandboxes/"+sandboxID+"/commands", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	request.Header.Set("X-Project-ID", "project-private-diagnostic")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if readErr != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("command status=%d read error=%v", response.StatusCode, readErr)
+	}
+	if len(collector.samples) != 1 {
+		t.Fatalf("diagnostic samples=%#v", collector.samples)
+	}
+	sample := collector.samples[0]
+	if sample.Component != telemetry.CommandDiagnosticPublicHandler || sample.Outcome != telemetry.OutcomeSuccess || sample.StreamEvents != 3 || sample.StreamBytes != 6 || sample.FirstEventCount != 1 || sample.TerminalEventCount != 1 {
+		t.Fatalf("public diagnostic=%#v", sample)
+	}
+	if sample.AcceptedToFirstEvent < 0 || sample.AcceptedToTerminal < sample.AcceptedToFirstEvent || sample.AcceptedToEOFReady < sample.AcceptedToTerminal {
+		t.Fatalf("public diagnostic is not monotonic: %#v", sample)
+	}
+}
+
+type apiCommandDiagnosticCollector struct {
+	samples []telemetry.CommandDiagnostic
+}
+
+func (c *apiCommandDiagnosticCollector) ObserveCommandDiagnostic(sample telemetry.CommandDiagnostic) {
+	c.samples = append(c.samples, sample)
+}
+
 func errorCode(body map[string]any) string {
 	value, _ := body["error"].(map[string]any)
 	code, _ := value["code"].(string)

@@ -509,6 +509,49 @@ hypothesis that Docker Desktop overlay storage alone explains the install gap.
 The Firecracker NBD path is different and still requires source-level call-count
 benchmarks followed by randomized KVM A/B runs.
 
+#### Command-path diagnostics
+
+The single-host distribution has an opt-in command timing trace for separating
+public HTTP, API-to-node relay, node relay, and guest-backend latency. It is off
+by default. Enable it only on an otherwise quiet diagnostic deployment:
+
+```sh
+export BREZEL_BENCHMARK_DIAGNOSTICS=true
+docker compose -f deploy/single-host/compose.yaml up -d --build
+docker compose -f deploy/single-host/compose.yaml logs -f brezeld brezel-node
+```
+
+Each process writes newline-delimited JSON to standard error. The schema has
+only fixed component, phase, and outcome enums plus monotonic nanosecond
+durations and raw stdout/stderr byte and event counters. It has no project,
+sandbox, execution, route, command, path, content, credential, host, process,
+or wall-clock fields. The guest connection phase distinguishes cache `hit`,
+`miss`, and `error` outcomes and records the lookup duration. Command samples
+cover:
+
+- `public_handler`: handler acceptance through the first flushed event, the
+  terminal event, and the point at which the handler is ready to return;
+- `relay_client`: API-side route lookup and the node response stream through
+  its decoded EOF;
+- `relay_server`: admitted relay handler work through backend completion and
+  the point at which the relay handler is ready to return; and
+- `guest_backend`: credential resolution and the envd command stream through
+  terminal consumption.
+
+`accepted_to_eof_ready_ns` is a server-side completion boundary for handlers.
+It does not claim that a remote client has observed TCP EOF. Stream byte counts
+are unencoded stdout/stderr payload bytes, not NDJSON, base64, TLS, or HTTP wire
+bytes. Because the trace deliberately carries no resource correlation field,
+use a dedicated project with one measured command at a time when comparing
+samples across the two processes.
+
+Diagnostic logging adds clock reads, synchronization, encoding, and I/O to the
+measured path. An instrumented run is therefore for bottleneck attribution
+only and is **not publishable benchmark evidence**. Disable
+`BREZEL_BENCHMARK_DIAGNOSTICS`, rebuild or restart both services, and repeat the
+unchanged workload with randomized paired uninstrumented runs before making a
+performance claim.
+
 The two-point model turns the controlled CPU pair into experiment targets. It
 fits a conservative serial-floor plus inverse-CPU model per phase, refuses to
 invent scaling for phases that became slower, and reports the remaining gap to

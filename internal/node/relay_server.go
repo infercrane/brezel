@@ -24,6 +24,7 @@ import (
 
 	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/nodeledger"
+	"github.com/infercrane/brezel/internal/telemetry"
 )
 
 const (
@@ -56,6 +57,7 @@ type RelayServerConfig struct {
 	// Zero selects the conservative default.
 	MaxInFlight int
 	Now         func() time.Time
+	Diagnostics telemetry.CommandDiagnosticObserver
 }
 
 // RelayServer is the node-local command, file, and application-port data path.
@@ -74,6 +76,7 @@ type RelayServer struct {
 	mux         *http.ServeMux
 	draining    atomic.Bool
 	admission   chan struct{}
+	diagnostics telemetry.CommandDiagnosticObserver
 }
 
 func NewRelayServer(config RelayServerConfig) (*RelayServer, error) {
@@ -110,16 +113,17 @@ func NewRelayServer(config RelayServerConfig) (*RelayServer, error) {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	server := &RelayServer{
-		nodeID:    config.NodeID,
-		bootEpoch: bootEpoch,
-		audience:  config.Audience,
-		ledger:    config.Ledger,
-		verifier:  config.Verifier,
-		replay:    config.Replay,
-		dataPlane: NewBackendDataPlane(config.Engine),
-		admission: make(chan struct{}, maxInFlight),
-		now:       now,
-		mux:       http.NewServeMux(),
+		nodeID:      config.NodeID,
+		bootEpoch:   bootEpoch,
+		audience:    config.Audience,
+		ledger:      config.Ledger,
+		verifier:    config.Verifier,
+		replay:      config.Replay,
+		dataPlane:   NewBackendDataPlane(config.Engine),
+		admission:   make(chan struct{}, maxInFlight),
+		diagnostics: config.Diagnostics,
+		now:         now,
+		mux:         http.NewServeMux(),
 	}
 	server.engineReady, _ = config.Engine.(backend.ReadinessBackend)
 	server.routes()
@@ -217,6 +221,12 @@ func newRelayBootEpoch() (string, error) {
 }
 
 func (s *RelayServer) command(w http.ResponseWriter, r *http.Request) {
+	trace := telemetry.StartCommandTrace(s.diagnostics, telemetry.CommandDiagnosticRelayServer)
+	var traceErr error
+	if trace != nil {
+		traceErr = errors.New("relay command did not complete")
+		defer func() { trace.Finish(traceErr) }()
+	}
 	if r.URL.RawQuery != "" || !relayJSONContentType(r.Header.Get("Content-Type")) {
 		writeRelayError(w, http.StatusBadRequest, "invalid_request")
 		return
@@ -278,15 +288,24 @@ func (s *RelayServer) command(w http.ResponseWriter, r *http.Request) {
 		if flusher, supported := w.(http.Flusher); supported {
 			flusher.Flush()
 		}
+		if trace != nil {
+			trace.ObserveEvent(len(event.Data), event.Type == backend.CommandExited)
+		}
 		return nil
 	}
 	err = s.dataPlane.Run(ctx, binding, backend.CommandRequest{Argv: append([]string(nil), wire.Argv...), Cwd: wire.Cwd, Env: cloneStringMap(wire.Env)}, emit)
 	if err == nil {
+		if trace != nil {
+			traceErr = nil
+		}
 		if !wrote {
 			w.Header().Set("Content-Type", "application/x-ndjson")
 			w.WriteHeader(http.StatusOK)
 		}
 		return
+	}
+	if trace != nil {
+		traceErr = err
 	}
 	if !wrote {
 		writeRelayError(w, http.StatusBadGateway, "execution_failed")

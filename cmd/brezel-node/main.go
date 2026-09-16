@@ -32,21 +32,22 @@ import (
 const maxNodeKeyFileBytes = 16 << 10
 
 type nodeConfig struct {
-	listenAddress      string
-	controlAddress     string
-	nodeID             string
-	apiID              string
-	audience           string
-	capabilityKeysFile string
-	tlsFiles           nodeidentity.Files
-	ledgerFile         string
-	replayCapacity     int
-	maxInFlight        int
-	shutdownTimeout    time.Duration
-	engineURL          string
-	engineTokenFile    string
-	guestURLTemplate   string
-	durableWorkspaces  bool
+	listenAddress        string
+	controlAddress       string
+	nodeID               string
+	apiID                string
+	audience             string
+	capabilityKeysFile   string
+	tlsFiles             nodeidentity.Files
+	ledgerFile           string
+	replayCapacity       int
+	maxInFlight          int
+	shutdownTimeout      time.Duration
+	engineURL            string
+	engineTokenFile      string
+	guestURLTemplate     string
+	durableWorkspaces    bool
+	benchmarkDiagnostics bool
 }
 
 type capabilityKeyPolicy struct {
@@ -112,13 +113,20 @@ func run() (resultErr error) {
 		ResponseHeaderTimeout: 10 * time.Second,
 	}
 	defer engineTransport.CloseIdleConnections()
+	var commandDiagnostics *telemetry.CommandDiagnosticLogger
+	var phaseObserver telemetry.Observer = errorPhaseObserver{logger: log.Default()}
+	if config.benchmarkDiagnostics {
+		commandDiagnostics = telemetry.NewCommandDiagnosticLogger(os.Stderr)
+		phaseObserver = telemetry.JoinObservers(phaseObserver, commandDiagnostics)
+	}
 	engine, err := e2b.New(
 		config.engineURL,
 		engineToken,
 		&http.Client{Transport: engineTransport, Timeout: 30 * time.Second},
 		e2b.WithGuestURLTemplate(config.guestURLTemplate),
 		e2b.WithDurableWorkspaces(config.durableWorkspaces),
-		e2b.WithPhaseObserver(errorPhaseObserver{logger: log.Default()}),
+		e2b.WithPhaseObserver(phaseObserver),
+		e2b.WithCommandDiagnostics(commandDiagnostics),
 	)
 	if err != nil {
 		return fmt.Errorf("configure microVM engine: %w", err)
@@ -145,6 +153,7 @@ func run() (resultErr error) {
 	relay, err := node.NewRelayServer(node.RelayServerConfig{
 		NodeID: config.nodeID, Audience: config.audience, Ledger: ledger,
 		Verifier: verifier, Replay: replay, Engine: engine, MaxInFlight: config.maxInFlight,
+		Diagnostics: commandDiagnostics,
 	})
 	if err != nil {
 		return fmt.Errorf("configure node relay: %w", err)
@@ -267,6 +276,10 @@ func loadNodeConfig() (nodeConfig, error) {
 		return config, err
 	}
 	config.durableWorkspaces, err = boolEnv("BREZEL_DURABLE_WORKSPACES", false)
+	if err != nil {
+		return config, err
+	}
+	config.benchmarkDiagnostics, err = boolEnv("BREZEL_BENCHMARK_DIAGNOSTICS", false)
 	if err != nil {
 		return config, err
 	}

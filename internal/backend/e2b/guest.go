@@ -58,11 +58,22 @@ type guestCredential struct {
 }
 
 func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRequest, emit func(backend.CommandEvent) error) (resultErr error) {
+	trace := telemetry.StartCommandTrace(c.diagnostics, telemetry.CommandDiagnosticGuestBackend)
+	if trace != nil {
+		defer func() { trace.Finish(resultErr) }()
+	}
 	if emit == nil {
 		return errors.New("command event callback is required")
 	}
 	if len(in.Argv) == 0 || strings.TrimSpace(in.Argv[0]) == "" {
 		return errors.New("command argv is required")
+	}
+	diagnosticEmit := emit
+	if trace != nil {
+		diagnosticEmit = func(event backend.CommandEvent) error {
+			trace.ObserveEvent(len(event.Data), event.Type == backend.CommandExited)
+			return emit(event)
+		}
 	}
 	connection, err := c.guestConnectionFor(ctx, sandboxID, telemetry.OperationCommand)
 	if err != nil {
@@ -146,7 +157,7 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 		default:
 			continue
 		}
-		if err := emit(output); err != nil {
+		if err := diagnosticEmit(output); err != nil {
 			return err
 		}
 		if event.GetData() != nil || event.GetEnd() != nil {
@@ -185,7 +196,7 @@ func (c *Client) Run(ctx context.Context, sandboxID string, in backend.CommandRe
 				committedSequence: committedSequence,
 				pid:               processPID,
 				started:           processPID != 0,
-			}, emit)
+			}, diagnosticEmit)
 			if recoverErr == nil {
 				return nil
 			}

@@ -103,13 +103,22 @@ func run() error {
 		return err
 	}
 	phaseMetrics := telemetry.NewRegistry()
+	diagnosticsEnabled, err := parseBoolEnv("BREZEL_BENCHMARK_DIAGNOSTICS", false)
+	if err != nil {
+		return err
+	}
+	var commandDiagnostics *telemetry.CommandDiagnosticLogger
+	if diagnosticsEnabled {
+		commandDiagnostics = telemetry.NewCommandDiagnosticLogger(os.Stderr)
+	}
 	client, err := e2b.New(
 		env("BREZEL_ENGINE_API_URL", "http://127.0.0.1:3000"),
 		engineToken,
 		nil,
 		e2b.WithGuestURLTemplate(guestURL),
 		e2b.WithDurableWorkspaces(durableWorkspaces),
-		e2b.WithPhaseObserver(phaseMetrics),
+		e2b.WithPhaseObserver(telemetry.JoinObservers(phaseMetrics, commandDiagnostics)),
+		e2b.WithCommandDiagnostics(commandDiagnostics),
 	)
 	if err != nil {
 		return err
@@ -152,7 +161,7 @@ func run() error {
 		return err
 	}
 	serviceOptions = append(serviceOptions, service.WithLimits(limits), service.WithPhaseObserver(phaseMetrics))
-	nodeOptions, err := loadNodeOptions()
+	nodeOptions, err := loadNodeOptions(commandDiagnostics)
 	if err != nil {
 		return err
 	}
@@ -206,7 +215,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	apiOptions = append(apiOptions, httpapi.WithMaxInFlightRequests(maxInFlight), httpapi.WithRequestLogger(log.Default()), httpapi.WithPhaseMetrics(phaseMetrics))
+	apiOptions = append(apiOptions, httpapi.WithMaxInFlightRequests(maxInFlight), httpapi.WithRequestLogger(log.Default()), httpapi.WithPhaseMetrics(phaseMetrics), httpapi.WithCommandDiagnostics(commandDiagnostics))
 	api, err := httpapi.New(svc, token, apiOptions...)
 	if err != nil {
 		return err
@@ -306,7 +315,7 @@ func loadWarmPool(inner backend.Backend, observer telemetry.Observer) (*warm.Poo
 	return configured, nil
 }
 
-func loadNodeOptions() ([]service.Option, error) {
+func loadNodeOptions(commandDiagnostics telemetry.CommandDiagnosticObserver) ([]service.Option, error) {
 	dataURL := strings.TrimSpace(os.Getenv("BREZEL_NODE_DATA_URL"))
 	controlURL := strings.TrimSpace(os.Getenv("BREZEL_NODE_CONTROL_URL"))
 	if dataURL == "" && controlURL == "" {
@@ -382,7 +391,7 @@ func loadNodeOptions() ([]service.Option, error) {
 		return nil, fmt.Errorf("configure node capability signer: %w", err)
 	}
 	audience := env("BREZEL_NODE_CAPABILITY_AUDIENCE", "brezel-node")
-	dataPlane, err := node.NewRelayDataPlane(dataURL, tlsConfig, signer, audience, nodeID)
+	dataPlane, err := node.NewRelayDataPlane(dataURL, tlsConfig, signer, audience, nodeID, node.WithRelayCommandDiagnostics(commandDiagnostics))
 	if err != nil {
 		return nil, fmt.Errorf("configure node data relay: %w", err)
 	}

@@ -95,15 +95,15 @@ func TestLoadLimitsRejectsUnboundedOrMalformedValues(t *testing.T) {
 }
 
 func TestLoadNodeOptionsRequiresCompleteRelayConfiguration(t *testing.T) {
-	if options, err := loadNodeOptions(); err != nil || len(options) != 0 {
+	if options, err := loadNodeOptions(nil); err != nil || len(options) != 0 {
 		t.Fatalf("disabled node relay options=%d err=%v", len(options), err)
 	}
 	t.Setenv("BREZEL_NODE_DATA_URL", "https://node.invalid:8443")
-	if _, err := loadNodeOptions(); err == nil {
+	if _, err := loadNodeOptions(nil); err == nil {
 		t.Fatal("partial node relay configuration was accepted")
 	}
 	t.Setenv("BREZEL_NODE_CONTROL_URL", "https://node.invalid:8444")
-	if _, err := loadNodeOptions(); err == nil {
+	if _, err := loadNodeOptions(nil); err == nil {
 		t.Fatal("node relay without identities was accepted")
 	}
 }

@@ -43,6 +43,15 @@ func TestLoadNodeConfigRequiresTrustMaterialAndBoundsValues(t *testing.T) {
 	if config.nodeID != "node-a" || config.apiID != "api-a" || config.replayCapacity != 4096 || config.maxInFlight != 128 || config.shutdownTimeout != 45*time.Second || !config.durableWorkspaces {
 		t.Fatalf("unexpected config: %#v", config)
 	}
+	if config.benchmarkDiagnostics {
+		t.Fatal("benchmark diagnostics were enabled by default")
+	}
+	t.Setenv("BREZEL_BENCHMARK_DIAGNOSTICS", "true")
+	config, err = loadNodeConfig()
+	if err != nil || !config.benchmarkDiagnostics {
+		t.Fatalf("enable benchmark diagnostics config=%#v error=%v", config, err)
+	}
+	t.Setenv("BREZEL_BENCHMARK_DIAGNOSTICS", "false")
 
 	t.Setenv("BREZEL_NODE_REPLAY_CAPACITY", "0")
 	if _, err := loadNodeConfig(); err == nil || !strings.Contains(err.Error(), "REPLAY_CAPACITY") {

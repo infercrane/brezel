@@ -32,6 +32,7 @@ services:
       BREZEL_GUEST_URL_TEMPLATE: http://127.0.0.1:5007
       BREZEL_DURABLE_WORKSPACES: "true"
       BREZEL_NODE_MAX_IN_FLIGHT: ${BREZEL_NODE_MAX_IN_FLIGHT:-128}
+      BREZEL_BENCHMARK_DIAGNOSTICS: ${BREZEL_BENCHMARK_DIAGNOSTICS:-false}
     volumes:
       - ${BREZEL_STATE_DIR:?set BREZEL_STATE_DIR to an absolute protected directory}:/var/lib/brezel
       - ${BREZEL_SECRETS_DIR:?set BREZEL_SECRETS_DIR to an absolute protected directory}:/run/brezel-secrets:ro
@@ -90,6 +91,7 @@ services:
       BREZEL_MAX_ENVIRONMENTS_PER_PROJECT: ${BREZEL_MAX_ENVIRONMENTS_PER_PROJECT:-256}
       BREZEL_MAX_CONNECTORS_PER_PROJECT: ${BREZEL_MAX_CONNECTORS_PER_PROJECT:-256}
       BREZEL_MAX_IN_FLIGHT_REQUESTS: ${BREZEL_MAX_IN_FLIGHT_REQUESTS:-512}
+      BREZEL_BENCHMARK_DIAGNOSTICS: ${BREZEL_BENCHMARK_DIAGNOSTICS:-false}
     volumes:
       - ${BREZEL_STATE_DIR:?set BREZEL_STATE_DIR to an absolute protected directory}:/var/lib/brezel
       - ${BREZEL_SECRETS_DIR:?set BREZEL_SECRETS_DIR to an absolute protected directory}:/run/brezel-secrets:ro

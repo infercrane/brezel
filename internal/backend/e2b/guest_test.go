@@ -208,7 +208,9 @@ func TestGuestRunStreamsRealProtocolEvents(t *testing.T) {
 	}
 	api := sandboxDetailServer(t, `{"sandboxID":"upstream-1","state":"running","envdAccessToken":"guest-secret","trafficAccessToken":"traffic-secret"}`)
 	defer api.Close()
-	client, err := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL))
+	diagnostics := &guestDiagnosticCollector{}
+	phases := &guestPhaseCollector{}
+	client, err := New(api.URL, "api-secret", api.Client(), WithGuestURLTemplate(guest.URL), WithPhaseObserver(phases), WithCommandDiagnostics(diagnostics))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,6 +232,43 @@ func TestGuestRunStreamsRealProtocolEvents(t *testing.T) {
 	}
 	if !reflect.DeepEqual(processService.seen.Argv, []string{"python3", "-V"}) || processService.seen.Cwd != "/workspace" {
 		t.Fatalf("process request = %#v", processService.seen)
+	}
+	if len(diagnostics.samples) != 1 {
+		t.Fatalf("command diagnostics=%#v", diagnostics.samples)
+	}
+	sample := diagnostics.samples[0]
+	if sample.Component != telemetry.CommandDiagnosticGuestBackend || sample.Outcome != telemetry.OutcomeSuccess || sample.StreamEvents != 3 || sample.StreamBytes != 6 || sample.FirstEventCount != 1 || sample.TerminalEventCount != 1 {
+		t.Fatalf("command diagnostic=%#v", sample)
+	}
+	if phases.connectionMisses != 1 || phases.connectionHits != 0 || phases.connectionDuration < 0 {
+		t.Fatalf("guest connection phases=%#v", phases)
+	}
+}
+
+type guestDiagnosticCollector struct {
+	samples []telemetry.CommandDiagnostic
+}
+
+func (c *guestDiagnosticCollector) ObserveCommandDiagnostic(sample telemetry.CommandDiagnostic) {
+	c.samples = append(c.samples, sample)
+}
+
+type guestPhaseCollector struct {
+	connectionHits     int
+	connectionMisses   int
+	connectionDuration time.Duration
+}
+
+func (c *guestPhaseCollector) ObservePhase(operation telemetry.Operation, phase telemetry.Phase, outcome telemetry.Outcome, duration time.Duration) {
+	if operation != telemetry.OperationCommand || phase != telemetry.PhaseGuestConnection {
+		return
+	}
+	c.connectionDuration = duration
+	switch outcome {
+	case telemetry.OutcomeHit:
+		c.connectionHits++
+	case telemetry.OutcomeMiss:
+		c.connectionMisses++
 	}
 }
 
