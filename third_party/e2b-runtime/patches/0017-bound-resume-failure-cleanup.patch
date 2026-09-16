@@ -1,0 +1,162 @@
+diff --git a/packages/orchestrator/pkg/sandbox/fc/process.go b/packages/orchestrator/pkg/sandbox/fc/process.go
+index edc15ef700ebfb999cd3395888b86d8d01490a87..d19a697f2e2fc340d1527bbeef7b57d3496274f6 100644
+--- a/packages/orchestrator/pkg/sandbox/fc/process.go
++++ b/packages/orchestrator/pkg/sandbox/fc/process.go
+@@ -822,23 +822,61 @@ func (p *Process) stopExclusiveCPUPlacementMonitor() {
+ }
+ 
+ func (p *Process) Pid() (int, error) {
+-	if p.cmd.Process == nil {
++	if p.cmd == nil || p.cmd.Process == nil {
+ 		return 0, errors.New("fc process not started")
+ 	}
+ 
+ 	return p.cmd.Process.Pid, nil
+ }
+ 
+-func (p *Process) Stop(ctx context.Context) error {
+-	if p.cmd.Process == nil {
+-		return errors.New("fc process not started")
++// WaitForExit waits until the process waiter has observed Firecracker's exit.
++// A process that never started is already stopped and requires no wait. This
++// distinction is important on resume failures: setup can construct Process and
++// register sandbox cleanup before cmd.Start is reached.
++func (p *Process) WaitForExit(ctx context.Context) error {
++	if p == nil || p.cmd == nil || p.cmd.Process == nil {
++		return nil
++	}
++	if p.Exit == nil {
++		return errors.New("fc process exit signal is unavailable")
++	}
++
++	select {
++	case <-p.Exit.Done():
++		return nil
++	case <-ctx.Done():
++		return fmt.Errorf("waiting for fc process exit: %w", ctx.Err())
+ 	}
++}
++
++func (p *Process) Stop(ctx context.Context) error {
+ 	p.stopExclusiveCPUPlacementMonitor()
+ 
+-	// Always remove the metrics FIFO, even if the process already exited,
+-	// to avoid leaving orphaned files behind.
+-	if removeErr := os.Remove(p.metricsPath); removeErr != nil && !os.IsNotExist(removeErr) {
+-		logger.L().Warn(ctx, "failed to remove fc metrics FIFO", zap.Error(removeErr), logger.WithSandboxID(p.files.SandboxID))
++	// Always release pre-start resources, even when cmd.Start was never reached
++	// or failed. Returning success for an unstarted process makes Stop truly
++	// idempotent and lets the caller continue with rootfs, UFFD, cgroup, network,
++	// and file cleanup.
++	if p.metricsPath != "" {
++		if removeErr := os.Remove(p.metricsPath); removeErr != nil && !os.IsNotExist(removeErr) {
++			if p.files == nil {
++				logger.L().Warn(ctx, "failed to remove fc metrics FIFO", zap.Error(removeErr))
++			} else {
++				logger.L().Warn(ctx, "failed to remove fc metrics FIFO", zap.Error(removeErr), logger.WithSandboxID(p.files.SandboxID))
++			}
++		}
++	}
++
++	if p.cmd == nil || p.cmd.Process == nil {
++		if err := p.releaseExclusiveCPUPlacement(); err != nil {
++			return fmt.Errorf("releasing pre-start Firecracker CPU placement: %w", err)
++		}
++
++		return nil
++	}
++
++	// The process waiter owns Exit completion once cmd.Start succeeds.
++	if p.Exit == nil {
++		return errors.New("fc process exit signal is unavailable")
+ 	}
+ 
+ 	pid := p.cmd.Process.Pid
+diff --git a/packages/orchestrator/pkg/sandbox/fc/process_test.go b/packages/orchestrator/pkg/sandbox/fc/process_test.go
+index 80d4ad480b7668dd47e4845338d55ec3131808d6..f59978868d1ae94d9aebde596e74f4390d24e528 100644
+--- a/packages/orchestrator/pkg/sandbox/fc/process_test.go
++++ b/packages/orchestrator/pkg/sandbox/fc/process_test.go
+@@ -67,6 +67,45 @@ func TestProcessStopIsIdempotent(t *testing.T) {
+ 	require.NoError(t, p.Stop(ctx))
+ }
+ 
++func TestProcessStopBeforeStartCleansArtifactsAndReturns(t *testing.T) {
++	t.Parallel()
++
++	metricsPath := filepath.Join(t.TempDir(), "metrics.fifo")
++	require.NoError(t, os.WriteFile(metricsPath, []byte("stale"), 0o600))
++
++	p := &Process{
++		cmd:         &exec.Cmd{},
++		Exit:        utils.NewErrorOnce(),
++		metricsPath: metricsPath,
++	}
++
++	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
++	defer cancel()
++
++	require.NoError(t, p.Stop(ctx))
++	require.NoFileExists(t, metricsPath)
++	require.NoError(t, p.WaitForExit(ctx))
++}
++
++func TestProcessWaitForExitIsBoundedWhenWaiterStalls(t *testing.T) {
++	t.Parallel()
++
++	p := &Process{
++		cmd: &exec.Cmd{
++			// WaitForExit only uses Process as the started-state marker. The test
++			// does not signal or wait on this process handle.
++			Process: &os.Process{Pid: os.Getpid()},
++		},
++		Exit: utils.NewErrorOnce(),
++	}
++
++	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
++	defer cancel()
++
++	err := p.WaitForExit(ctx)
++	require.ErrorIs(t, err, context.DeadlineExceeded)
++}
++
+ func TestProcessStopDoesNotSignalProcessGroupAfterLeaderExit(t *testing.T) {
+ 	t.Parallel()
+ 
+diff --git a/packages/orchestrator/pkg/sandbox/sandbox.go b/packages/orchestrator/pkg/sandbox/sandbox.go
+index c45fc4dad5afff81b7726f5783f16ca63c4f05c3..768e6e0b2d565830316f0de168cf004a4319c3c1 100644
+--- a/packages/orchestrator/pkg/sandbox/sandbox.go
++++ b/packages/orchestrator/pkg/sandbox/sandbox.go
+@@ -100,6 +100,12 @@ var ErrWaitForEnvdTimeout = errors.New("syncing took too long")
+ // ErrFcProcessExited is the cancel cause used when the Firecracker process exits during WaitForEnvd.
+ var ErrFcProcessExited = errors.New("fc process exited prematurely")
+ 
++// cleanupProcessExitTimeout bounds the final observation window after Stop and
++// cgroup.kill. Process.Stop already performs bounded TERM/KILL escalation; this
++// guard prevents a missing or broken process waiter from pinning the complete
++// cleanup stack forever.
++const cleanupProcessExitTimeout = time.Second
++
+ var SandboxHttpTransport = otelhttp.NewTransport(
+ 	&http.Transport{
+ 		DisableKeepAlives: true,
+@@ -1839,13 +1845,13 @@ func (s *Sandbox) doStop(ctx context.Context) error {
+ 	}
+ 
+ 	// The process should exit before the rest of cleanup, but memory shutdown
+-	// must still run if the wait context is canceled so UFFD can exit.
+-	// FC's own exit error is reported via the exit waiters, not as a stop
+-	// failure, so only a canceled wait counts as an error here.
+-	select {
+-	case <-s.process.Exit.Done():
+-	case <-ctx.Done():
+-		errs = append(errs, fmt.Errorf("failed waiting for FC exit: %w", ctx.Err()))
++	// must still run if the waiter is missing or stuck so UFFD, rootfs, network,
++	// and cgroup cleanup can continue. An unstarted process is already stopped.
++	waitCtx, cancelWait := context.WithTimeout(context.WithoutCancel(ctx), cleanupProcessExitTimeout)
++	processWaitErr := s.process.WaitForExit(waitCtx)
++	cancelWait()
++	if processWaitErr != nil {
++		errs = append(errs, fmt.Errorf("failed waiting for FC exit: %w", processWaitErr))
+ 	}
+ 
+ 	uffdStopErr := s.Resources.memory.Stop()

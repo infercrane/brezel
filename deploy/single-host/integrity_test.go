@@ -46,6 +46,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"orchestrator_ext4_dir_index_patch_sha256":       "0014-opt-in-ext4-dir-index.patch",
 		"base_template_identity_patch_sha256":            "0015-parameterize-base-template-identity.patch",
 		"orchestrator_direct_rootfs_patch_sha256":        "0016-opt-in-direct-rootfs-provider.patch",
+		"orchestrator_resume_cleanup_patch_sha256":       "0017-bound-resume-failure-cleanup.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -270,6 +271,61 @@ func TestInstallerPinsOptInDirectRootfsProviderPatch(t *testing.T) {
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("artifact manifest is missing direct-rootfs contract %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsBoundedResumeFailureCleanupPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0017-bound-resume-failure-cleanup.patch",
+		"orchestrator_resume_cleanup_patch_sha256",
+		"engine resume-cleanup patch verification failed",
+		`-p1 < "$ENGINE_RESUME_CLEANUP_PATCH"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing resume-cleanup integrity binding %q", required)
+		}
+	}
+	directApply := strings.Index(installer, `-p1 < "$ENGINE_DIRECT_ROOTFS_PATCH"`)
+	cleanupApply := strings.Index(installer, `-p1 < "$ENGINE_RESUME_CLEANUP_PATCH"`)
+	if directApply < 0 || cleanupApply <= directApply {
+		t.Fatal("resume-cleanup patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0017-bound-resume-failure-cleanup.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		"func (p *Process) WaitForExit",
+		"cleanupProcessExitTimeout",
+		"TestProcessStopBeforeStartCleansArtifactsAndReturns",
+		"TestProcessWaitForExitIsBoundedWhenWaiterStalls",
+		"Returning success for an unstarted process",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("resume-cleanup patch is missing contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.resume_cleanup_patch_sha256",
+		"artifact.orchestrator.resume_failure_cleanup=bounded-prestart-safe",
+		"the resume-cleanup patch requires the direct-rootfs patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing resume-cleanup contract %q", required)
 		}
 	}
 }
