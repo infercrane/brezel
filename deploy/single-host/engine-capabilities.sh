@@ -70,6 +70,8 @@ check_source() {
   require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
     'env:"SANDBOX_ROOTFS_REFLINK_CACHE_DIR"' "the explicit reflink-cache boundary"
   require_literal "$source_root/packages/shared/pkg/storage/sandbox.go" \
+    'env:"SANDBOX_CACHE_DIR,expand"' "the explicit per-sandbox cache boundary"
+  require_literal "$source_root/packages/shared/pkg/storage/sandbox.go" \
     'fmt.Sprintf("rootfs-%s-%s.cow"' "per-sandbox copy-on-write root filesystem paths"
   require_literal "$source_root/packages/shared/pkg/storage/sandbox.go" \
     'envDefault:"${ORCHESTRATOR_BASE_PATH}/sandbox"' "the local sandbox cache default"
@@ -91,6 +93,12 @@ check_source() {
     'TestDirectPathMountConnectRetryFullyCleansPreviousAttempt' "the NBD retry-cleanup regression test"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go" \
     'TestDirectPathMountCloseIsSerializedAndIdempotent' "the NBD idempotent-close regression test"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go" \
+    'TestDirectPathMountFailsClosedWithoutDevicePool' "the absent NBD-pool fail-closed regression test"
+  require_literal "$source_root/packages/orchestrator/pkg/factories/run.go" \
+    'services.RunsTemplateManager()' "the template-manager-aware NBD pool scope"
+  require_literal "$source_root/packages/orchestrator/pkg/factories/run_rootfs_test.go" \
+    'TestNewRuntimeDevicePoolOnlySuppressesReflinkWithoutTemplateManager' "the reflink-only NBD pool suppression regression test"
 
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/network/pool.go" \
     "NewSlotsPoolSize    = 32" "the new network-slot pool"
@@ -233,7 +241,7 @@ check_source() {
   require_literal "$source_root/packages/envd/internal/services/process/handler/journal_test.go" \
     'TestEventJournalAtomicReplayToWaitHandoff' "the gap-free replay-to-live handoff regression test"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","rootfs_read_path":{"local":"allocation-free","whole_writable_range":"single-cache-read","mixed_range":"layered-fallback"},"durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"qualified-opt-in-disabled-by-default","isolation":"cgroup-v2-isolated-partition-plus-thread-affinity"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64,"connections_per_device":{"default":1,"minimum":1,"maximum":4,"values_above_one":"pending-kvm-ab-qualification"},"lifecycle":"attempt-owned-idempotent-cleanup"},"base_template":{"cpu_memory_and_free_disk":"operator_configurable","ext4_dir_index":"targeted-opt-in-default-disabled"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","rootfs_read_path":{"local":"allocation-free","whole_writable_range":"single-cache-read","mixed_range":"layered-fallback"},"durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"qualified-opt-in-disabled-by-default","isolation":"cgroup-v2-isolated-partition-plus-thread-affinity"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64,"scope":"runtime-provider-or-template-manager-only","connections_per_device":{"default":1,"minimum":1,"maximum":4,"values_above_one":"pending-kvm-ab-qualification"},"lifecycle":"attempt-owned-idempotent-cleanup"},"base_template":{"cpu_memory_and_free_disk":"operator_configurable","ext4_dir_index":"targeted-opt-in-default-disabled"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
 }
 
 find_orchestrator_pid() {

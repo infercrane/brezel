@@ -1,0 +1,160 @@
+diff --git a/packages/orchestrator/pkg/factories/run.go b/packages/orchestrator/pkg/factories/run.go
+index 41d4a5918..38cb99fab 100644
+--- a/packages/orchestrator/pkg/factories/run.go
++++ b/packages/orchestrator/pkg/factories/run.go
+@@ -90,6 +90,27 @@ type Deps struct {
+ 	ClickhouseEndpoints []ClickhouseEndpoint
+ }
+ 
++type devicePoolFactory func(int) (*nbd.DevicePool, error)
++
++// newRuntimeDevicePool keeps the kernel NBD pool coupled to a real consumer.
++// Reflink-only orchestrators pass ordinary file paths to Firecracker and do
++// not need a background NBD scanner. Template-manager still requires NBD for
++// offline ensurefreedisk work, even when sandbox execution uses reflink.
++func newRuntimeDevicePool(provider string, runsTemplateManager bool, size int, create devicePoolFactory) (*nbd.DevicePool, error) {
++	switch provider {
++	case "nbd", "direct":
++		return create(size)
++	case "reflink":
++		if runsTemplateManager {
++			return create(size)
++		}
++
++		return nil, nil
++	default:
++		return nil, fmt.Errorf("unsupported sandbox rootfs provider %q", provider)
++	}
++}
++
+ type ClickhouseEndpoint struct {
+ 	Conn driver.Conn
+ 
+@@ -796,17 +817,21 @@ func run(config cfg.Config, opts Options) (success bool) {
+ 		}
+ 	}
+ 
+-	// device pool
+-	devicePool, err := nbd.NewDevicePool(config.NBDPoolSize)
++	// The NBD pool is a runtime-provider or template-manager resource, not a
++	// process-global requirement. A reflink-only orchestrator must not scan and
++	// reserve NBD devices it can never consume.
++	devicePool, err := newRuntimeDevicePool(config.SandboxRootfsProviderName(), services.RunsTemplateManager(), config.NBDPoolSize, nbd.NewDevicePool)
+ 	if err != nil {
+ 		logger.L().Fatal(ctx, "failed to create device pool", zap.Error(err))
+ 	}
+-	startService("nbd device pool", func() error {
+-		devicePool.Populate(ctx)
++	if devicePool != nil {
++		startService("nbd device pool", func() error {
++			devicePool.Populate(ctx)
+ 
+-		return nil
+-	})
+-	closers = append(closers, closer{"device pool", devicePool.Close})
++			return nil
++		})
++		closers = append(closers, closer{"device pool", devicePool.Close})
++	}
+ 
+ 	// network pool
+ 	slotStorage, err := network.NewStorageLocal(ctx, config.NetworkConfig, egressSetup.Proxy)
+diff --git a/packages/orchestrator/pkg/factories/run_rootfs_test.go b/packages/orchestrator/pkg/factories/run_rootfs_test.go
+new file mode 100644
+index 000000000..9196f4d52
+--- /dev/null
++++ b/packages/orchestrator/pkg/factories/run_rootfs_test.go
+@@ -0,0 +1,57 @@
++//go:build linux
++
++package factories
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd"
++)
++
++func TestNewRuntimeDevicePoolOnlySuppressesReflinkWithoutTemplateManager(t *testing.T) {
++	t.Parallel()
++
++	tests := []struct {
++		name                string
++		provider            string
++		runsTemplateManager bool
++		wantPool            bool
++	}{
++		{name: "nbd runtime", provider: "nbd", wantPool: true},
++		{name: "direct diagnostics", provider: "direct", wantPool: true},
++		{name: "reflink template manager", provider: "reflink", runsTemplateManager: true, wantPool: true},
++		{name: "reflink-only orchestrator", provider: "reflink", wantPool: false},
++	}
++
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			t.Parallel()
++
++			want := &nbd.DevicePool{}
++			created := 0
++			got, err := newRuntimeDevicePool(test.provider, test.runsTemplateManager, 64, func(size int) (*nbd.DevicePool, error) {
++				created++
++				assert.Equal(t, 64, size)
++
++				return want, nil
++			})
++			require.NoError(t, err)
++			if test.wantPool {
++				assert.Same(t, want, got)
++				assert.Equal(t, 1, created)
++			} else {
++				assert.Nil(t, got)
++				assert.Zero(t, created)
++			}
++		})
++	}
++
++	got, err := newRuntimeDevicePool("future-provider", false, 64, func(int) (*nbd.DevicePool, error) {
++		return &nbd.DevicePool{}, nil
++	})
++	require.ErrorContains(t, err, "unsupported sandbox rootfs provider")
++	assert.Nil(t, got)
++}
+diff --git a/packages/orchestrator/pkg/sandbox/nbd/path_direct.go b/packages/orchestrator/pkg/sandbox/nbd/path_direct.go
+index 3f31eab01..e5608c661 100644
+--- a/packages/orchestrator/pkg/sandbox/nbd/path_direct.go
++++ b/packages/orchestrator/pkg/sandbox/nbd/path_direct.go
+@@ -216,6 +216,10 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err e
+ 		return math.MaxUint32, fmt.Errorf("NBD connections per device must be between 1 and 4, got %d", d.connections)
+ 	}
+ 
++	if d.ops.getDevice == nil || d.ops.releaseDevice == nil {
++		return math.MaxUint32, errors.New("NBD device pool is unavailable")
++	}
++
+ 	// The connect + wait-for-connected poll loop (and device-pool contention) are
+ 	// otherwise invisible; both add up when this is opened once per measure/resize.
+ 	ctx, span := tracer.Start(ctx, "direct-path-mount-open")
+diff --git a/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go b/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go
+index 2a30df76a..00a5a2b64 100644
+--- a/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go
++++ b/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go
+@@ -206,6 +206,16 @@ func TestDirectPathMountConnectRetryFullyCleansPreviousAttempt(t *testing.T) {
+ 	require.Equal(t, []uint32{21, 22}, disconnected)
+ }
+ 
++func TestDirectPathMountFailsClosedWithoutDevicePool(t *testing.T) {
++	t.Parallel()
++
++	mnt := NewDirectPathMount(nil, nil, nil)
++	idx, err := mnt.Open(t.Context())
++	require.ErrorContains(t, err, "NBD device pool is unavailable")
++	require.Equal(t, uint32(math.MaxUint32), idx)
++	require.Equal(t, directPathMountClosed, mnt.state)
++}
++
+ func TestDirectPathMountCancellationAfterConnectCleansConnectedAttempt(t *testing.T) {
+ 	mnt := newLifecycleMount(t, 3)
+ 

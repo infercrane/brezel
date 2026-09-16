@@ -57,3 +57,24 @@ Qualification checks:
 The command prints one JSON object. `diagnostic_only` is always true; timings
 are host-specific qualification evidence and are not a production or
 cross-provider benchmark.
+
+## Runtime activation
+
+NBD remains the production default. The direct provider also retains the
+packaged `/orchestrator/sandbox` cache default. Reflink is explicit opt-in and
+requires two host paths on the same qualified XFS or Btrfs filesystem:
+
+```sh
+sudo install -d -m 0700 /fc-vm/reflink-cache /fc-vm/sandbox
+export BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink
+export BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR=/fc-vm/reflink-cache
+export BREZEL_ENGINE_SANDBOX_CACHE_DIR=/fc-vm/sandbox
+```
+
+Both paths must already exist, be absolute private non-symlink directories,
+and have the same filesystem device ID. The first holds verified immutable
+base images. `BREZEL_ENGINE_SANDBOX_CACHE_DIR` holds the per-sandbox reflink
+clones. The installer validates this boundary, including a self-cleaning live
+`FICLONE` probe, before service mutation, and the runtime repeats the
+same-filesystem and no-follow checks.
+Selecting reflink does not establish a persistence, snapshot, or resume claim.

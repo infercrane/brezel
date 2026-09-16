@@ -47,6 +47,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"base_template_identity_patch_sha256":            "0015-parameterize-base-template-identity.patch",
 		"orchestrator_direct_rootfs_patch_sha256":        "0016-opt-in-direct-rootfs-provider.patch",
 		"orchestrator_resume_cleanup_patch_sha256":       "0017-bound-resume-failure-cleanup.patch",
+		"orchestrator_nbd_provider_scope_patch_sha256":   "0018-scope-nbd-pool-to-nbd-runtime.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -258,6 +259,21 @@ func TestInstallerPinsOptInDirectRootfsProviderPatch(t *testing.T) {
 	if !strings.Contains(string(overrideData), "SANDBOX_ROOTFS_REFLINK_CACHE_DIR: ${BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR:-}") {
 		t.Fatal("engine override does not keep the reflink cache explicit and default-off")
 	}
+	if !strings.Contains(string(overrideData), "SANDBOX_CACHE_DIR: ${BREZEL_ENGINE_SANDBOX_CACHE_DIR:-/orchestrator/sandbox}") {
+		t.Fatal("engine override does not preserve the packaged sandbox-cache default")
+	}
+	for _, required := range []string{
+		"BREZEL_ENGINE_SANDBOX_CACHE_DIR",
+		"must be private (no group or other permissions)",
+		"must be owned by root for the host-namespace orchestrator",
+		"must be distinct directories",
+		"must be on the same filesystem for reflink mode",
+		"fcntl.ioctl(destination_fd, FICLONE, source_fd)",
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing reflink sandbox-cache contract %q", required)
+		}
+	}
 
 	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
 	if err != nil {
@@ -271,6 +287,60 @@ func TestInstallerPinsOptInDirectRootfsProviderPatch(t *testing.T) {
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("artifact manifest is missing direct-rootfs contract %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsNBDProviderScopePatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0018-scope-nbd-pool-to-nbd-runtime.patch",
+		"orchestrator_nbd_provider_scope_patch_sha256",
+		"engine NBD provider-scope patch verification failed",
+		`-p1 < "$ENGINE_NBD_PROVIDER_SCOPE_PATCH"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing NBD provider-scope integrity binding %q", required)
+		}
+	}
+	cleanupApply := strings.Index(installer, `-p1 < "$ENGINE_RESUME_CLEANUP_PATCH"`)
+	scopeApply := strings.Index(installer, `-p1 < "$ENGINE_NBD_PROVIDER_SCOPE_PATCH"`)
+	if cleanupApply < 0 || scopeApply <= cleanupApply {
+		t.Fatal("NBD provider-scope patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0018-scope-nbd-pool-to-nbd-runtime.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		"services.RunsTemplateManager()",
+		"TestNewRuntimeDevicePoolOnlySuppressesReflinkWithoutTemplateManager",
+		"TestDirectPathMountFailsClosedWithoutDevicePool",
+		"NBD device pool is unavailable",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("NBD provider-scope patch is missing contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.nbd_provider_scope_patch_sha256",
+		"artifact.orchestrator.nbd_pool_scope=runtime-provider-or-template-manager-only",
+		"the NBD provider-scope patch requires the resume-cleanup patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing NBD provider-scope contract %q", required)
 		}
 	}
 }
@@ -364,6 +434,177 @@ func TestInstallerRejectsReflinkWithoutPreparedCacheBeforeHostMutation(t *testin
 	}
 	if strings.Contains(string(output), "Docker Engine is required") || strings.Contains(string(output), "This host cannot run") {
 		t.Fatalf("installer reached host preflight before rejecting the reflink cache: %s", output)
+	}
+}
+
+func reflinkStatShimEnv(t *testing.T, baseCache, sandboxCache, baseMode, sandboxMode, baseOwner, sandboxOwner, baseDevice, sandboxDevice string) []string {
+	t.Helper()
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, "stat")
+	contents := `#!/bin/sh
+last=
+for last do :; done
+if [ "$last" = "$BREZEL_TEST_STAT_BASE" ]; then
+  case "$2" in
+    %a) printf '%s\n' "$BREZEL_TEST_STAT_BASE_MODE" ;;
+    %u) printf '%s\n' "$BREZEL_TEST_STAT_BASE_OWNER" ;;
+    %d) printf '%s\n' "$BREZEL_TEST_STAT_BASE_DEVICE" ;;
+    *) exec /usr/bin/stat "$@" ;;
+  esac
+elif [ "$last" = "$BREZEL_TEST_STAT_SANDBOX" ]; then
+  case "$2" in
+    %a) printf '%s\n' "$BREZEL_TEST_STAT_SANDBOX_MODE" ;;
+    %u) printf '%s\n' "$BREZEL_TEST_STAT_SANDBOX_OWNER" ;;
+    %d) printf '%s\n' "$BREZEL_TEST_STAT_SANDBOX_DEVICE" ;;
+    *) exec /usr/bin/stat "$@" ;;
+  esac
+else
+  exec /usr/bin/stat "$@"
+fi
+`
+	if err := os.WriteFile(shim, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return []string{
+		"PATH=" + shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BREZEL_TEST_STAT_BASE=" + baseCache,
+		"BREZEL_TEST_STAT_SANDBOX=" + sandboxCache,
+		"BREZEL_TEST_STAT_BASE_MODE=" + baseMode,
+		"BREZEL_TEST_STAT_SANDBOX_MODE=" + sandboxMode,
+		"BREZEL_TEST_STAT_BASE_OWNER=" + baseOwner,
+		"BREZEL_TEST_STAT_SANDBOX_OWNER=" + sandboxOwner,
+		"BREZEL_TEST_STAT_BASE_DEVICE=" + baseDevice,
+		"BREZEL_TEST_STAT_SANDBOX_DEVICE=" + sandboxDevice,
+	}
+}
+
+func TestInstallerRejectsReflinkWithoutPreparedSandboxCacheBeforeHostMutation(t *testing.T) {
+	baseCache := t.TempDir()
+	command := exec.Command("sh", "install.sh")
+	command.Env = append(os.Environ(),
+		"BREZEL_INSTALL_DIR="+t.TempDir(),
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink",
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR="+baseCache,
+		"BREZEL_ENGINE_SANDBOX_CACHE_DIR=",
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("installer accepted reflink mode without an explicit sandbox cache")
+	}
+	if !strings.Contains(string(output), "BREZEL_ENGINE_SANDBOX_CACHE_DIR must be an explicit absolute path") {
+		t.Fatalf("installer returned the wrong sandbox-cache validation error: %s", output)
+	}
+	if strings.Contains(string(output), "Docker Engine is required") || strings.Contains(string(output), "This host cannot run") {
+		t.Fatalf("installer reached host preflight before rejecting the sandbox cache: %s", output)
+	}
+}
+
+func TestInstallerRejectsPublicReflinkSandboxCacheBeforeHostMutation(t *testing.T) {
+	baseCache := t.TempDir()
+	sandboxCache := filepath.Join(t.TempDir(), "sandbox")
+	if err := os.Mkdir(sandboxCache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", "install.sh")
+	command.Env = append(os.Environ(),
+		"BREZEL_INSTALL_DIR="+t.TempDir(),
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink",
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR="+baseCache,
+		"BREZEL_ENGINE_SANDBOX_CACHE_DIR="+sandboxCache,
+	)
+	command.Env = append(command.Env, reflinkStatShimEnv(t, baseCache, sandboxCache, "700", "755", "0", "0", "1", "1")...)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("installer accepted a non-private reflink sandbox cache")
+	}
+	if !strings.Contains(string(output), "BREZEL_ENGINE_SANDBOX_CACHE_DIR must be private") {
+		t.Fatalf("installer returned the wrong sandbox-cache permission error: %s", output)
+	}
+	if strings.Contains(string(output), "Docker Engine is required") || strings.Contains(string(output), "This host cannot run") {
+		t.Fatalf("installer reached host preflight before rejecting sandbox-cache permissions: %s", output)
+	}
+}
+
+func TestInstallerRejectsNonRootOwnedReflinkCacheBeforeHostMutation(t *testing.T) {
+	baseCache := t.TempDir()
+	sandboxCache := t.TempDir()
+	command := exec.Command("sh", "install.sh")
+	command.Env = append(os.Environ(),
+		"BREZEL_INSTALL_DIR="+t.TempDir(),
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink",
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR="+baseCache,
+		"BREZEL_ENGINE_SANDBOX_CACHE_DIR="+sandboxCache,
+	)
+	command.Env = append(command.Env, reflinkStatShimEnv(t, baseCache, sandboxCache, "700", "700", "501", "0", "1", "1")...)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("installer accepted a non-root-owned reflink cache")
+	}
+	if !strings.Contains(string(output), "BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR must be owned by root") {
+		t.Fatalf("installer returned the wrong cache-owner validation error: %s", output)
+	}
+}
+
+func TestInstallerRejectsSymlinkReflinkSandboxCacheBeforeHostMutation(t *testing.T) {
+	baseCache := t.TempDir()
+	target := t.TempDir()
+	sandboxCache := filepath.Join(t.TempDir(), "sandbox")
+	if err := os.Symlink(target, sandboxCache); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", "install.sh")
+	command.Env = append(os.Environ(),
+		"BREZEL_INSTALL_DIR="+t.TempDir(),
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink",
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR="+baseCache,
+		"BREZEL_ENGINE_SANDBOX_CACHE_DIR="+sandboxCache,
+	)
+	command.Env = append(command.Env, reflinkStatShimEnv(t, baseCache, sandboxCache, "700", "700", "0", "0", "1", "1")...)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("installer accepted a symlink reflink sandbox cache")
+	}
+	if !strings.Contains(string(output), "BREZEL_ENGINE_SANDBOX_CACHE_DIR must be a pre-created non-symlink directory") {
+		t.Fatalf("installer returned the wrong sandbox-cache symlink error: %s", output)
+	}
+}
+
+func TestInstallerRejectsIdenticalReflinkCachePathsBeforeHostMutation(t *testing.T) {
+	cache := t.TempDir()
+	command := exec.Command("sh", "install.sh")
+	command.Env = append(os.Environ(),
+		"BREZEL_INSTALL_DIR="+t.TempDir(),
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink",
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR="+cache,
+		"BREZEL_ENGINE_SANDBOX_CACHE_DIR="+cache,
+	)
+	command.Env = append(command.Env, reflinkStatShimEnv(t, cache, cache, "700", "700", "0", "0", "1", "1")...)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("installer accepted identical reflink cache paths")
+	}
+	if !strings.Contains(string(output), "must be distinct directories") {
+		t.Fatalf("installer returned the wrong identical-cache validation error: %s", output)
+	}
+}
+
+func TestInstallerRejectsDifferentReflinkFilesystemsBeforeHostMutation(t *testing.T) {
+	baseCache := t.TempDir()
+	sandboxCache := t.TempDir()
+	command := exec.Command("sh", "install.sh")
+	command.Env = append(os.Environ(),
+		"BREZEL_INSTALL_DIR="+t.TempDir(),
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=reflink",
+		"BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR="+baseCache,
+		"BREZEL_ENGINE_SANDBOX_CACHE_DIR="+sandboxCache,
+	)
+	command.Env = append(command.Env, reflinkStatShimEnv(t, baseCache, sandboxCache, "700", "700", "0", "0", "1", "2")...)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("installer accepted reflink cache directories on different filesystems")
+	}
+	if !strings.Contains(string(output), "must be on the same filesystem for reflink mode") {
+		t.Fatalf("installer returned the wrong filesystem validation error: %s", output)
 	}
 }
 
@@ -1397,16 +1638,17 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/sandbox/rootfs/reflink.go":                 "unix.IoctlFileClone\nunix.RENAME_NOREPLACE\nreflink base is missing the filesystem immutable flag\n",
 		"packages/orchestrator/pkg/sandbox/cgroup/manager.go":                 "cpuset.cpus.partition\ncpuset.cpus.exclusive.effective\n",
 		"packages/shared/pkg/featureflags/flags.go":                           "NewStringFlag(\"resume-prefetch-source\", \"init\")\n",
-		"packages/shared/pkg/storage/sandbox.go":                              "fmt.Sprintf(\"rootfs-%s-%s.cow\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/sandbox\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/template\"\n",
+		"packages/shared/pkg/storage/sandbox.go":                              "env:\"SANDBOX_CACHE_DIR,expand\"\nfmt.Sprintf(\"rootfs-%s-%s.cow\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/sandbox\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/template\"\n",
 		"packages/orchestrator/pkg/sandbox/block/local.go":                    "d.f.ReadAt(p[:length], off)\n",
 		"packages/orchestrator/pkg/sandbox/block/overlay.go":                  "if cacheRangeValid && length > o.blockSize && length%o.blockSize == 0 {\n",
 		"packages/orchestrator/pkg/sandbox/block/overlay_read_test.go":        "TestOverlayReadAtMixedWritableAndBaseBlocks\n",
 		"packages/orchestrator/pkg/sandbox/network/pool.go":                   "NewSlotsPoolSize    = 32\nReusedSlotsPoolSize = 100\n",
-		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\nexclusive CPU placement requires complete startup resource reclamation\n",
+		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\nexclusive CPU placement requires complete startup resource reclamation\nservices.RunsTemplateManager()\n",
+		"packages/orchestrator/pkg/factories/run_rootfs_test.go":              "TestNewRuntimeDevicePoolOnlySuppressesReflinkWithoutTemplateManager\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
 		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
 		"packages/orchestrator/pkg/sandbox/nbd/path_direct.go":                "WithConnectionsPerDevice\n",
-		"packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go": "TestDirectPathMountConnectRetryFullyCleansPreviousAttempt\nTestDirectPathMountCloseIsSerializedAndIdempotent\n",
+		"packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go": "TestDirectPathMountConnectRetryFullyCleansPreviousAttempt\nTestDirectPathMountCloseIsSerializedAndIdempotent\nTestDirectPathMountFailsClosedWithoutDevicePool\n",
 		"packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go":                "no NUMA node has %d distinct physical cores\nanother Firecracker process holds the exclusive CPU lease\nFirecracker vCPU thread %d was not present after VM start\nstabilizeExclusiveCPUPlacement\nFirecracker is outside the qualified exclusive CPU cgroup\nvalidateEffectiveSandboxCPUSet(cgroupPath, placement.reservedCPUs, expectedMems)\nreturn fmt.Errorf(\"Firecracker sandbox %s drifted\", check.name)\n",
 		"packages/orchestrator/pkg/sandbox/fc/process.go":                     "monitorExclusiveCPUPlacement\nreconcile exclusive Firecracker CPU topology\n",
 		"packages/orchestrator/pkg/server/main.go":                            "resolveStartingSandboxesLimit\n",
@@ -1497,6 +1739,7 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"rootfs.NewRuntimeProvider",
 		"SANDBOX_ROOTFS_PROVIDER",
 		"SANDBOX_ROOTFS_REFLINK_CACHE_DIR",
+		"SANDBOX_CACHE_DIR",
 		"NewSlotsPoolSize",
 		"anon_inode:[userfaultfd]",
 		"NETWORK_NEW_SLOTS_POOL_SIZE",
@@ -1506,6 +1749,8 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"WithConnectionsPerDevice",
 		"TestDirectPathMountConnectRetryFullyCleansPreviousAttempt",
 		"TestDirectPathMountCloseIsSerializedAndIdempotent",
+		"TestDirectPathMountFailsClosedWithoutDevicePool",
+		"TestNewRuntimeDevicePoolOnlySuppressesReflinkWithoutTemplateManager",
 		"NETWORK_VERSION=1",
 		"TEMPLATE_STORAGE_URL=file:///var/lib/e2b/storage/templates",
 		"/orchestrator/sandbox/rootfs-",

@@ -27,6 +27,7 @@ ENGINE_EXT4_DIR_INDEX_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0014-opt-
 ENGINE_BASE_TEMPLATE_IDENTITY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0015-parameterize-base-template-identity.patch"
 ENGINE_DIRECT_ROOTFS_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0016-opt-in-direct-rootfs-provider.patch"
 ENGINE_RESUME_CLEANUP_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0017-bound-resume-failure-cleanup.patch"
+ENGINE_NBD_PROVIDER_SCOPE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0018-scope-nbd-pool-to-nbd-runtime.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
@@ -79,6 +80,7 @@ BREZEL_ENGINE_BASE_TEMPLATE_NAME=${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}
 BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS=${BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS:-}
 BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER=${BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER:-nbd}
 BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR=${BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR:-}
+BREZEL_ENGINE_SANDBOX_CACHE_DIR=${BREZEL_ENGINE_SANDBOX_CACHE_DIR:-}
 export BREZEL_GUEST_VCPUS BREZEL_GUEST_MEMORY_MIB BREZEL_GUEST_MIN_FREE_DISK_MIB BREZEL_GUEST_MAX_FREE_DISK_MIB
 export BREZEL_ENGINE_HUGEPAGES BREZEL_ENGINE_NETWORK_NEW_SLOTS BREZEL_ENGINE_NETWORK_REUSED_SLOTS BREZEL_ENGINE_NBD_POOL_SIZE
 export BREZEL_LIFECYCLE_HEADROOM_SANDBOXES BREZEL_MIN_SYSTEM_MEMORY_MIB BREZEL_MIN_SYSTEM_CPUS
@@ -96,9 +98,112 @@ export BREZEL_ENGINE_BASE_TEMPLATE_NAME
 export BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS
 export BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER
 export BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR
+export BREZEL_ENGINE_SANDBOX_CACHE_DIR
+
+private_directory_mode() {
+  stat -c '%a' -- "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+directory_device_id() {
+  stat -c '%d' -- "$1" 2>/dev/null || stat -f '%d' "$1"
+}
+
+directory_owner_id() {
+  stat -c '%u' -- "$1" 2>/dev/null || stat -f '%u' "$1"
+}
+
+require_private_directory() {
+  private_dir_name=$1
+  private_dir_path=$2
+  [ -d "$private_dir_path" ] && [ ! -L "$private_dir_path" ] || {
+    echo "$private_dir_name must be a pre-created non-symlink directory" >&2
+    exit 1
+  }
+  private_dir_mode=$(private_directory_mode "$private_dir_path") || {
+    echo "cannot inspect permissions for $private_dir_name" >&2
+    exit 1
+  }
+  case "$private_dir_mode" in
+    ""|*[!0-7]*)
+      echo "cannot inspect permissions for $private_dir_name" >&2
+      exit 1
+      ;;
+  esac
+  [ $((0$private_dir_mode & 077)) -eq 0 ] || {
+    echo "$private_dir_name must be private (no group or other permissions)" >&2
+    exit 1
+  }
+  [ $((0$private_dir_mode & 0700)) -eq 448 ] || {
+    echo "$private_dir_name must grant its owner read, write, and execute permissions" >&2
+    exit 1
+  }
+  private_dir_owner=$(directory_owner_id "$private_dir_path") || {
+    echo "cannot inspect ownership for $private_dir_name" >&2
+    exit 1
+  }
+  [ "$private_dir_owner" = 0 ] || {
+    echo "$private_dir_name must be owned by root for the host-namespace orchestrator" >&2
+    exit 1
+  }
+}
+
+probe_reflink_cache_pair() {
+  command -v python3 >/dev/null 2>&1 || {
+    echo "python3 is required to verify reflink cache support" >&2
+    exit 1
+  }
+  python3 - "$1" "$2" <<'PY'
+import fcntl
+import os
+import secrets
+import sys
+
+FICLONE = 0x40049409
+source_dir, destination_dir = sys.argv[1:]
+suffix = secrets.token_hex(16)
+source_name = f".brezel-reflink-source-{suffix}"
+destination_name = f".brezel-reflink-destination-{suffix}"
+source_dir_fd = destination_dir_fd = source_fd = destination_fd = None
+try:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    source_dir_fd = os.open(source_dir, directory_flags)
+    destination_dir_fd = os.open(destination_dir, directory_flags)
+    file_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+    source_fd = os.open(source_name, file_flags, 0o600, dir_fd=source_dir_fd)
+    os.write(source_fd, b"brezel-reflink-capability\n")
+    os.fsync(source_fd)
+    destination_fd = os.open(destination_name, file_flags, 0o600, dir_fd=destination_dir_fd)
+    fcntl.ioctl(destination_fd, FICLONE, source_fd)
+    os.fsync(destination_fd)
+    os.fsync(destination_dir_fd)
+except OSError as error:
+    print(f"reflink capability probe failed: {error}", file=sys.stderr)
+    raise SystemExit(1)
+finally:
+    for fd in (destination_fd, source_fd):
+        if fd is not None:
+            os.close(fd)
+    if destination_dir_fd is not None:
+        try:
+            os.unlink(destination_name, dir_fd=destination_dir_fd)
+            os.fsync(destination_dir_fd)
+        except FileNotFoundError:
+            pass
+        os.close(destination_dir_fd)
+    if source_dir_fd is not None:
+        try:
+            os.unlink(source_name, dir_fd=source_dir_fd)
+            os.fsync(source_dir_fd)
+        except FileNotFoundError:
+            pass
+        os.close(source_dir_fd)
+PY
+}
 
 case "$BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER" in
-  nbd|direct) ;;
+  nbd|direct)
+    BREZEL_ENGINE_SANDBOX_CACHE_DIR=${BREZEL_ENGINE_SANDBOX_CACHE_DIR:-/orchestrator/sandbox}
+    ;;
   reflink)
     case "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" in
       /*) ;;
@@ -108,10 +213,41 @@ case "$BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER" in
       echo "BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR cannot be root" >&2
       exit 1
     }
-    [ -d "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" ] && [ ! -L "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" ] || {
-      echo "BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR must be a pre-created non-symlink directory" >&2
+    case "$BREZEL_ENGINE_SANDBOX_CACHE_DIR" in
+      /*) ;;
+      *) echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR must be an explicit absolute path for reflink mode" >&2; exit 1 ;;
+    esac
+    [ "$BREZEL_ENGINE_SANDBOX_CACHE_DIR" != / ] || {
+      echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR cannot be root" >&2
       exit 1
     }
+    require_private_directory BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR"
+    require_private_directory BREZEL_ENGINE_SANDBOX_CACHE_DIR "$BREZEL_ENGINE_SANDBOX_CACHE_DIR"
+    reflink_cache_canonical=$(CDPATH= cd -- "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" && pwd -P) || {
+      echo "cannot resolve BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" >&2
+      exit 1
+    }
+    sandbox_cache_canonical=$(CDPATH= cd -- "$BREZEL_ENGINE_SANDBOX_CACHE_DIR" && pwd -P) || {
+      echo "cannot resolve BREZEL_ENGINE_SANDBOX_CACHE_DIR" >&2
+      exit 1
+    }
+    [ "$reflink_cache_canonical" != "$sandbox_cache_canonical" ] || {
+      echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR and BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR must be distinct directories" >&2
+      exit 1
+    }
+    reflink_cache_device=$(directory_device_id "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR") || {
+      echo "cannot inspect the filesystem for BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" >&2
+      exit 1
+    }
+    sandbox_cache_device=$(directory_device_id "$BREZEL_ENGINE_SANDBOX_CACHE_DIR") || {
+      echo "cannot inspect the filesystem for BREZEL_ENGINE_SANDBOX_CACHE_DIR" >&2
+      exit 1
+    }
+    [ "$reflink_cache_device" = "$sandbox_cache_device" ] || {
+      echo "BREZEL_ENGINE_SANDBOX_CACHE_DIR and BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR must be on the same filesystem for reflink mode" >&2
+      exit 1
+    }
+    probe_reflink_cache_pair "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" "$BREZEL_ENGINE_SANDBOX_CACHE_DIR"
     ;;
   *) echo "BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER must be nbd, direct, or reflink" >&2; exit 1 ;;
 esac
@@ -191,9 +327,10 @@ ENGINE_EXT4_DIR_INDEX_PATCH_SHA256=$(read_lock orchestrator_ext4_dir_index_patch
 ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256=$(read_lock base_template_identity_patch_sha256)
 ENGINE_DIRECT_ROOTFS_PATCH_SHA256=$(read_lock orchestrator_direct_rootfs_patch_sha256)
 ENGINE_RESUME_CLEANUP_PATCH_SHA256=$(read_lock orchestrator_resume_cleanup_patch_sha256)
+ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256=$(read_lock orchestrator_nbd_provider_scope_patch_sha256)
 ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256=$(read_lock envd_process_tag_patch_sha256)
 ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256=$(read_lock envd_process_replay_patch_sha256)
-if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256" ] || [ -z "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" ] || [ -z "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" ] || [ -z "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" ] || [ -z "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
+if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256" ] || [ -z "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" ] || [ -z "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" ] || [ -z "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" ] || [ -z "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
   echo "invalid engine.lock" >&2
   exit 1
 fi
@@ -358,6 +495,10 @@ if [ "$(sha256sum "$ENGINE_RESUME_CLEANUP_PATCH" | awk '{print $1}')" != "$ENGIN
   echo "engine resume-cleanup patch verification failed" >&2
   exit 1
 fi
+if [ "$(sha256sum "$ENGINE_NBD_PROVIDER_SCOPE_PATCH" | awk '{print $1}')" != "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256" ]; then
+  echo "engine NBD provider-scope patch verification failed" >&2
+  exit 1
+fi
 if [ "$(sha256sum "$ENGINE_ENVD_PROCESS_TAG_PATCH" | awk '{print $1}')" != "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ]; then
   echo "engine envd process-tag patch verification failed" >&2
   exit 1
@@ -494,6 +635,7 @@ patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_EXT4_DIR_
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_DIRECT_ROOTFS_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_RESUME_CLEANUP_PATCH"
+patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NBD_PROVIDER_SCOPE_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 
 # The upstream base-template service executes a JavaScript helper embedded in
@@ -666,7 +808,7 @@ export BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE
   "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" \
   "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" \
   "$BREZEL_ENGINE_BASE_TEMPLATE_NAME" "$BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE" \
-  "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" "$ENGINE_RESUME_CLEANUP_PATCH_SHA256"
+  "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256"
 
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
   exec -T ready sh -c 'cat /run/e2b/team-api-key' > "$SECRETS_DIR/engine.token"
