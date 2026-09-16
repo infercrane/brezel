@@ -1,4 +1,4 @@
-.PHONY: build check test test-integrations test-race vet qualify-single-host benchmark-single-host
+.PHONY: build check test test-integrations test-race vet qualify-single-host benchmark-single-host benchmark-dax-local
 
 build:
 	mkdir -p bin
@@ -38,3 +38,9 @@ qualify-single-host:
 # See docs/BENCHMARKING.md for required identity and execution variables.
 benchmark-single-host: build
 	./deploy/single-host/benchmark.sh
+
+# Non-publishable local A/B lab for image and writable-root experiments. It
+# executes the exact pinned upstream workload but does not emulate KVM/NUMA.
+benchmark-dax-local:
+	node benchmarks/computesdk/local-dax-lab.mjs --probe prepare --image baseline --iterations 3 --output /tmp/brezel-dax-local-baseline.json
+	node benchmarks/computesdk/local-dax-lab.mjs --probe prepare --build-candidate --image candidate --iterations 3 --output /tmp/brezel-dax-local-candidate.json

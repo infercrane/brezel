@@ -432,6 +432,59 @@ ephemeral writable root, and a separately mounted durable workspace. The
 ephemeral root is the package-manager and compiler hot path; a durable
 workspace is the acknowledged-data path and must retain its crash guarantees.
 
+#### Local DAX optimization lab
+
+Use the local lab to reject weak image and writable-root ideas before renting a
+KVM host. It downloads and verifies the exact pinned upstream DAX script, runs
+it unchanged in a fresh container, rejects hidden native-build failures, and
+records the Docker engine, image identity, resource limits, bounded output
+tails, and known limitations in JSON:
+
+```sh
+make benchmark-dax-local
+```
+
+The default target performs three preparation probes against the pinned plain
+Node image and three against Brezel's general agent-development image. The
+probe intentionally supplies a nonexistent local repository, so the unchanged
+upstream script stops at clone after reporting preparation. Only that exact
+expected clone failure is accepted. No benchmark source, Bun binary, dependency
+cache, or OpenCode checkout is baked into the candidate.
+
+On the 2026-09-16 macOS/ARM64 development machine, the retained three-run
+median fell from 7.415 s to 1.507 s, a 5.908 s or 79.7 percent reduction in the
+preparation phase. The candidate moves common source-build tools and apt index
+acquisition into the immutable image. This is useful local A/B evidence for the
+image decision, not a DAX score or a production claim. The host used Docker
+Desktop, ARM64 containers, 8 CPUs, approximately 6.1 GiB of container memory,
+and overlay storage; it did not reproduce x86-64, Firecracker, KVM, NBD, NUMA,
+or the public suite's 16 GiB memory shape.
+
+After assigning Docker Desktop at least 16 GiB of memory, run the complete
+workload and controlled writable-root experiments locally:
+
+```sh
+node benchmarks/computesdk/local-dax-lab.mjs \
+  --probe full --build-candidate --image candidate \
+  --storage overlay --iterations 3 \
+  --output /tmp/brezel-dax-local-candidate.json
+
+node benchmarks/computesdk/local-dax-lab.mjs \
+  --probe full --image candidate --storage volume --iterations 3 \
+  --output /tmp/brezel-dax-local-volume.json
+
+node benchmarks/computesdk/local-dax-lab.mjs \
+  --probe full --image candidate --storage tmpfs --iterations 3 \
+  --output /tmp/brezel-dax-local-tmpfs.json
+```
+
+Local promotion requires every requested run to complete every upstream phase,
+reach the pinned OpenCode commit, and contain no structured or hidden execution
+failure. A winning local candidate must still be built as an immutable x86-64
+image and pass repeated full-workload qualification on the same Linux/KVM host
+as its baseline before changing a production profile. Only the qualified HTTPS
+provider path can produce leaderboard-comparable evidence.
+
 #### Rehearsal commands
 
 Install and qualify exactly one host-wide benchmark profile at a time:
