@@ -13,7 +13,7 @@ test:
 	go test ./...
 
 test-integrations:
-	node --test benchmarks/computesdk/adapter.test.mjs
+	node --test benchmarks/computesdk/*.test.mjs
 	node --check benchmarks/computesdk/adapter.mjs
 	node --check benchmarks/computesdk/provider-entry.mjs
 	node --check benchmarks/computesdk/qualified-smoke.mjs

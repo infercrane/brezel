@@ -159,16 +159,19 @@ The 2-vCPU/512-MiB profile then completed ten consecutive 100-sandbox waves:
 100 sandboxes simultaneously, and all 1,000 deletions were confirmed. Aggregate
 TTI was 2.431 s p50, 2.937 s p95, and 3.182 s p99 from a neutral HTTPS client.
 
-The host was reinstalled and requalified with the 8-vCPU/16-GiB DAX profile.
-Three fresh sandboxes each completed the digest-pinned upstream script. The
-guest-reported total was 63.272 s median; the surrounding adapter wall time was
-68.435 s median. All three sandboxes were deleted and the project was empty
-afterward.
+The host was reinstalled with the 8-vCPU/16-GiB DAX profile. All three
+sandboxes were deleted and the project was empty afterward, but this report is
+now reclassified nonconformant. One attempt printed `gyp ERR! configure error`
+and an install-script failure while the enclosing upstream shell still returned
+zero. The retained 63.272 s guest median and 68.435 s adapter median are
+historical diagnostics, not performance evidence. The rehearsal runner now
+rejects these unambiguous hidden dependency failures.
 
-This clears Brezel's internal functional entry gate. It is not an official
-ComputeSDK provider run. The public harness still needs a stable regional
-endpoint and provider integration, and the current Burst latency is not a
-leaderboard-leading result. See [Benchmarking](BENCHMARKING.md).
+The 100-way Burst result clears its internal functional entry gate; DAX does
+not. Neither is an official ComputeSDK provider run. The public harness still
+needs a stable regional endpoint and provider integration, and the current
+Burst latency is not a leaderboard-leading result. See
+[Benchmarking](BENCHMARKING.md).
 
 ## Exact claim scope
 

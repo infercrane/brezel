@@ -362,20 +362,20 @@ Brezel cleared its internal functional entry gate at revision
 host in `us-east4`. The 100-way profile completed ten consecutive waves with
 1,000 of 1,000 successful command-ready sandboxes and confirmed deletion. Its
 aggregate TTI was 2.431 s p50, 2.937 s p95, and 3.182 s p99 from a neutral HTTPS
-client. The separate 8-vCPU/16-GiB profile completed three of three pinned DAX
-runs; the guest-reported workload total was 63.272 s median and every cleanup
-was confirmed.
+client. Every DAX sandbox was cleaned up, but the historical three-attempt DAX
+report is reclassified nonconformant: one attempt printed an unambiguous native
+dependency build failure while the enclosing upstream shell returned zero.
+The retained timing is diagnostic only and is not compared as a qualified
+provider result. The runner now rejects this failure mode.
 
-Against the public table dated 2026-09-11, the self-run DAX median falls between
-Arker's 54.74 s and Daytona's 67.28 s. The Burst result is materially slower
-than the leading providers and the published E2B median of 1.28 s. These are
-directional comparisons only: Brezel has not run inside ComputeSDK's official
-provider harness, host CPUs differ, and the public table uses one iteration per
-scheduled provider run.
+The Burst result is materially slower than the leading providers and the
+published E2B median of 1.28 s. This is a directional comparison only: Brezel
+has not run inside ComputeSDK's official provider harness, host CPUs differ,
+and the public table uses one iteration per scheduled provider run.
 
 The retained phase medians explain the DAX gap more usefully than the rank:
 
-| Phase | Brezel rehearsal | Blaxel public | Isorun public |
+| Phase | Brezel historical diagnostic | Blaxel public | Isorun public |
 | --- | ---: | ---: | ---: |
 | Prepare | 6.407 s | 1.241 s | 1.759 s |
 | Bun download | 0.405 s | 0.385 s | 0.259 s |
@@ -383,9 +383,10 @@ The retained phase medians explain the DAX gap more usefully than the rank:
 | Clone | 2.597 s | 1.515 s | 1.054 s |
 | Install | 14.160 s | 9.286 s | 9.177 s |
 | Typecheck | 37.551 s | 23.857 s | 18.820 s |
-| Workload total | 63.272 s | 43.653 s | 33.973 s |
+| Workload total | 63.272 s (nonconformant report) | 43.653 s | 33.973 s |
 
-Approximately 64 percent of Brezel's total gap to Isorun is the typecheck
+The phase data remains useful for diagnosis but not ranking. Approximately 64
+percent of the historical Brezel gap to Isorun is the typecheck
 phase, 17 percent is dependency installation, and 16 percent is preparation.
 The calculation is directional because individual phase medians do not sum to
 the median of per-run totals and the providers ran on different physical CPUs.
@@ -397,8 +398,8 @@ not yet been qualified as a latency improvement.
 The entry gate is therefore:
 
 1. qualify an immutable DAX-compatible environment with 8 vCPU, 16 GiB memory,
-   at least 16 GiB of fast ephemeral writable root, and a separate durable
-   workspace;
+   at least 16 GiB of fast ephemeral writable root, a separate durable
+   workspace, and host CPU headroom beyond the eight guest vCPUs;
 2. qualify at least 100 simultaneous command-ready creates with headroom, zero
    admission failures, complete cleanup, and no host swap or disk saturation;
 3. deploy an HTTPS data edge near the benchmark runner, reuse transport
@@ -447,7 +448,9 @@ least three times:
 BREZEL_API_URL=https://sandbox.example.net \
 BREZEL_SERVICE_TOKEN_FILE=/run/secrets/brezel-service-token \
 BREZEL_PROJECT_ID=brezel-dax \
-BREZEL_ENVIRONMENT_REVISION=base \
+# Resolve or create the project-scoped immutable revision first; aliases such
+# as "base" are not accepted by the adapter.
+BREZEL_ENVIRONMENT_REVISION=envr_... \
 BREZEL_ALLOW_INTERNET=true \
 BREZEL_SOURCE_REVISION="$(git rev-parse HEAD)" \
 BREZEL_BENCHMARK_REGION=us-east4 \
@@ -460,7 +463,7 @@ For Burst TTI, reinstall and requalify the 100-way profile, then run:
 BREZEL_API_URL=https://sandbox.example.net \
 BREZEL_SERVICE_TOKEN_FILE=/run/secrets/brezel-service-token \
 BREZEL_PROJECT_ID=brezel-burst \
-BREZEL_ENVIRONMENT_REVISION=base \
+BREZEL_ENVIRONMENT_REVISION=envr_... \
 BREZEL_SOURCE_REVISION="$(git rev-parse HEAD)" \
 node benchmarks/computesdk/burst-rehearsal.mjs > burst-report.json
 ```

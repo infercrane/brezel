@@ -1,0 +1,655 @@
+diff --git a/packages/orchestrator/pkg/cfg/model.go b/packages/orchestrator/pkg/cfg/model.go
+index f4c199d..f3ae292 100644
+--- a/packages/orchestrator/pkg/cfg/model.go
++++ b/packages/orchestrator/pkg/cfg/model.go
+@@ -25,16 +25,18 @@ const (
+ )
+ 
+ type BuilderConfig struct {
+-	DomainName             string `env:"DOMAIN_NAME"              envDefault:""`
+-	FirecrackerVersionsDir string `env:"FIRECRACKER_VERSIONS_DIR" envDefault:"/fc-versions"`
+-	BusyboxVersion         string `env:"BUSYBOX_VERSION"          envDefault:"1.36.1"`
+-	HostBusyboxDir         string `env:"HOST_BUSYBOX_DIR"         envDefault:"/fc-busybox"`
+-	HostEnvdPath           string `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
+-	HostKernelsDir         string `env:"HOST_KERNELS_DIR"         envDefault:"/fc-kernels"`
+-	OrchestratorBaseDir    string `env:"ORCHESTRATOR_BASE_PATH"   envDefault:"/orchestrator"`
+-	SandboxDir             string `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
+-	SharedChunkCacheDir    string `env:"SHARED_CHUNK_CACHE_PATH"`
+-	TemplatesDir           string `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
++	DomainName                      string `env:"DOMAIN_NAME"              envDefault:""`
++	FirecrackerVersionsDir          string `env:"FIRECRACKER_VERSIONS_DIR" envDefault:"/fc-versions"`
++	FirecrackerSMT                  bool   `env:"FIRECRACKER_SMT"          envDefault:"false"`
++	FirecrackerExclusiveCPUTopology bool   `env:"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY" envDefault:"false"`
++	BusyboxVersion                  string `env:"BUSYBOX_VERSION"          envDefault:"1.36.1"`
++	HostBusyboxDir                  string `env:"HOST_BUSYBOX_DIR"         envDefault:"/fc-busybox"`
++	HostEnvdPath                    string `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
++	HostKernelsDir                  string `env:"HOST_KERNELS_DIR"         envDefault:"/fc-kernels"`
++	OrchestratorBaseDir             string `env:"ORCHESTRATOR_BASE_PATH"   envDefault:"/orchestrator"`
++	SandboxDir                      string `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
++	SharedChunkCacheDir             string `env:"SHARED_CHUNK_CACHE_PATH"`
++	TemplatesDir                    string `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
+ 
+ 	DefaultCacheDir string `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
+ 
+diff --git a/packages/orchestrator/pkg/cfg/model_test.go b/packages/orchestrator/pkg/cfg/model_test.go
+index 448eabc..f5c231b 100644
+--- a/packages/orchestrator/pkg/cfg/model_test.go
++++ b/packages/orchestrator/pkg/cfg/model_test.go
+@@ -17,6 +17,26 @@ func TestParse(t *testing.T) {
+ 		require.NoError(t, err)
+ 
+ 		assert.Equal(t, "/fc-vm", config.SandboxDir)
++		assert.False(t, config.FirecrackerSMT)
++		assert.False(t, config.FirecrackerExclusiveCPUTopology)
++	})
++
++	t.Run("exclusive Firecracker CPU topology can be enabled explicitly", func(t *testing.T) {
++		t.Setenv("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY", "true")
++
++		config, err := Parse()
++		require.NoError(t, err)
++
++		assert.True(t, config.FirecrackerExclusiveCPUTopology)
++	})
++
++	t.Run("firecracker SMT can be enabled explicitly", func(t *testing.T) {
++		t.Setenv("FIRECRACKER_SMT", "true")
++
++		config, err := Parse()
++		require.NoError(t, err)
++
++		assert.True(t, config.FirecrackerSMT)
+ 	})
+ 
+ 	t.Run("embedded structs get overrides", func(t *testing.T) {
+diff --git a/packages/orchestrator/pkg/sandbox/fc/client.go b/packages/orchestrator/pkg/sandbox/fc/client.go
+index 4753066..9233270 100644
+--- a/packages/orchestrator/pkg/sandbox/fc/client.go
++++ b/packages/orchestrator/pkg/sandbox/fc/client.go
+@@ -6,7 +6,6 @@ import (
+ 	"context"
+ 	"errors"
+ 	"fmt"
+-	"runtime"
+ 
+ 	"github.com/RoaringBitmap/roaring/v2"
+ 	"github.com/firecracker-microvm/firecracker-go-sdk"
+@@ -22,8 +21,6 @@ import (
+ 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
+ )
+ 
+-const archARM64 = "arm64"
+-
+ type apiClient struct {
+ 	client *client.Firecracker
+ }
+@@ -369,15 +366,8 @@ func (c *apiClient) setMachineConfig(
+ 	vCPUCount int64,
+ 	memoryMB int64,
+ 	hugePages bool,
++	smt bool,
+ ) error {
+-	// SMT (Simultaneous Multi-Threading / Hyper-Threading) must be disabled on
+-	// ARM64 because ARM processors use a different core topology (big.LITTLE,
+-	// efficiency/performance cores) rather than hardware threads per core.
+-	// Firecracker validates this against the host CPU and rejects SMT=true on ARM.
+-	// See: https://github.com/firecracker-microvm/firecracker/blob/main/docs/cpu_templates/cpu-features.md
+-	// We use runtime.GOARCH (not TARGET_ARCH) because the orchestrator binary
+-	// always runs on the same architecture as Firecracker.
+-	smt := runtime.GOARCH != archARM64
+ 	trackDirtyPages := false
+ 	machineConfig := &models.MachineConfiguration{
+ 		VcpuCount:       &vCPUCount,
+diff --git a/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go
+new file mode 100644
+index 0000000..0a2937e
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go
+@@ -0,0 +1,299 @@
++//go:build linux
++
++package fc
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"sort"
++	"strconv"
++	"strings"
++
++	"golang.org/x/sys/unix"
++)
++
++type hostCPU struct {
++	id        int
++	node      int
++	packageID int
++	coreID    int
++}
++
++type exclusiveCPUPlacement struct {
++	vcpuCPUs   []int
++	helperCPUs []int
++	lease      *os.File
++}
++
++const exclusiveCPULockPath = "/run/lock/brezel-firecracker-exclusive-cpu.lock"
++
++func acquireExclusiveCPUPlacement(vcpuCount int) (*exclusiveCPUPlacement, error) {
++	lease, err := acquireExclusiveCPULease(exclusiveCPULockPath)
++	if err != nil {
++		return nil, err
++	}
++	releaseOnError := true
++	defer func() {
++		if releaseOnError {
++			_ = lease.Close()
++		}
++	}()
++
++	topology, err := readHostCPUTopology(os.Getpid())
++	if err != nil {
++		return nil, err
++	}
++	placement, err := chooseExclusiveCPUPlacement(topology, vcpuCount)
++	if err != nil {
++		return nil, err
++	}
++	placement.lease = lease
++	releaseOnError = false
++	return &placement, nil
++}
++
++func acquireExclusiveCPULease(path string) (*os.File, error) {
++	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
++	if err != nil {
++		return nil, fmt.Errorf("open exclusive Firecracker CPU lease: %w", err)
++	}
++	lease := os.NewFile(uintptr(fd), path)
++	if lease == nil {
++		_ = unix.Close(fd)
++		return nil, fmt.Errorf("create exclusive Firecracker CPU lease handle")
++	}
++	releaseOnError := true
++	defer func() {
++		if releaseOnError {
++			_ = lease.Close()
++		}
++	}()
++	var stat unix.Stat_t
++	if err := unix.Fstat(fd, &stat); err != nil {
++		return nil, fmt.Errorf("inspect exclusive Firecracker CPU lease: %w", err)
++	}
++	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
++		return nil, fmt.Errorf("exclusive Firecracker CPU lease is not a regular file")
++	}
++	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
++		if err == unix.EWOULDBLOCK {
++			return nil, fmt.Errorf("another Firecracker process holds the exclusive CPU lease")
++		}
++		return nil, fmt.Errorf("acquire exclusive Firecracker CPU lease: %w", err)
++	}
++
++	releaseOnError = false
++	return lease, nil
++}
++
++func constrainFirecrackerCPUPlacement(pid int, placement *exclusiveCPUPlacement) error {
++	all := append(append([]int(nil), placement.vcpuCPUs...), placement.helperCPUs...)
++	if err := setProcessTaskAffinity(pid, all); err != nil {
++		return fmt.Errorf("constrain Firecracker before VM start: %w", err)
++	}
++	return nil
++}
++
++func (p *exclusiveCPUPlacement) release() error {
++	if p == nil || p.lease == nil {
++		return nil
++	}
++	lease := p.lease
++	p.lease = nil
++	if err := unix.Flock(int(lease.Fd()), unix.LOCK_UN); err != nil {
++		_ = lease.Close()
++		return err
++	}
++	return lease.Close()
++}
++
++func applyExclusiveCPUPlacement(pid int, placement *exclusiveCPUPlacement) error {
++	tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
++	if err != nil {
++		return fmt.Errorf("list Firecracker tasks: %w", err)
++	}
++	found := make([]bool, len(placement.vcpuCPUs))
++	for _, task := range tasks {
++		tid, err := strconv.Atoi(task.Name())
++		if err != nil {
++			continue
++		}
++		nameBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/comm", pid, tid))
++		if err != nil {
++			return fmt.Errorf("read Firecracker task %d name: %w", tid, err)
++		}
++		name := strings.TrimSpace(string(nameBytes))
++		if index, ok := firecrackerVCPUIndex(name); ok {
++			if index >= len(placement.vcpuCPUs) {
++				return fmt.Errorf("Firecracker exposed unexpected vCPU thread %q", name)
++			}
++			if err := setTaskAffinity(tid, []int{placement.vcpuCPUs[index]}); err != nil {
++				return fmt.Errorf("pin %s: %w", name, err)
++			}
++			found[index] = true
++			continue
++		}
++		if err := setTaskAffinity(tid, placement.helperCPUs); err != nil {
++			return fmt.Errorf("pin Firecracker helper thread %q: %w", name, err)
++		}
++	}
++	for index, present := range found {
++		if !present {
++			return fmt.Errorf("Firecracker vCPU thread %d was not present after VM start", index)
++		}
++	}
++	return nil
++}
++
++func firecrackerVCPUIndex(name string) (int, bool) {
++	const prefix = "fc_vcpu "
++	if !strings.HasPrefix(name, prefix) {
++		return 0, false
++	}
++	index, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
++	return index, err == nil && index >= 0
++}
++
++func chooseExclusiveCPUPlacement(topology []hostCPU, vcpuCount int) (exclusiveCPUPlacement, error) {
++	if vcpuCount < 1 {
++		return exclusiveCPUPlacement{}, fmt.Errorf("vCPU count must be positive")
++	}
++	type coreKey struct{ packageID, coreID int }
++	byNode := make(map[int]map[coreKey][]int)
++	for _, cpu := range topology {
++		if byNode[cpu.node] == nil {
++			byNode[cpu.node] = make(map[coreKey][]int)
++		}
++		key := coreKey{packageID: cpu.packageID, coreID: cpu.coreID}
++		byNode[cpu.node][key] = append(byNode[cpu.node][key], cpu.id)
++	}
++	nodes := make([]int, 0, len(byNode))
++	for node := range byNode {
++		nodes = append(nodes, node)
++	}
++	sort.Ints(nodes)
++	for _, node := range nodes {
++		cores := byNode[node]
++		if len(cores) < vcpuCount {
++			continue
++		}
++		keys := make([]coreKey, 0, len(cores))
++		for key := range cores {
++			keys = append(keys, key)
++		}
++		sort.Slice(keys, func(i, j int) bool {
++			if keys[i].packageID != keys[j].packageID {
++				return keys[i].packageID < keys[j].packageID
++			}
++			return keys[i].coreID < keys[j].coreID
++		})
++		placement := exclusiveCPUPlacement{}
++		for _, key := range keys[:vcpuCount] {
++			cpus := cores[key]
++			sort.Ints(cpus)
++			placement.vcpuCPUs = append(placement.vcpuCPUs, cpus[0])
++		}
++		for _, key := range keys[vcpuCount:] {
++			placement.helperCPUs = append(placement.helperCPUs, cores[key]...)
++		}
++		if len(placement.helperCPUs) == 0 {
++			for _, otherNode := range nodes {
++				if otherNode == node {
++					continue
++				}
++				for _, cpus := range byNode[otherNode] {
++					placement.helperCPUs = append(placement.helperCPUs, cpus...)
++				}
++			}
++		}
++		sort.Ints(placement.helperCPUs)
++		if len(placement.helperCPUs) == 0 {
++			return exclusiveCPUPlacement{}, fmt.Errorf("no host CPU remains for Firecracker helper threads")
++		}
++		return placement, nil
++	}
++	return exclusiveCPUPlacement{}, fmt.Errorf("no NUMA node has %d distinct physical cores", vcpuCount)
++}
++
++func readHostCPUTopology(pid int) ([]hostCPU, error) {
++	var allowed unix.CPUSet
++	if err := unix.SchedGetaffinity(pid, &allowed); err != nil {
++		return nil, fmt.Errorf("read Firecracker allowed CPUs: %w", err)
++	}
++	var topology []hostCPU
++	for cpu := 0; cpu < len(allowed)*64; cpu++ {
++		if !allowed.IsSet(cpu) {
++			continue
++		}
++		base := fmt.Sprintf("/sys/devices/system/cpu/cpu%d", cpu)
++		coreID, err := readTopologyInteger(filepath.Join(base, "topology/core_id"))
++		if err != nil {
++			return nil, err
++		}
++		packageID, err := readTopologyInteger(filepath.Join(base, "topology/physical_package_id"))
++		if err != nil {
++			return nil, err
++		}
++		node := 0
++		matches, err := filepath.Glob(filepath.Join(base, "node[0-9]*"))
++		if err != nil {
++			return nil, fmt.Errorf("read CPU %d NUMA node: %w", cpu, err)
++		}
++		if len(matches) > 0 {
++			node, err = strconv.Atoi(strings.TrimPrefix(filepath.Base(matches[0]), "node"))
++			if err != nil {
++				return nil, fmt.Errorf("parse CPU %d NUMA node: %w", cpu, err)
++			}
++		}
++		topology = append(topology, hostCPU{id: cpu, node: node, packageID: packageID, coreID: coreID})
++	}
++	if len(topology) == 0 {
++		return nil, fmt.Errorf("Firecracker has no allowed host CPUs")
++	}
++	return topology, nil
++}
++
++func readTopologyInteger(path string) (int, error) {
++	value, err := os.ReadFile(path)
++	if err != nil {
++		return 0, fmt.Errorf("read %s: %w", path, err)
++	}
++	parsed, err := strconv.Atoi(strings.TrimSpace(string(value)))
++	if err != nil {
++		return 0, fmt.Errorf("parse %s: %w", path, err)
++	}
++	return parsed, nil
++}
++
++func setProcessTaskAffinity(pid int, cpus []int) error {
++	tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
++	if err != nil {
++		return err
++	}
++	for _, task := range tasks {
++		tid, err := strconv.Atoi(task.Name())
++		if err != nil {
++			continue
++		}
++		if err := setTaskAffinity(tid, cpus); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++func setTaskAffinity(tid int, cpus []int) error {
++	if len(cpus) == 0 {
++		return fmt.Errorf("empty CPU set")
++	}
++	var set unix.CPUSet
++	set.Zero()
++	for _, cpu := range cpus {
++		if cpu < 0 || cpu >= len(set)*64 {
++			return fmt.Errorf("CPU %d exceeds supported affinity range", cpu)
++		}
++		set.Set(cpu)
++	}
++	return unix.SchedSetaffinity(tid, &set)
++}
+diff --git a/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go
+new file mode 100644
+index 0000000..0d345b5
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go
+@@ -0,0 +1,84 @@
++//go:build linux
++
++package fc
++
++import (
++	"path/filepath"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++	"golang.org/x/sys/unix"
++)
++
++func TestChooseExclusiveCPUPlacementUsesDistinctCoresOnOneNode(t *testing.T) {
++	t.Parallel()
++
++	topology := []hostCPU{
++		{id: 0, node: 0, packageID: 0, coreID: 0},
++		{id: 8, node: 0, packageID: 0, coreID: 0},
++		{id: 1, node: 0, packageID: 0, coreID: 1},
++		{id: 9, node: 0, packageID: 0, coreID: 1},
++		{id: 2, node: 1, packageID: 0, coreID: 2},
++		{id: 10, node: 1, packageID: 0, coreID: 2},
++	}
++
++	placement, err := chooseExclusiveCPUPlacement(topology, 2)
++	require.NoError(t, err)
++	require.Equal(t, []int{0, 1}, placement.vcpuCPUs)
++	require.Equal(t, []int{2, 10}, placement.helperCPUs)
++}
++
++func TestChooseExclusiveCPUPlacementRequiresSeparateHelperCore(t *testing.T) {
++	t.Parallel()
++
++	topology := []hostCPU{
++		{id: 0, node: 0, packageID: 0, coreID: 0},
++		{id: 8, node: 0, packageID: 0, coreID: 0},
++		{id: 1, node: 0, packageID: 0, coreID: 1},
++		{id: 9, node: 0, packageID: 0, coreID: 1},
++	}
++
++	_, err := chooseExclusiveCPUPlacement(topology, 2)
++	require.ErrorContains(t, err, "no host CPU remains for Firecracker helper threads")
++}
++
++func TestExclusiveCPULeaseRejectsConcurrentHolder(t *testing.T) {
++	t.Parallel()
++
++	path := filepath.Join(t.TempDir(), "cpu.lock")
++	first, err := acquireExclusiveCPULease(path)
++	require.NoError(t, err)
++	defer first.Close()
++
++	_, err = acquireExclusiveCPULease(path)
++	require.ErrorContains(t, err, "another Firecracker process holds")
++
++	require.NoError(t, unix.Flock(int(first.Fd()), unix.LOCK_UN))
++	require.NoError(t, first.Close())
++	second, err := acquireExclusiveCPULease(path)
++	require.NoError(t, err)
++	require.NoError(t, second.Close())
++}
++
++func TestChooseExclusiveCPUPlacementRejectsCrossNUMAVCPUs(t *testing.T) {
++	t.Parallel()
++
++	topology := []hostCPU{
++		{id: 0, node: 0, packageID: 0, coreID: 0},
++		{id: 1, node: 1, packageID: 0, coreID: 1},
++	}
++
++	_, err := chooseExclusiveCPUPlacement(topology, 2)
++	require.ErrorContains(t, err, "no NUMA node has 2 distinct physical cores")
++}
++
++func TestFirecrackerVCPUIndex(t *testing.T) {
++	t.Parallel()
++
++	index, ok := firecrackerVCPUIndex("fc_vcpu 7")
++	require.True(t, ok)
++	require.Equal(t, 7, index)
++
++	_, ok = firecrackerVCPUIndex("fc_api")
++	require.False(t, ok)
++}
+diff --git a/packages/orchestrator/pkg/sandbox/fc/process.go b/packages/orchestrator/pkg/sandbox/fc/process.go
+index da50e37..ac190b0 100644
+--- a/packages/orchestrator/pkg/sandbox/fc/process.go
++++ b/packages/orchestrator/pkg/sandbox/fc/process.go
+@@ -159,7 +159,8 @@ type Process struct {
+ 
+ 	Exit *utils.ErrorOnce
+ 
+-	client *apiClient
++	client       *apiClient
++	cpuPlacement *exclusiveCPUPlacement
+ 
+ 	// balloonAccum is the cumulative virtio-balloon snapshot summed by the
+ 	// metrics-reader goroutine (FC's SharedIncMetric resets per flush).
+@@ -289,6 +290,7 @@ func (p *Process) configure(
+ 
+ 	err := p.cmd.Start()
+ 	if err != nil {
++		_ = p.releaseExclusiveCPUPlacement()
+ 		// cmd.Process is nil when Start fails, so Stop() won't reach the FIFO cleanup.
+ 		// Remove the FIFO here to avoid leaving it behind.
+ 		_ = os.Remove(p.metricsPath)
+@@ -300,6 +302,7 @@ func (p *Process) configure(
+ 	defer cancelStart(errors.New("fc finished starting"))
+ 
+ 	go func() {
++		defer p.releaseExclusiveCPUPlacement()
+ 		defer stderrWriter.Close()
+ 		defer stdoutWriter.Close()
+ 
+@@ -361,6 +364,13 @@ func (p *Process) Create(
+ 	if err != nil {
+ 		return fmt.Errorf("error symlinking rootfs: %w", err)
+ 	}
++	if p.config.FirecrackerExclusiveCPUTopology {
++		placement, err := acquireExclusiveCPUPlacement(int(vCPUCount))
++		if err != nil {
++			return fmt.Errorf("error acquiring exclusive Firecracker CPU topology: %w", err)
++		}
++		p.cpuPlacement = placement
++	}
+ 
+ 	err = p.configure(
+ 		ctx,
+@@ -432,7 +442,7 @@ func (p *Process) Create(
+ 	}
+ 	telemetry.ReportEvent(ctx, "set fc network config")
+ 
+-	err = p.client.setMachineConfig(ctx, vCPUCount, memoryMB, hugePages)
++	err = p.client.setMachineConfig(ctx, vCPUCount, memoryMB, hugePages, p.config.FirecrackerSMT)
+ 	if err != nil {
+ 		fcStopErr := p.Stop(ctx)
+ 
+@@ -481,12 +491,27 @@ func (p *Process) Create(
+ 		telemetry.ReportEvent(ctx, "set fc mmds metadata")
+ 	}
+ 
++	if p.cpuPlacement != nil {
++		if err := constrainFirecrackerCPUPlacement(p.cmd.Process.Pid, p.cpuPlacement); err != nil {
++			fcStopErr := p.Stop(ctx)
++
++			return errors.Join(fmt.Errorf("error constraining Firecracker CPU topology: %w", err), fcStopErr)
++		}
++	}
++
+ 	err = p.client.startVM(ctx)
+ 	if err != nil {
+ 		fcStopErr := p.Stop(ctx)
+ 
+ 		return errors.Join(fmt.Errorf("error starting fc: %w", err), fcStopErr)
+ 	}
++	if p.cpuPlacement != nil {
++		if err := applyExclusiveCPUPlacement(p.cmd.Process.Pid, p.cpuPlacement); err != nil {
++			fcStopErr := p.Stop(ctx)
++
++			return errors.Join(fmt.Errorf("error applying exclusive Firecracker CPU topology: %w", err), fcStopErr)
++		}
++	}
+ 
+ 	telemetry.ReportEvent(ctx, "started fc")
+ 
+@@ -513,6 +538,7 @@ func (p *Process) ResumeInPlace(
+ func (p *Process) Resume(
+ 	ctx context.Context,
+ 	sbxMetadata sbxlogger.SandboxMetadata,
++	vCPUCount int64,
+ 	uffdSocketPath string,
+ 	snapfile template.File,
+ 	uffdReady chan struct{},
+@@ -531,6 +557,13 @@ func (p *Process) Resume(
+ 	if err != nil {
+ 		return fmt.Errorf("error symlinking rootfs: %w", err)
+ 	}
++	if p.config.FirecrackerExclusiveCPUTopology {
++		placement, err := acquireExclusiveCPUPlacement(int(vCPUCount))
++		if err != nil {
++			return fmt.Errorf("error acquiring exclusive Firecracker CPU topology: %w", err)
++		}
++		p.cpuPlacement = placement
++	}
+ 
+ 	// create errgroup with context that handled socket wait + rootfs symlink
+ 	eg, egCtx := errgroup.WithContext(ctx)
+@@ -592,6 +625,14 @@ func (p *Process) Resume(
+ 		return errors.Join(fmt.Errorf("error waiting for uffd socket or symlinking rootfs: %w", err), fcStopErr)
+ 	}
+ 
++	if p.cpuPlacement != nil {
++		if err := constrainFirecrackerCPUPlacement(p.cmd.Process.Pid, p.cpuPlacement); err != nil {
++			fcStopErr := p.Stop(ctx)
++
++			return errors.Join(fmt.Errorf("error constraining Firecracker CPU topology: %w", err), fcStopErr)
++		}
++	}
++
+ 	// Start the metrics reader goroutine before calling setMetrics (same ordering as Create).
+ 	p.startMetricsReader(ctx)
+ 
+@@ -616,6 +657,13 @@ func (p *Process) Resume(
+ 
+ 		return errors.Join(fmt.Errorf("error loading snapshot: %w", err), fcStopErr)
+ 	}
++	if p.cpuPlacement != nil {
++		if err := applyExclusiveCPUPlacement(p.cmd.Process.Pid, p.cpuPlacement); err != nil {
++			fcStopErr := p.Stop(ctx)
++
++			return errors.Join(fmt.Errorf("error applying exclusive Firecracker CPU topology: %w", err), fcStopErr)
++		}
++	}
+ 
+ 	// Always apply/reset rate limits before resuming so any limits
+ 	// persisted in the snapshot are overwritten by the current config.
+@@ -668,6 +716,13 @@ func (p *Process) Resume(
+ 	return nil
+ }
+ 
++func (p *Process) releaseExclusiveCPUPlacement() error {
++	if p.cpuPlacement == nil {
++		return nil
++	}
++	return p.cpuPlacement.release()
++}
++
+ func (p *Process) Pid() (int, error) {
+ 	if p.cmd.Process == nil {
+ 		return 0, errors.New("fc process not started")
+diff --git a/packages/orchestrator/pkg/sandbox/sandbox.go b/packages/orchestrator/pkg/sandbox/sandbox.go
+index f4eddf3..d6e0574 100644
+--- a/packages/orchestrator/pkg/sandbox/sandbox.go
++++ b/packages/orchestrator/pkg/sandbox/sandbox.go
+@@ -1690,6 +1690,7 @@ func (f *Factory) ResumeSandbox(
+ 			TemplateID: runtime.TemplateID,
+ 			TeamID:     runtime.TeamID,
+ 		},
++		config.Vcpu,
+ 		fcUffdPath,
+ 		snapfile,
+ 		fcUffd.Ready(),

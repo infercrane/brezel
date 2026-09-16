@@ -196,6 +196,10 @@ services:
       NETWORK_NEW_SLOTS_POOL_SIZE: ${BREZEL_ENGINE_NETWORK_NEW_SLOTS:?set the audited new network-slot capacity}
       NETWORK_REUSED_SLOTS_POOL_SIZE: ${BREZEL_ENGINE_NETWORK_REUSED_SLOTS:?set the audited reused network-slot capacity}
       NBD_POOL_SIZE: ${BREZEL_ENGINE_NBD_POOL_SIZE:?set the audited NBD capacity}
+      # Keep the guest topology honest. Exclusive placement is opt-in because
+      # this single-host release has no multi-VM physical-core allocator yet.
+      FIRECRACKER_SMT: ${BREZEL_ENGINE_FIRECRACKER_SMT:-false}
+      FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY: ${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}
       # The upstream launcher enters the host mount namespace before starting
       # the orchestrator. Pass the protected absolute host path rather than a
       # container mount target. The engine exposes workspace contents only
@@ -240,6 +244,10 @@ services:
       BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}
       BASE_TEMPLATE_MEMORY_MB: ${BREZEL_GUEST_MEMORY_MIB:-512}
       BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}
+      # The snapshot contains the Firecracker machine topology. Rebuild it on
+      # every install so a prior SMT/topology ABI can never satisfy a new
+      # release merely because the public alias and guest shape still match.
+      FORCE_REBUILD: "1"
       BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256: ${BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256:?set the verified base-template builder digest}
     volumes:
       - ${BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT:?set the verified base-template builder path}:/opt/brezel/build-base-template.mjs:ro

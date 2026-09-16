@@ -109,7 +109,7 @@ The separately sized GCP profiles at revision
 | Rehearsal | Result | Success and cleanup |
 | --- | ---: | ---: |
 | 100-way Burst TTI, 10 consecutive waves | 2.431 s p50 / 2.937 s p95 / 3.182 s p99 | 1,000 / 1,000; 1,000 / 1,000 deletions |
-| Pinned ComputeSDK DAX, guest workload total | 63.272 s median | 3 / 3; 3 / 3 deletions |
+| Pinned ComputeSDK DAX | reclassified nonconformant | 2 clean attempts; 1 hidden native-build failure; 3 / 3 deletions |
 
 The Burst runner was a neutral macOS HTTPS client. DAX used a fresh
 8-vCPU/16-GiB sandbox for every iteration, ran the digest-pinned upstream
@@ -123,10 +123,12 @@ The separate node process, default single-host byte path, row-scoped lifecycle
 operations, bounded snapshot-diff cache, readiness gate, and three-start
 admission default completed the named-host workflow. Candidate profiles now
 exist for DAX and 100 simultaneous command-ready sandboxes, together with
-strict workload and cleanup rehearsals. Both passed on the named GCP KVM host at
-revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`. The next performance gate
-is reducing Burst TTI and DAX's CPU-bound typecheck time without weakening the
-all-success requirement. A single-use warm-capacity candidate and a pinned
+strict workload and cleanup rehearsals. Burst passed on the named GCP KVM host
+at revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`. The historical DAX
+report is now nonconformant because one nominally successful attempt contained
+a native dependency build failure. The next performance gate is a repeated,
+strict DAX run plus reducing Burst TTI and DAX's CPU-bound typecheck time
+without weakening the all-success requirement. A single-use warm-capacity candidate and a pinned
 Node 24 development image now exist in source, but neither changes the current
 published evidence until the same named-host conformance, cleanup, failure, and
 repeated benchmark gates pass. After that, run the independent provider

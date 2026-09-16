@@ -304,6 +304,7 @@ run_engine_fast_path_qualification() {
   if ! capability_json=$(engine_compose exec -T orchestrator \
     nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" "$max_starting_sandboxes" \
       "$ENGINE_NETWORK_NEW_SLOTS" "$ENGINE_NETWORK_REUSED_SLOTS" "$ENGINE_NBD_POOL_SIZE" \
+      "${BREZEL_ENGINE_FIRECRACKER_SMT:-false}" "${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}" \
     < "$ENGINE_CAPABILITY_PROBE"); then
     echo "the installed engine did not satisfy the live fast-path contract" >&2
     return 1

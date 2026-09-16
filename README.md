@@ -29,7 +29,10 @@ persistent workspaces, checkpoints, and lifecycle.
 > destructive qualification on two separately administered hosts, each as an
 > independent single-host deployment. Revision
 > `f9fbc0ede72636349b27f01db49343d8daa87c5c` additionally passed the dedicated
-> 100-way Burst and 8-vCPU/16-GiB DAX profiles on a named GCP KVM host. Brezel is
+> 100-way Burst profile on a named GCP KVM host. Its historical DAX report is
+> retained for provenance but is no longer qualification evidence: one of three
+> attempts contained a native dependency build failure hidden behind a zero
+> shell exit. Brezel is
 > not qualified for a cluster, high availability, hostile shared multitenancy,
 > or public production. See the exact [claim boundary](docs/STATUS.md).
 
@@ -189,10 +192,11 @@ not establish a multi-node product topology.
   command-ready executions across ten consecutive 100-sandbox bursts, held all
   100 sandboxes in every wave, and confirmed all 1,000 deletions. Its 100-way
   TTI was 2.431 s p50, 2.937 s p95, and 3.182 s p99 from a neutral HTTPS client.
-  The same revision completed three of three pinned ComputeSDK DAX rehearsals;
-  the guest-reported workload total was 63.272 s median. These are reproducible
-  self-run rehearsals, not official ComputeSDK leaderboard results. Raw reports
-  and profile qualification are retained in the [dated evidence](docs/QUALIFICATION-2026-09-15.md).
+  The DAX report from that revision is retained but reclassified nonconformant:
+  one of its three attempts printed a native dependency build failure even
+  though the enclosing upstream shell returned zero. These are self-run
+  rehearsals, not official ComputeSDK leaderboard results. Raw reports and the
+  corrected boundary are retained in the [dated evidence](docs/QUALIFICATION-2026-09-15.md).
 
 <details>
 <summary><strong>Not implemented yet</strong></summary>

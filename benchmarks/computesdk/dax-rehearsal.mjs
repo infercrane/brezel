@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
 import { createBrezelComputeFromEnv } from "./adapter.mjs";
+import { definitiveExecutionFailures } from "./output-validation.mjs";
 
 const UPSTREAM_COMMIT = "273927519c0ac6558d3e545eed9d59eb56a47ec7";
 const UPSTREAM_SCRIPT_SHA256 = "58f4640ac170b366f87e8466a9ac1e9f50383faa59553246e4664c77af34d550";
@@ -116,13 +117,15 @@ async function run() {
         const [kind, key, value] = line.split("\t");
         if (kind === "BENCH_ERROR") attempt.result.errors.push([key, value].filter(Boolean).join(":"));
       }
+      attempt.result.executionFailures = definitiveExecutionFailures(result.stderr);
       attempt.stderrTail = result.stderr.trim().split("\n").slice(-40).join("\n");
       const requiredPhases = ["prepare", "cache_clear", "bun_download", "bun_unpack", "clone", "install", "typecheck", "total"];
       const phasesValid = requiredPhases.every((name) => Number.isFinite(attempt.result.phases[name]) && attempt.result.phases[name] >= 0);
       const metadataValid = attempt.result.metadata.commit === "08fb47373509ba64b13441061314eeacf4264f51" &&
         Number(attempt.result.metadata.logical_cpus) >= 8 && Number(attempt.result.metadata.memory_kib) >= 15728640;
       if (result.exitCode !== 0 || attempt.result.completedCommit !== "08fb47373509ba64b13441061314eeacf4264f51" ||
-          attempt.result.failures.length !== 0 || attempt.result.errors.length !== 0 || !phasesValid || !metadataValid) {
+          attempt.result.failures.length !== 0 || attempt.result.errors.length !== 0 ||
+          attempt.result.executionFailures.length !== 0 || !phasesValid || !metadataValid) {
         throw new Error(`DAX iteration ${iteration} did not complete the pinned workload`);
       }
     } catch (error) {

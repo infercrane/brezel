@@ -30,5 +30,11 @@ recovery lookup cannot silently miss a non-first process. The ninth patch adds
 a bounded, generation-bound process-output journal so an interrupted command
 stream can resume from an exact cursor without rerunning customer code; missing,
 evicted, or stale-generation output fails closed.
+The tenth patch disables guest-visible SMT by default and adds an explicit
+single-sandbox performance profile. A host-wide lease prevents a second
+Firecracker process from sharing the profile. Each guest vCPU is pinned to a
+different host-visible core on one NUMA node, sibling threads of those cores
+remain unused by Firecracker, and helper threads use separate cores. It fails
+before guest execution when the host cannot enforce the requested topology.
 
 Upstream source: <https://github.com/e2b-dev/runtime>

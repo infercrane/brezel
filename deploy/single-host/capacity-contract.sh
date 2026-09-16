@@ -41,6 +41,10 @@ MAX_ACTIVE_PROJECT=${BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT:-32}
 MAX_STARTING_SANDBOXES=${BREZEL_ENGINE_MAX_STARTING_SANDBOXES:-3}
 HEADROOM_SANDBOXES=${BREZEL_LIFECYCLE_HEADROOM_SANDBOXES:-4}
 MIN_SYSTEM_MEMORY_MIB=${BREZEL_MIN_SYSTEM_MEMORY_MIB:-8192}
+MIN_SYSTEM_CPUS=${BREZEL_MIN_SYSTEM_CPUS:-2}
+FIRECRACKER_SMT=${BREZEL_ENGINE_FIRECRACKER_SMT:-false}
+EXCLUSIVE_CPU_TOPOLOGY=${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}
+CPU_TOPOLOGY_FILE=${BREZEL_TEST_CPU_TOPOLOGY_FILE:-}
 MIN_SYSTEM_DISK_MIB=${BREZEL_MIN_SYSTEM_DISK_MIB:-8192}
 NETWORK_NEW_SLOTS=${BREZEL_ENGINE_NETWORK_NEW_SLOTS:-32}
 NETWORK_REUSED_SLOTS=${BREZEL_ENGINE_NETWORK_REUSED_SLOTS:-100}
@@ -66,6 +70,7 @@ positive_integer "$MAX_ACTIVE_PROJECT" BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT
 positive_integer "$MAX_STARTING_SANDBOXES" BREZEL_ENGINE_MAX_STARTING_SANDBOXES
 positive_integer "$HEADROOM_SANDBOXES" BREZEL_LIFECYCLE_HEADROOM_SANDBOXES
 positive_integer "$MIN_SYSTEM_MEMORY_MIB" BREZEL_MIN_SYSTEM_MEMORY_MIB
+positive_integer "$MIN_SYSTEM_CPUS" BREZEL_MIN_SYSTEM_CPUS
 positive_integer "$MIN_SYSTEM_DISK_MIB" BREZEL_MIN_SYSTEM_DISK_MIB
 positive_integer "$NETWORK_NEW_SLOTS" BREZEL_ENGINE_NETWORK_NEW_SLOTS
 positive_integer "$NETWORK_REUSED_SLOTS" BREZEL_ENGINE_NETWORK_REUSED_SLOTS
@@ -80,6 +85,22 @@ case "$WARM_POOL_STRICT" in
   true|false) ;;
   *) fail "BREZEL_WARM_POOL_STRICT must be true or false" ;;
 esac
+case "$FIRECRACKER_SMT" in
+  true|false) ;;
+  *) fail "BREZEL_ENGINE_FIRECRACKER_SMT must be true or false" ;;
+esac
+case "$EXCLUSIVE_CPU_TOPOLOGY" in
+  true|false) ;;
+  *) fail "BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY must be true or false" ;;
+esac
+if [ "$EXCLUSIVE_CPU_TOPOLOGY" = true ]; then
+  [ "$FIRECRACKER_SMT" = false ] || \
+    fail "exclusive Firecracker CPU topology requires guest SMT to be disabled"
+  [ "$MAX_ACTIVE_TOTAL" -eq 1 ] || \
+    fail "exclusive Firecracker CPU topology is qualified only with one active sandbox"
+  [ "$MAX_STARTING_SANDBOXES" -eq 1 ] || \
+    fail "exclusive Firecracker CPU topology is qualified only with one starting sandbox"
+fi
 if [ "$WARM_POOL_SIZE" -gt 0 ] && [ "$WARM_POOL_STRICT" = true ] && [ "$WARM_POOL_SIZE" -ne "$MAX_ACTIVE_TOTAL" ]; then
   fail "strict warm capacity must equal BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL"
 fi
@@ -133,8 +154,42 @@ required_host_mib=$((hugepage_memory_mib + MIN_SYSTEM_MEMORY_MIB))
 
 host_cpu_count=${BREZEL_TEST_CPU_COUNT:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)}
 positive_integer "$host_cpu_count" host_cpu_count
-[ "$host_cpu_count" -ge "$GUEST_VCPUS" ] || \
-  fail "host has $host_cpu_count online CPUs; one sandbox requires $GUEST_VCPUS vCPUs"
+required_host_cpus=$((GUEST_VCPUS + MIN_SYSTEM_CPUS))
+[ "$host_cpu_count" -ge "$required_host_cpus" ] || \
+  fail "host has $host_cpu_count online CPUs; one sandbox requires $GUEST_VCPUS vCPUs and the profile reserves $MIN_SYSTEM_CPUS host CPUs for Firecracker, storage, networking, and system work (require at least $required_host_cpus)"
+
+max_numa_physical_cores=0
+host_physical_cores=0
+if [ "$EXCLUSIVE_CPU_TOPOLOGY" = true ]; then
+  if [ -n "$CPU_TOPOLOGY_FILE" ]; then
+    [ -r "$CPU_TOPOLOGY_FILE" ] || fail "cannot read test CPU topology from $CPU_TOPOLOGY_FILE"
+    cpu_topology=$(cat "$CPU_TOPOLOGY_FILE")
+  else
+    command -v lscpu >/dev/null 2>&1 || fail "lscpu is required to qualify exclusive Firecracker CPU topology"
+    cpu_topology=$(lscpu -p=CPU,NODE,SOCKET,CORE 2>/dev/null) || \
+      fail "could not read host CPU topology"
+  fi
+  topology_counts=$(printf '%s\n' "$cpu_topology" | awk -F, '
+    $0 !~ /^#/ && NF >= 4 {
+      node=$2; if (node == "" || node == "-") node=0
+      key=node SUBSEP $3 SUBSEP $4
+      if (!seen[key]++) { per_node[node]++; total++ }
+    }
+    END {
+      max=0
+      for (node in per_node) if (per_node[node] > max) max=per_node[node]
+      print max, total
+    }
+  ')
+  max_numa_physical_cores=${topology_counts%% *}
+  host_physical_cores=${topology_counts#* }
+  positive_integer "$max_numa_physical_cores" max_numa_physical_cores
+  positive_integer "$host_physical_cores" host_physical_cores
+  [ "$max_numa_physical_cores" -ge "$GUEST_VCPUS" ] || \
+    fail "no NUMA node has $GUEST_VCPUS distinct physical cores for the guest"
+  [ "$host_physical_cores" -gt "$GUEST_VCPUS" ] || \
+    fail "exclusive placement requires at least one separate physical core for Firecracker helper threads"
+fi
 
 if [ -n "${BREZEL_TEST_AVAILABLE_DISK_KIB:-}" ]; then
   available_disk_kib=$BREZEL_TEST_AVAILABLE_DISK_KIB
@@ -182,4 +237,4 @@ case "$MODE" in
 esac
 
 printf '%s\n' \
-  "{\"capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"guest_vcpus\":$GUEST_VCPUS,\"guest_memory_mib\":$GUEST_MEMORY_MIB,\"guest_min_free_disk_mib\":$GUEST_MIN_FREE_DISK_MIB,\"guest_max_free_disk_mib\":$GUEST_MAX_FREE_DISK_MIB,\"max_active_sandboxes\":$MAX_ACTIVE_TOTAL,\"warm_pool_size\":$WARM_POOL_SIZE,\"strict_warm_pool\":$WARM_POOL_STRICT,\"provisioned_capacity\":$provisioned_capacity,\"max_active_sandboxes_per_project\":$MAX_ACTIVE_PROJECT,\"max_starting_sandboxes\":$MAX_STARTING_SANDBOXES,\"network_new_slots\":$NETWORK_NEW_SLOTS,\"network_reused_slots\":$NETWORK_REUSED_SLOTS,\"nbd_pool_size\":$NBD_POOL_SIZE,\"required_nbd_slots\":$required_nbd_slots,\"hugepages_2m\":$HUGEPAGES,\"required_hugepages_2m\":$required_hugepages,\"lifecycle_headroom_sandboxes\":$HEADROOM_SANDBOXES,\"system_memory_reserve_mib\":$MIN_SYSTEM_MEMORY_MIB,\"host_memory_mib\":$memory_total_mib,\"host_cpu_count\":$host_cpu_count,\"available_disk_mib\":$available_disk_mib,\"required_disk_mib\":$required_disk_mib}"
+  "{\"capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"guest_vcpus\":$GUEST_VCPUS,\"guest_memory_mib\":$GUEST_MEMORY_MIB,\"guest_min_free_disk_mib\":$GUEST_MIN_FREE_DISK_MIB,\"guest_max_free_disk_mib\":$GUEST_MAX_FREE_DISK_MIB,\"max_active_sandboxes\":$MAX_ACTIVE_TOTAL,\"warm_pool_size\":$WARM_POOL_SIZE,\"strict_warm_pool\":$WARM_POOL_STRICT,\"provisioned_capacity\":$provisioned_capacity,\"max_active_sandboxes_per_project\":$MAX_ACTIVE_PROJECT,\"max_starting_sandboxes\":$MAX_STARTING_SANDBOXES,\"network_new_slots\":$NETWORK_NEW_SLOTS,\"network_reused_slots\":$NETWORK_REUSED_SLOTS,\"nbd_pool_size\":$NBD_POOL_SIZE,\"required_nbd_slots\":$required_nbd_slots,\"hugepages_2m\":$HUGEPAGES,\"required_hugepages_2m\":$required_hugepages,\"lifecycle_headroom_sandboxes\":$HEADROOM_SANDBOXES,\"system_memory_reserve_mib\":$MIN_SYSTEM_MEMORY_MIB,\"system_cpu_reserve\":$MIN_SYSTEM_CPUS,\"firecracker_smt\":$FIRECRACKER_SMT,\"exclusive_cpu_topology\":$EXCLUSIVE_CPU_TOPOLOGY,\"max_numa_physical_cores\":$max_numa_physical_cores,\"host_physical_cores\":$host_physical_cores,\"required_host_cpus\":$required_host_cpus,\"host_memory_mib\":$memory_total_mib,\"host_cpu_count\":$host_cpu_count,\"available_disk_mib\":$available_disk_mib,\"required_disk_mib\":$required_disk_mib}"

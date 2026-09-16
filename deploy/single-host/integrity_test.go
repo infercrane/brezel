@@ -38,6 +38,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"engine_local_capacity_patch_sha256":       "0007-scale-local-resource-pools-and-template-shape.patch",
 		"envd_process_tag_patch_sha256":            "0008-fix-envd-process-tag-resolution.patch",
 		"envd_process_replay_patch_sha256":         "0009-add-bounded-process-output-replay.patch",
+		"orchestrator_cpu_topology_patch_sha256":   "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -352,12 +353,23 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 	if err := os.WriteFile(meminfo, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	topology := filepath.Join(t.TempDir(), "cpu-topology.csv")
+	var topologyRows strings.Builder
+	for cpu := 0; cpu < 32; cpu++ {
+		core := cpu % 16
+		node := core / 8
+		fmt.Fprintf(&topologyRows, "%d,%d,0,%d\n", cpu, node, core)
+	}
+	if err := os.WriteFile(topology, []byte(topologyRows.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	run := func(mode string, env ...string) ([]byte, error) {
 		command := exec.Command("sh", "capacity-contract.sh", mode)
 		command.Env = append(os.Environ(), append([]string{
 			"BREZEL_TEST_MEMINFO_FILE=" + meminfo,
 			"BREZEL_TEST_CPU_COUNT=32",
+			"BREZEL_TEST_CPU_TOPOLOGY_FILE=" + topology,
 			"BREZEL_TEST_AVAILABLE_DISK_KIB=67108864",
 			"BREZEL_TEST_NBD_MAX=128",
 		}, env...)...)
@@ -401,6 +413,43 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 	if output, err := run("plan", "BREZEL_TEST_CPU_COUNT=1"); err == nil {
 		t.Fatalf("capacity contract accepted a host smaller than one guest: %s", output)
 	}
+	if output, err := run("plan", "BREZEL_TEST_CPU_COUNT=8", "BREZEL_GUEST_VCPUS=8", "BREZEL_MIN_SYSTEM_CPUS=8"); err == nil {
+		t.Fatalf("capacity contract accepted a benchmark guest with no host CPU reserve: %s", output)
+	} else if !strings.Contains(string(output), "require at least 16") {
+		t.Fatalf("CPU reserve failure did not explain the required host capacity: %s", output)
+	}
+	if output, err := run("plan", "BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=maybe"); err == nil {
+		t.Fatalf("capacity contract accepted an invalid exclusive CPU-topology setting: %s", output)
+	}
+	if output, err := run("plan", "BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true"); err == nil {
+		t.Fatalf("capacity contract accepted exclusive CPU placement for concurrent sandboxes: %s", output)
+	} else if !strings.Contains(string(output), "only with one active sandbox") {
+		t.Fatalf("exclusive CPU-topology failure was unclear: %s", output)
+	}
+	if output, err := run("plan",
+		"BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true",
+		"BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=1",
+		"BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=1",
+		"BREZEL_ENGINE_MAX_STARTING_SANDBOXES=1",
+		"BREZEL_GUEST_VCPUS=8",
+		"BREZEL_MIN_SYSTEM_CPUS=8",
+		"BREZEL_ENGINE_HUGEPAGES=5120",
+	); err != nil {
+		t.Fatalf("capacity contract rejected coherent exclusive CPU placement: %v: %s", err, output)
+	} else if !strings.Contains(string(output), `"max_numa_physical_cores":8`) || !strings.Contains(string(output), `"host_physical_cores":16`) {
+		t.Fatalf("exclusive CPU topology evidence was incomplete: %s", output)
+	}
+	if output, err := run("plan",
+		"BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true",
+		"BREZEL_ENGINE_FIRECRACKER_SMT=true",
+		"BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=1",
+		"BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=1",
+		"BREZEL_ENGINE_MAX_STARTING_SANDBOXES=1",
+	); err == nil {
+		t.Fatalf("capacity contract accepted exclusive CPU placement with guest SMT: %s", output)
+	} else if !strings.Contains(string(output), "requires guest SMT to be disabled") {
+		t.Fatalf("exclusive SMT failure was unclear: %s", output)
+	}
 	if output, err := run("plan", "BREZEL_TEST_AVAILABLE_DISK_KIB=1024"); err == nil {
 		t.Fatalf("capacity contract accepted insufficient host disk: %s", output)
 	}
@@ -435,7 +484,17 @@ func TestCapacityProfilesArePhysicallyCoherent(t *testing.T) {
 			if err := os.WriteFile(meminfo, []byte("MemTotal: "+fmt.Sprint(profile.memoryKiB)+" kB\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			command := exec.Command("sh", "-c", `BREZEL_TEST_MEMINFO_FILE="$2" BREZEL_TEST_CPU_COUNT=32 BREZEL_TEST_AVAILABLE_DISK_KIB=209715200 exec sh ../profiles/run.sh "$1" sh capacity-contract.sh plan`, "profile", profilePath, meminfo)
+			topology := filepath.Join(t.TempDir(), "cpu-topology.csv")
+			var topologyRows strings.Builder
+			for cpu := 0; cpu < 32; cpu++ {
+				core := cpu % 16
+				node := core / 8
+				fmt.Fprintf(&topologyRows, "%d,%d,0,%d\n", cpu, node, core)
+			}
+			if err := os.WriteFile(topology, []byte(topologyRows.String()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("sh", "-c", `BREZEL_TEST_MEMINFO_FILE="$2" BREZEL_TEST_CPU_COUNT=32 BREZEL_TEST_CPU_TOPOLOGY_FILE="$3" BREZEL_TEST_AVAILABLE_DISK_KIB=209715200 exec sh ../profiles/run.sh "$1" sh capacity-contract.sh plan`, "profile", profilePath, meminfo, topology)
 			output, err := command.CombinedOutput()
 			if err != nil {
 				t.Fatalf("profile rejected: %v: %s", err, output)
@@ -724,6 +783,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		engineLockPath, imageLockPath, artifactLockPath, root,
 		hex.EncodeToString(orchestratorDigest[:]),
 		patchDigest, patchDigest, patchDigest, patchDigest, patchDigest,
+		patchDigest,
 		hex.EncodeToString(envdDigest[:]), patchDigest,
 		patchDigest,
 	)
@@ -741,6 +801,9 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.envd.live_tag_resolution=complete-map-scan",
 		"artifact.envd.process_replay_patch_sha256=" + patchDigest,
 		"artifact.envd.process_output_recovery=generation-bound-cursor-journal",
+		"artifact.orchestrator.cpu_topology_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.guest_smt=operator-configured-default-disabled",
+		"artifact.orchestrator.exclusive_cpu_topology=single-sandbox-opt-in",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -912,7 +975,9 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
 		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
-		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
+		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
+		"packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go":                "no NUMA node has %d distinct physical cores\nanother Firecracker process holds the exclusive CPU lease\nFirecracker vCPU thread %d was not present after VM start\n",
+		"packages/orchestrator/pkg/sandbox/fc/process.go":                     "applyExclusiveCPUPlacement\n",
 		"packages/orchestrator/pkg/server/main.go":                            "resolveStartingSandboxesLimit\n",
 		"packages/api/internal/orchestrator/placement/placement.go":           "resourceExhaustedRetryDelay\n",
 		"packages/api/internal/orchestrator/placement/config.go":              "resourceExhaustedBackoffMax\n",
@@ -1162,6 +1227,7 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 		"BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}",
 		"BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}",
 		"BASE_TEMPLATE_SOURCE_IMAGE: ${BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE:",
+		`FORCE_REBUILD: "1"`,
 		"BREZEL_ENGINE_BASE_TEMPLATE_SCRIPT_SHA256:",
 		"/opt/brezel/build-base-template.mjs:ro",
 		"mounted builder digest mismatch",
@@ -1204,6 +1270,73 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 	}
 }
 
+func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
+		"orchestrator_cpu_topology_patch_sha256",
+		`patch -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPU_TOPOLOGY_PATCH"`,
+		"engine Firecracker CPU-topology patch verification failed",
+		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing CPU-topology invariant %q", required)
+		}
+	}
+
+	overrideData, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := string(overrideData)
+	for _, required := range []string{
+		"FIRECRACKER_SMT: ${BREZEL_ENGINE_FIRECRACKER_SMT:-false}",
+		"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY: ${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}",
+	} {
+		if !strings.Contains(override, required) {
+			t.Fatalf("engine override is missing CPU-topology setting %q", required)
+		}
+	}
+
+	probeData, err := os.ReadFile("engine-capabilities.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := string(probeData)
+	for _, required := range []string{
+		`env:"FIRECRACKER_SMT"`,
+		`env:"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY"`,
+		"no NUMA node has %d distinct physical cores",
+		"Firecracker vCPU thread %d was not present after VM start",
+		`"exclusive_placement":"single-sandbox-opt-in-fail-closed"`,
+		`"host_lease":"one-firecracker"`,
+	} {
+		if !strings.Contains(probe, required) {
+			t.Fatalf("engine capability probe is missing CPU-topology contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.cpu_topology_patch_sha256",
+		"artifact.orchestrator.guest_smt=operator-configured-default-disabled",
+		"artifact.orchestrator.exclusive_cpu_topology=single-sandbox-opt-in",
+		"the CPU-topology patch requires the local-capacity patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("distribution manifest writer is missing CPU-topology identity %q", required)
+		}
+	}
+}
+
 func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 	installerData, err := os.ReadFile("install.sh")
 	if err != nil {
@@ -1222,7 +1355,8 @@ func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 		`BREZEL_ENGINE_ENVD_BINARY="$INSTALL_DIR/artifacts/envd"`,
 		`BREZEL_ENGINE_ENVD_SHA256=$(sha256sum "$BREZEL_ENGINE_ENVD_BINARY"`,
 		`run --rm --no-deps brezel-envd-install`,
-		`"$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256"`,
+		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256"`,
+		`"$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256"`,
 		"engine envd process-tag patch verification failed",
 		"engine envd process-replay patch verification failed",
 	} {
