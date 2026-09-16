@@ -268,6 +268,8 @@ func TestInstallerPinsOptInDirectRootfsProviderPatch(t *testing.T) {
 		"must be owned by root for the host-namespace orchestrator",
 		"must be distinct directories",
 		"must be on the same filesystem for reflink mode",
+		"non-interactive sudo is required to verify root-owned reflink cache directories",
+		"sudo -n python3",
 		"fcntl.ioctl(destination_fd, FICLONE, source_fd)",
 	} {
 		if !strings.Contains(installer, required) {

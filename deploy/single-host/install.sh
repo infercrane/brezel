@@ -112,6 +112,28 @@ directory_owner_id() {
   stat -c '%u' -- "$1" 2>/dev/null || stat -f '%u' "$1"
 }
 
+canonical_private_directory() {
+  private_dir_path=$1
+  if canonical_path=$(CDPATH= cd -- "$private_dir_path" 2>/dev/null && pwd -P); then
+    printf '%s\n' "$canonical_path"
+    return 0
+  fi
+  command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1 || return 1
+  sudo -n sh -c 'CDPATH= cd -- "$1" && pwd -P' sh "$private_dir_path"
+}
+
+run_reflink_probe_python() {
+  if [ "$(id -u)" -eq 0 ]; then
+    python3 "$@"
+    return
+  fi
+  command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1 || {
+    echo "non-interactive sudo is required to verify root-owned reflink cache directories" >&2
+    return 1
+  }
+  sudo -n python3 "$@"
+}
+
 require_private_directory() {
   private_dir_name=$1
   private_dir_path=$2
@@ -152,7 +174,7 @@ probe_reflink_cache_pair() {
     echo "python3 is required to verify reflink cache support" >&2
     exit 1
   }
-  python3 - "$1" "$2" <<'PY'
+  run_reflink_probe_python - "$1" "$2" <<'PY'
 import fcntl
 import os
 import secrets
@@ -223,11 +245,11 @@ case "$BREZEL_ENGINE_SANDBOX_ROOTFS_PROVIDER" in
     }
     require_private_directory BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR"
     require_private_directory BREZEL_ENGINE_SANDBOX_CACHE_DIR "$BREZEL_ENGINE_SANDBOX_CACHE_DIR"
-    reflink_cache_canonical=$(CDPATH= cd -- "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" && pwd -P) || {
+    reflink_cache_canonical=$(canonical_private_directory "$BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR") || {
       echo "cannot resolve BREZEL_ENGINE_SANDBOX_ROOTFS_REFLINK_CACHE_DIR" >&2
       exit 1
     }
-    sandbox_cache_canonical=$(CDPATH= cd -- "$BREZEL_ENGINE_SANDBOX_CACHE_DIR" && pwd -P) || {
+    sandbox_cache_canonical=$(canonical_private_directory "$BREZEL_ENGINE_SANDBOX_CACHE_DIR") || {
       echo "cannot resolve BREZEL_ENGINE_SANDBOX_CACHE_DIR" >&2
       exit 1
     }
