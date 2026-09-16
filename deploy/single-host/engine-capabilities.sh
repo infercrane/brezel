@@ -63,6 +63,16 @@ check_source() {
     'if cacheRangeValid && length > o.blockSize && length%o.blockSize == 0 {' "the whole writable-range rootfs read path"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/block/overlay_read_test.go" \
     'TestOverlayReadAtMixedWritableAndBaseBlocks' "the mixed overlay read regression test"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"NBD_CONNECTIONS_PER_DEVICE"' "the operator-owned NBD queue count"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4' "the bounded NBD queue-count validation"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/nbd/path_direct.go" \
+    'WithConnectionsPerDevice' "the fixed NBD per-device queue count"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go" \
+    'TestDirectPathMountConnectRetryFullyCleansPreviousAttempt' "the NBD retry-cleanup regression test"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go" \
+    'TestDirectPathMountCloseIsSerializedAndIdempotent' "the NBD idempotent-close regression test"
 
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/network/pool.go" \
     "NewSlotsPoolSize    = 32" "the new network-slot pool"
@@ -173,7 +183,7 @@ check_source() {
   require_literal "$source_root/packages/envd/internal/services/process/handler/journal_test.go" \
     'TestEventJournalAtomicReplayToWaitHandoff' "the gap-free replay-to-live handoff regression test"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","rootfs_read_path":{"local":"allocation-free","whole_writable_range":"single-cache-read","mixed_range":"layered-fallback"},"durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"disabled-pending-cgroup-cpuset-qualification","experimental_affinity_code":"present-not-runnable"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","rootfs_read_path":{"local":"allocation-free","whole_writable_range":"single-cache-read","mixed_range":"layered-fallback"},"durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"disabled-pending-cgroup-cpuset-qualification","experimental_affinity_code":"present-not-runnable"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64,"connections_per_device":{"default":1,"minimum":1,"maximum":4,"values_above_one":"pending-kvm-ab-qualification"},"lifecycle":"attempt-owned-idempotent-cleanup"},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
 }
 
 find_orchestrator_pid() {
@@ -320,8 +330,20 @@ check_live() {
     fail "the live reused network-slot pool is $actual_network_reused; expected $expected_network_reused"
   [ "$actual_nbd_pool" -eq "$expected_nbd_pool" ] || \
     fail "the live NBD pool is $actual_nbd_pool; expected $expected_nbd_pool"
-  expected_firecracker_smt=${7:-}
-  expected_exclusive_cpu_topology=${8:-}
+  expected_nbd_connections=${7:-}
+  case "$expected_nbd_connections" in
+    ""|*[!0-9]*) fail "the expected NBD queue count must be an integer from one to four" ;;
+  esac
+  [ "$expected_nbd_connections" -ge 1 ] && [ "$expected_nbd_connections" -le 4 ] || \
+    fail "the expected NBD queue count must be between one and four"
+  actual_nbd_connections=$(process_environment_value "$orchestrator_pid" NBD_CONNECTIONS_PER_DEVICE)
+  case "$actual_nbd_connections" in
+    ""|*[!0-9]*) fail "the live NBD queue count is missing or malformed" ;;
+  esac
+  [ "$actual_nbd_connections" -eq "$expected_nbd_connections" ] || \
+    fail "the live NBD queue count is $actual_nbd_connections; expected $expected_nbd_connections"
+  expected_firecracker_smt=${8:-}
+  expected_exclusive_cpu_topology=${9:-}
   for expected_boolean in "$expected_firecracker_smt" "$expected_exclusive_cpu_topology"; do
     case "$expected_boolean" in
       true|false) ;;
@@ -398,7 +420,7 @@ check_live() {
   cache_policy_json=$(observe_cache_policy "$orchestrator_pid")
 
   printf '%s\n' \
-    "{\"live_contract\":\"conformant\",\"snapshot_restore\":\"observed\",\"lazy_paging\":\"observed\",\"template_prefetch\":\"usable_mapping_observed\",\"cow_rootfs\":\"observed\",\"local_template_cache\":\"observed\",\"max_starting_sandboxes\":$actual_starting_limit,\"firecracker_smt\":$actual_firecracker_smt,\"exclusive_cpu_topology\":$actual_exclusive_cpu_topology,\"snapshot_diff_cache\":$cache_policy_json,\"nbd_pool\":$actual_nbd_pool,\"network_new_slots\":$actual_network_new,\"network_reused_slots\":$actual_network_reused,\"network_version\":1,\"ready_network_namespaces\":$network_slots,\"minimum_ready_network_namespaces\":$min_network_slots}"
+    "{\"live_contract\":\"conformant\",\"snapshot_restore\":\"observed\",\"lazy_paging\":\"observed\",\"template_prefetch\":\"usable_mapping_observed\",\"cow_rootfs\":\"observed\",\"local_template_cache\":\"observed\",\"max_starting_sandboxes\":$actual_starting_limit,\"firecracker_smt\":$actual_firecracker_smt,\"exclusive_cpu_topology\":$actual_exclusive_cpu_topology,\"snapshot_diff_cache\":$cache_policy_json,\"nbd_pool\":$actual_nbd_pool,\"nbd_connections_per_device\":$actual_nbd_connections,\"network_new_slots\":$actual_network_new,\"network_reused_slots\":$actual_network_reused,\"network_version\":1,\"ready_network_namespaces\":$network_slots,\"minimum_ready_network_namespaces\":$min_network_slots}"
 }
 
 check_cache() {
@@ -421,7 +443,7 @@ case "${1:-}" in
     check_cache
     ;;
   *)
-    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID MIN_READY_NETWORK_SLOTS MAX_STARTING_SANDBOXES NETWORK_NEW_SLOTS NETWORK_REUSED_SLOTS NBD_POOL_SIZE FIRECRACKER_SMT EXCLUSIVE_CPU_TOPOLOGY | cache" >&2
+    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID MIN_READY_NETWORK_SLOTS MAX_STARTING_SANDBOXES NETWORK_NEW_SLOTS NETWORK_REUSED_SLOTS NBD_POOL_SIZE NBD_CONNECTIONS_PER_DEVICE FIRECRACKER_SMT EXCLUSIVE_CPU_TOPOLOGY | cache" >&2
     exit 2
     ;;
 esac

@@ -196,6 +196,9 @@ services:
       NETWORK_NEW_SLOTS_POOL_SIZE: ${BREZEL_ENGINE_NETWORK_NEW_SLOTS:?set the audited new network-slot capacity}
       NETWORK_REUSED_SLOTS_POOL_SIZE: ${BREZEL_ENGINE_NETWORK_REUSED_SLOTS:?set the audited reused network-slot capacity}
       NBD_POOL_SIZE: ${BREZEL_ENGINE_NBD_POOL_SIZE:?set the audited NBD capacity}
+      # Keep one queue as the qualified default. Values from two to four are
+      # available only for explicit KVM A/B qualification on the target host.
+      NBD_CONNECTIONS_PER_DEVICE: ${BREZEL_ENGINE_NBD_CONNECTIONS_PER_DEVICE:-1}
       # Keep the guest topology honest. Exclusive placement is opt-in because
       # this single-host release has no multi-VM physical-core allocator yet.
       FIRECRACKER_SMT: ${BREZEL_ENGINE_FIRECRACKER_SMT:-false}

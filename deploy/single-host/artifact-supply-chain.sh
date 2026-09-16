@@ -135,9 +135,10 @@ write_manifest() {
   engine_local_capacity_patch_sha256=${11:-}
   orchestrator_cpu_topology_patch_sha256=${12:-}
   orchestrator_rootfs_read_patch_sha256=${13:-}
-  envd_override_sha256=${14:-}
-  envd_process_tag_patch_sha256=${15:-}
-  envd_process_replay_patch_sha256=${16:-}
+  orchestrator_nbd_multiqueue_patch_sha256=${14:-}
+  envd_override_sha256=${15:-}
+  envd_process_tag_patch_sha256=${16:-}
+  envd_process_replay_patch_sha256=${17:-}
   verify_host_artifacts "$artifact_lock" "$host_root" "$orchestrator_override_sha256" "$envd_override_sha256"
   if [ -n "$orchestrator_patch_sha256" ]; then
     require_sha256 "$orchestrator_patch_sha256" "orchestrator patch SHA-256"
@@ -165,6 +166,10 @@ write_manifest() {
   if [ -n "$orchestrator_rootfs_read_patch_sha256" ]; then
     [ -n "$orchestrator_cpu_topology_patch_sha256" ] || fail "the rootfs-read patch requires the CPU-topology patch identity"
     require_sha256 "$orchestrator_rootfs_read_patch_sha256" "orchestrator rootfs-read patch SHA-256"
+  fi
+  if [ -n "$orchestrator_nbd_multiqueue_patch_sha256" ]; then
+    [ -n "$orchestrator_rootfs_read_patch_sha256" ] || fail "the NBD-multiqueue patch requires the rootfs-read patch identity"
+    require_sha256 "$orchestrator_nbd_multiqueue_patch_sha256" "orchestrator NBD-multiqueue patch SHA-256"
   fi
   if [ -n "$envd_override_sha256" ]; then
     [ -n "$envd_process_tag_patch_sha256" ] || fail "the envd override requires the process-tag patch identity"
@@ -238,6 +243,11 @@ write_manifest() {
       printf 'artifact.orchestrator.rootfs_read_patch_sha256=%s\n' "$orchestrator_rootfs_read_patch_sha256"
       printf 'artifact.orchestrator.rootfs_read_path=allocation-free-local-and-whole-writable-range\n'
     fi
+    if [ -n "$orchestrator_nbd_multiqueue_patch_sha256" ]; then
+      printf 'artifact.orchestrator.nbd_multiqueue_patch_sha256=%s\n' "$orchestrator_nbd_multiqueue_patch_sha256"
+      printf 'artifact.orchestrator.nbd_connections_per_device=operator-configured-default-one-range-one-to-four\n'
+      printf 'artifact.orchestrator.nbd_lifecycle=attempt-owned-idempotent-cleanup\n'
+    fi
     if [ -n "$envd_process_tag_patch_sha256" ]; then
       printf 'artifact.envd.process_tag_patch_sha256=%s\n' "$envd_process_tag_patch_sha256"
       printf 'artifact.envd.live_tag_resolution=complete-map-scan\n'
@@ -253,7 +263,7 @@ write_manifest() {
 }
 
 usage() {
-  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ORCHESTRATOR_CPU_TOPOLOGY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_READ_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256 ENVD_PROCESS_REPLAY_PATCH_SHA256]" >&2
+  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ORCHESTRATOR_CPU_TOPOLOGY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_READ_PATCH_SHA256 ORCHESTRATOR_NBD_MULTIQUEUE_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256 ENVD_PROCESS_REPLAY_PATCH_SHA256]" >&2
   exit 2
 }
 
@@ -276,8 +286,8 @@ case "$command" in
     verify_host_artifacts "$2" "$3" "${4:-}" "${5:-}"
     ;;
   manifest)
-    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 13 ] || [ "$#" -eq 17 ]; } || usage
-    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}" "${15:-}" "${16:-}" "${17:-}"
+    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 13 ] || [ "$#" -eq 18 ]; } || usage
+    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}" "${15:-}" "${16:-}" "${17:-}" "${18:-}"
     ;;
   *) usage ;;
 esac

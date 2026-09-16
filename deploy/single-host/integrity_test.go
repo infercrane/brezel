@@ -40,6 +40,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"envd_process_replay_patch_sha256":         "0009-add-bounded-process-output-replay.patch",
 		"orchestrator_cpu_topology_patch_sha256":   "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
 		"orchestrator_rootfs_read_patch_sha256":    "0011-reduce-rootfs-read-amplification.patch",
+		"orchestrator_nbd_multiqueue_patch_sha256": "0012-harden-nbd-multiqueue-lifecycle.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -383,6 +384,8 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 		t.Fatalf("capacity plan did not bind quota to lifecycle headroom: %s", output)
 	} else if !strings.Contains(string(output), `"max_starting_sandboxes":3`) {
 		t.Fatalf("capacity plan did not emit the local starting-sandbox limit: %s", output)
+	} else if !strings.Contains(string(output), `"nbd_connections_per_device":1`) {
+		t.Fatalf("capacity plan did not emit the qualified NBD queue count: %s", output)
 	}
 	if output, err := run("live"); err != nil {
 		t.Fatalf("live capacity contract failed: %v: %s", err, output)
@@ -456,6 +459,11 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 	}
 	if output, err := run("live", "BREZEL_TEST_NBD_MAX=32", "BREZEL_ENGINE_NBD_POOL_SIZE=64"); err == nil {
 		t.Fatalf("capacity contract accepted an undersized kernel NBD ceiling: %s", output)
+	}
+	if output, err := run("plan", "BREZEL_ENGINE_NBD_CONNECTIONS_PER_DEVICE=5"); err == nil {
+		t.Fatalf("capacity contract accepted more than four NBD queues: %s", output)
+	} else if !strings.Contains(string(output), "cannot exceed 4") {
+		t.Fatalf("NBD queue-count failure was unclear: %s", output)
 	}
 	lowFree := strings.Replace(content, "HugePages_Free:     9216", "HugePages_Free:     1024", 1)
 	if err := os.WriteFile(meminfo, []byte(lowFree), 0o600); err != nil {
@@ -786,6 +794,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		patchDigest, patchDigest, patchDigest, patchDigest, patchDigest,
 		patchDigest,
 		patchDigest,
+		patchDigest,
 		hex.EncodeToString(envdDigest[:]), patchDigest,
 		patchDigest,
 	)
@@ -808,6 +817,9 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.orchestrator.exclusive_cpu_topology=disabled-pending-cpuset",
 		"artifact.orchestrator.rootfs_read_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.rootfs_read_path=allocation-free-local-and-whole-writable-range",
+		"artifact.orchestrator.nbd_multiqueue_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.nbd_connections_per_device=operator-configured-default-one-range-one-to-four",
+		"artifact.orchestrator.nbd_lifecycle=attempt-owned-idempotent-cleanup",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -982,7 +994,9 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
 		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
-		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nFIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
+		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"NBD_CONNECTIONS_PER_DEVICE\"\nNBD_CONNECTIONS_PER_DEVICE must be between 1 and 4\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nFIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
+		"packages/orchestrator/pkg/sandbox/nbd/path_direct.go":                "WithConnectionsPerDevice\n",
+		"packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go": "TestDirectPathMountConnectRetryFullyCleansPreviousAttempt\nTestDirectPathMountCloseIsSerializedAndIdempotent\n",
 		"packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go":                "no NUMA node has %d distinct physical cores\nanother Firecracker process holds the exclusive CPU lease\nFirecracker vCPU thread %d was not present after VM start\nstabilizeExclusiveCPUPlacement\n",
 		"packages/orchestrator/pkg/sandbox/fc/process.go":                     "monitorExclusiveCPUPlacement\nreconcile exclusive Firecracker CPU topology\n",
 		"packages/orchestrator/pkg/server/main.go":                            "resolveStartingSandboxesLimit\n",
@@ -1076,6 +1090,10 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"NETWORK_NEW_SLOTS_POOL_SIZE",
 		"NETWORK_REUSED_SLOTS_POOL_SIZE",
 		"NBD_POOL_SIZE",
+		"NBD_CONNECTIONS_PER_DEVICE",
+		"WithConnectionsPerDevice",
+		"TestDirectPathMountConnectRetryFullyCleansPreviousAttempt",
+		"TestDirectPathMountCloseIsSerializedAndIdempotent",
 		"NETWORK_VERSION=1",
 		"TEMPLATE_STORAGE_URL=file:///var/lib/e2b/storage/templates",
 		"/orchestrator/sandbox/rootfs-",
@@ -1288,7 +1306,7 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 		"orchestrator_cpu_topology_patch_sha256",
 		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPU_TOPOLOGY_PATCH"`,
 		"engine Firecracker CPU-topology patch verification failed",
-		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"`,
+		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256"`,
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing CPU-topology invariant %q", required)
@@ -1359,7 +1377,7 @@ func TestInstallerPinsAndValidatesRootfsReadPatch(t *testing.T) {
 		"orchestrator_rootfs_read_patch_sha256",
 		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_READ_PATCH"`,
 		"engine rootfs-read patch verification failed",
-		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"`,
+		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256"`,
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing rootfs-read invariant %q", required)
@@ -1398,6 +1416,74 @@ func TestInstallerPinsAndValidatesRootfsReadPatch(t *testing.T) {
 	}
 }
 
+func TestInstallerPinsAndValidatesNBDMultiqueueLifecyclePatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0012-harden-nbd-multiqueue-lifecycle.patch",
+		"orchestrator_nbd_multiqueue_patch_sha256",
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NBD_MULTIQUEUE_PATCH"`,
+		"engine NBD multiqueue patch verification failed",
+		`"$ENGINE_ROOTFS_READ_PATCH_SHA256" "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing NBD multiqueue invariant %q", required)
+		}
+	}
+
+	overrideData, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(overrideData), "NBD_CONNECTIONS_PER_DEVICE: ${BREZEL_ENGINE_NBD_CONNECTIONS_PER_DEVICE:-1}") {
+		t.Fatal("engine override does not pass the bounded NBD queue count")
+	}
+
+	qualificationData, err := os.ReadFile("qualify.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(qualificationData), `"$ENGINE_NBD_CONNECTIONS_PER_DEVICE"`) {
+		t.Fatal("qualification does not pass the expected NBD queue count to the live probe")
+	}
+
+	probeData, err := os.ReadFile("engine-capabilities.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := string(probeData)
+	for _, required := range []string{
+		`env:"NBD_CONNECTIONS_PER_DEVICE"`,
+		"NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4",
+		"TestDirectPathMountConnectRetryFullyCleansPreviousAttempt",
+		"TestDirectPathMountCloseIsSerializedAndIdempotent",
+		`"values_above_one":"pending-kvm-ab-qualification"`,
+	} {
+		if !strings.Contains(probe, required) {
+			t.Fatalf("engine capability probe is missing NBD lifecycle contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.nbd_multiqueue_patch_sha256",
+		"artifact.orchestrator.nbd_connections_per_device=operator-configured-default-one-range-one-to-four",
+		"artifact.orchestrator.nbd_lifecycle=attempt-owned-idempotent-cleanup",
+		"the NBD-multiqueue patch requires the rootfs-read patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("distribution manifest writer is missing NBD lifecycle identity %q", required)
+		}
+	}
+}
+
 func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 	installerData, err := os.ReadFile("install.sh")
 	if err != nil {
@@ -1416,7 +1502,8 @@ func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 		`BREZEL_ENGINE_ENVD_BINARY="$INSTALL_DIR/artifacts/envd"`,
 		`BREZEL_ENGINE_ENVD_SHA256=$(sha256sum "$BREZEL_ENGINE_ENVD_BINARY"`,
 		`run --rm --no-deps brezel-envd-install`,
-		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256"`,
+		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256"`,
+		`"$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256"`,
 		`"$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256"`,
 		"engine envd process-tag patch verification failed",
 		"engine envd process-replay patch verification failed",

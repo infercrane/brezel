@@ -1,0 +1,1113 @@
+diff --git a/packages/orchestrator/pkg/cfg/model.go b/packages/orchestrator/pkg/cfg/model.go
+index cf3f1c5..1c85f1a 100644
+--- a/packages/orchestrator/pkg/cfg/model.go
++++ b/packages/orchestrator/pkg/cfg/model.go
+@@ -34,6 +34,7 @@ type BuilderConfig struct {
+ 	HostEnvdPath                    string `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
+ 	HostKernelsDir                  string `env:"HOST_KERNELS_DIR"         envDefault:"/fc-kernels"`
+ 	OrchestratorBaseDir             string `env:"ORCHESTRATOR_BASE_PATH"   envDefault:"/orchestrator"`
++	NBDConnectionsPerDevice         int    `env:"NBD_CONNECTIONS_PER_DEVICE" envDefault:"1"`
+ 	SandboxDir                      string `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
+ 	SharedChunkCacheDir             string `env:"SHARED_CHUNK_CACHE_PATH"`
+ 	TemplatesDir                    string `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
+@@ -46,6 +47,17 @@ type BuilderConfig struct {
+ 	NetworkConfig network.Config
+ }
+ 
++// NBDConnectionCount returns the process-static queue count. A zero-value
++// BuilderConfig is common in tests and small tools, so it preserves the safe
++// single-queue default used by parsed production configuration.
++func (c BuilderConfig) NBDConnectionCount() int {
++	if c.NBDConnectionsPerDevice == 0 {
++		return 1
++	}
++
++	return c.NBDConnectionsPerDevice
++}
++
+ func makePathsAbsolute(c *BuilderConfig) error {
+ 	for _, item := range []*string{
+ 		&c.DefaultCacheDir,
+@@ -173,6 +185,9 @@ func Parse() (Config, error) {
+ 	if config.FirecrackerExclusiveCPUTopology {
+ 		return config, fmt.Errorf("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation")
+ 	}
++	if config.NBDConnectionsPerDevice < 1 || config.NBDConnectionsPerDevice > 4 {
++		return config, fmt.Errorf("NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4")
++	}
+ 
+ 	if config.BuildCacheTTL < time.Hour {
+ 		return config, fmt.Errorf("BUILD_CACHE_TTL must be at least 1h")
+@@ -237,6 +252,9 @@ func ParseBuilder() (BuilderConfig, error) {
+ 	if model.FirecrackerExclusiveCPUTopology {
+ 		return BuilderConfig{}, fmt.Errorf("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation")
+ 	}
++	if model.NBDConnectionsPerDevice < 1 || model.NBDConnectionsPerDevice > 4 {
++		return BuilderConfig{}, fmt.Errorf("NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4")
++	}
+ 
+ 	if err = makePathsAbsolute(&model); err != nil {
+ 		return BuilderConfig{}, err
+diff --git a/packages/orchestrator/pkg/cfg/model_test.go b/packages/orchestrator/pkg/cfg/model_test.go
+index 33b77d1..3d08d98 100644
+--- a/packages/orchestrator/pkg/cfg/model_test.go
++++ b/packages/orchestrator/pkg/cfg/model_test.go
+@@ -19,6 +19,7 @@ func TestParse(t *testing.T) {
+ 		assert.Equal(t, "/fc-vm", config.SandboxDir)
+ 		assert.False(t, config.FirecrackerSMT)
+ 		assert.False(t, config.FirecrackerExclusiveCPUTopology)
++		assert.Equal(t, 1, config.NBDConnectionsPerDevice)
+ 	})
+ 
+ 	t.Run("exclusive Firecracker CPU topology fails closed until cpuset isolation is qualified", func(t *testing.T) {
+@@ -37,6 +38,23 @@ func TestParse(t *testing.T) {
+ 		assert.True(t, config.FirecrackerSMT)
+ 	})
+ 
++	t.Run("NBD multi-queue accepts the qualified maximum", func(t *testing.T) {
++		t.Setenv("NBD_CONNECTIONS_PER_DEVICE", "4")
++
++		config, err := Parse()
++		require.NoError(t, err)
++		assert.Equal(t, 4, config.NBDConnectionsPerDevice)
++	})
++
++	for _, connections := range []string{"0", "5"} {
++		t.Run("NBD multi-queue rejects "+connections, func(t *testing.T) {
++			t.Setenv("NBD_CONNECTIONS_PER_DEVICE", connections)
++
++			_, err := Parse()
++			require.ErrorContains(t, err, "NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4")
++		})
++	}
++
+ 	t.Run("embedded structs get overrides", func(t *testing.T) {
+ 		t.Setenv("SANDBOX_DIR", "/fc-vm2")
+ 
+diff --git a/packages/orchestrator/pkg/sandbox/nbd/path_direct.go b/packages/orchestrator/pkg/sandbox/nbd/path_direct.go
+index 69ab537..e22398e 100644
+--- a/packages/orchestrator/pkg/sandbox/nbd/path_direct.go
++++ b/packages/orchestrator/pkg/sandbox/nbd/path_direct.go
+@@ -21,6 +21,7 @@ import (
+ 	"go.opentelemetry.io/otel/attribute"
+ 	"go.opentelemetry.io/otel/codes"
+ 	"go.opentelemetry.io/otel/metric"
++	"go.opentelemetry.io/otel/trace"
+ 	"go.uber.org/zap"
+ 	"golang.org/x/sys/unix"
+ 
+@@ -84,7 +85,6 @@ var (
+ )
+ 
+ type DirectPathMount struct {
+-	cancelfn     context.CancelFunc
+ 	devicePool   *DevicePool
+ 	featureFlags *featureflags.Client
+ 
+@@ -93,25 +93,61 @@ type DirectPathMount struct {
+ 	blockSize       uint64
+ 	ioTimeout       time.Duration
+ 	deadconnTimeout time.Duration
+-
+-	// deviceFile is held open for the whole life of the mount so Flush can see
+-	// every writeback error, not just the ones its own sync produces. The kernel
+-	// samples the block device's writeback-error sequence when a descriptor is
+-	// opened and reports only errors recorded after that sample, so a descriptor
+-	// opened at flush time is blind to a backend failure that happened while the
+-	// guest was running - which is the failure worth reporting.
+-	deviceFile *os.File
++	connections     int
++
++	// lifecycleMu makes Open/Flush/Close a one-owner lifecycle. DirectPathMount
++	// is deliberately one-shot: after Open fails or Close runs it cannot be
++	// reopened. Serializing Close is load-bearing because a duplicate device
++	// release can hand a live caller's recycled nbd index back to the pool.
++	lifecycleMu sync.Mutex
++	state       directPathMountState
++	closeErr    error
++	active      *directPathAttempt
++	ops         directPathOps
+ 
+ 	// afterConnect runs as soon as nbdnl.Connect has succeeded, before the
+ 	// wait-for-connected poll. Only tests set it, to cancel the context inside
+ 	// the window where the kernel holds the device but Open has not returned it.
+ 	afterConnect func(deviceIndex uint32)
++}
++
++type directPathMountState uint8
++
++const (
++	directPathMountNew directPathMountState = iota
++	directPathMountOpening
++	directPathMountOpen
++	directPathMountClosing
++	directPathMountClosed
++)
+ 
++// directPathAttempt owns every resource acquired by one Connect attempt. It is
++// kept local until the kernel device and its long-lived descriptor are ready,
++// so a failed retry cannot poison the mount's published state.
++type directPathAttempt struct {
++	poolIndex    uint32
++	deviceIndex  uint32
++	acquired     bool
++	connectTried bool
++	connected    bool
++
++	cancel      context.CancelFunc
++	deviceFile  *os.File
+ 	dispatchers []*Dispatch
+ 	socksClient []*os.File
+ 	socksServer []io.Closer
++	handlersWg  sync.WaitGroup
++}
+ 
+-	handlersWg sync.WaitGroup
++type directPathOps struct {
++	getDevice     func(context.Context) (uint32, error)
++	releaseDevice func(context.Context, uint32, ...ReleaseOption) error
++	socketPair    func() ([2]int, error)
++	fileConn      func(*os.File) (net.Conn, error)
++	connect       func(uint32, []*os.File, uint64, nbdnl.ClientFlags, nbdnl.ServerFlags, ...nbdnl.ConnectOption) (uint32, error)
++	status        func(uint32) (nbdnl.DeviceStatus, error)
++	disconnect    func(context.Context, uint32, time.Duration) error
++	openDevice    func(string) (*os.File, error)
+ }
+ 
+ // MountOption configures a DirectPathMount.
+@@ -127,17 +163,38 @@ func WithDeadconnTimeout(d time.Duration) MountOption {
+ 	return func(m *DirectPathMount) { m.deadconnTimeout = d }
+ }
+ 
++// WithConnectionsPerDevice fixes the number of kernel NBD queues for this
++// mount. Open validates the production-supported range (1..4) before acquiring
++// a pool slot, so an invalid operator value fails closed without side effects.
++func WithConnectionsPerDevice(n int) MountOption {
++	return func(m *DirectPathMount) { m.connections = n }
++}
++
+ func NewDirectPathMount(b block.Device, devicePool *DevicePool, featureFlags *featureflags.Client, opts ...MountOption) *DirectPathMount {
+ 	m := &DirectPathMount{
+ 		Backend:         b,
+ 		blockSize:       4096,
+ 		devicePool:      devicePool,
+ 		featureFlags:    featureFlags,
+-		socksClient:     make([]*os.File, 0),
+-		socksServer:     make([]io.Closer, 0),
+ 		deviceIndex:     math.MaxUint32,
+ 		ioTimeout:       ioTimeout,
+ 		deadconnTimeout: deadconnTimeout,
++		connections:     1,
++		state:           directPathMountNew,
++	}
++	m.ops = directPathOps{
++		socketPair: func() ([2]int, error) {
++			return syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
++		},
++		fileConn:   net.FileConn,
++		connect:    nbdnl.Connect,
++		status:     nbdnl.Status,
++		disconnect: disconnectNBDWithTimeout,
++		openDevice: os.Open,
++	}
++	if devicePool != nil {
++		m.ops.getDevice = devicePool.GetDevice
++		m.ops.releaseDevice = devicePool.ReleaseDevice
+ 	}
+ 
+ 	for _, o := range opts {
+@@ -148,22 +205,36 @@ func NewDirectPathMount(b block.Device, devicePool *DevicePool, featureFlags *fe
+ }
+ 
+ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err error) {
++	d.lifecycleMu.Lock()
++	defer d.lifecycleMu.Unlock()
++
++	if d.state != directPathMountNew {
++		return math.MaxUint32, fmt.Errorf("direct path mount is one-shot and cannot be opened from state %d", d.state)
++	}
++	d.state = directPathMountOpening
++	defer func() {
++		if err != nil {
++			d.state = directPathMountClosed
++			d.deviceIndex = math.MaxUint32
++		}
++	}()
++
++	if d.connections < 1 || d.connections > 4 {
++		return math.MaxUint32, fmt.Errorf("NBD connections per device must be between 1 and 4, got %d", d.connections)
++	}
++
+ 	// The connect + wait-for-connected poll loop (and device-pool contention) are
+ 	// otherwise invisible; both add up when this is opened once per measure/resize.
+ 	ctx, span := tracer.Start(ctx, "direct-path-mount-open")
+ 
+-	ctx, d.cancelfn = context.WithCancel(ctx)
+-
+ 	defer func() {
+-		// Set the device index to the one returned, correctly capture error values
+-		d.deviceIndex = retDeviceIndex
+ 		span.SetAttributes(attribute.Int64("nbd.device_index", int64(retDeviceIndex)))
+ 		if err != nil {
+ 			span.RecordError(err)
+ 			span.SetStatus(codes.Error, err.Error())
+ 		}
+ 		span.End()
+-		logger.L().Debug(ctx, "opening direct path mount", zap.Uint32("device_index", d.deviceIndex), zap.Error(err))
++		logger.L().Debug(ctx, "opening direct path mount", zap.Uint32("device_index", retDeviceIndex), zap.Error(err))
+ 	}()
+ 
+ 	telemetry.ReportEvent(ctx, "opening direct path mount")
+@@ -175,46 +246,53 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err
+ 
+ 	telemetry.ReportEvent(ctx, "got backend size")
+ 
+-	var deviceIndex uint32
+-
+ 	for {
+-		deviceIndex, err = d.devicePool.GetDevice(ctx)
++		deviceIndex, getErr := d.ops.getDevice(ctx)
++		err = getErr
+ 		if err != nil {
+ 			return math.MaxUint32, err
+ 		}
+ 
+-		telemetry.ReportEvent(ctx, "got device index")
++		attemptCtx, attemptCancel := context.WithCancel(ctx)
++		attempt := &directPathAttempt{
++			poolIndex:   deviceIndex,
++			deviceIndex: deviceIndex,
++			acquired:    true,
++			cancel:      attemptCancel,
++			dispatchers: make([]*Dispatch, 0, d.connections),
++			socksClient: make([]*os.File, 0, d.connections),
++			socksServer: make([]io.Closer, 0, d.connections),
++		}
+ 
+-		d.socksClient = make([]*os.File, 0)
+-		d.socksServer = make([]io.Closer, 0)
+-		d.dispatchers = make([]*Dispatch, 0)
++		telemetry.ReportEvent(ctx, "got device index")
+ 
+-		connections := d.featureFlags.IntFlag(ctx, featureflags.NBDConnectionsPerDevice)
+ 		asyncWriteZeroes := d.featureFlags.BoolFlag(ctx, featureflags.NBDAsyncWriteZeroesFlag)
+ 
+-		for i := range connections {
++		for i := range d.connections {
+ 			// Create the socket pairs
+-			sockPair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
++			sockPair, err := d.ops.socketPair()
+ 			if err != nil {
+-				closeErr := closeSocketPairs(d.socksClient, d.socksServer)
+-				releaseErr := d.devicePool.ReleaseDevice(ctx, deviceIndex)
++				cleanupErr := d.teardownAttempt(context.WithoutCancel(ctx), attempt, false)
+ 
+-				return math.MaxUint32, errors.Join(err, closeErr, releaseErr)
++				return math.MaxUint32, errors.Join(err, cleanupErr)
+ 			}
+ 
+ 			client := os.NewFile(uintptr(sockPair[0]), "client")
+ 			server := os.NewFile(uintptr(sockPair[1]), "server")
+-			serverc, err := net.FileConn(server)
++			serverc, err := d.ops.fileConn(server)
+ 			if err != nil {
+ 				// Close the current iteration's FDs (not yet added to d.socksClient/d.socksServer)
+-				client.Close()
+-				server.Close()
+-				closeErr := closeSocketPairs(d.socksClient, d.socksServer)
+-				releaseErr := d.devicePool.ReleaseDevice(ctx, deviceIndex)
++				currentCloseErr := errors.Join(client.Close(), server.Close())
++				cleanupErr := d.teardownAttempt(context.WithoutCancel(ctx), attempt, false)
+ 
+-				return math.MaxUint32, errors.Join(err, closeErr, releaseErr)
++				return math.MaxUint32, errors.Join(err, currentCloseErr, cleanupErr)
++			}
++			if err := server.Close(); err != nil {
++				currentCloseErr := errors.Join(client.Close(), serverc.Close())
++				cleanupErr := d.teardownAttempt(context.WithoutCancel(ctx), attempt, false)
++
++				return math.MaxUint32, errors.Join(err, currentCloseErr, cleanupErr)
+ 			}
+-			server.Close()
+ 
+ 			dispatch := NewDispatch(serverc, d.Backend, asyncWriteZeroes)
+ 			// Capture deviceIndex for the goroutine closure — it's reassigned on
+@@ -222,8 +300,8 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err
+ 			// Go 1.22+ loop variable fix doesn't apply).
+ 			devIdx := deviceIndex
+ 			// Start reading commands on the socket and dispatching them to our provider
+-			d.handlersWg.Go(func() {
+-				handleErr := dispatch.Handle(ctx)
++			attempt.handlersWg.Go(func() {
++				handleErr := dispatch.Handle(attemptCtx)
+ 				// The error is expected to happen if the nbd (socket connection) is closed
+ 				logger.L().Info(ctx, "closing handler for NBD commands",
+ 					zap.Error(handleErr),
+@@ -232,9 +310,9 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err
+ 				)
+ 			})
+ 
+-			d.socksServer = append(d.socksServer, serverc)
+-			d.socksClient = append(d.socksClient, client)
+-			d.dispatchers = append(d.dispatchers, dispatch)
++			attempt.socksServer = append(attempt.socksServer, serverc)
++			attempt.socksClient = append(attempt.socksClient, client)
++			attempt.dispatchers = append(attempt.dispatchers, dispatch)
+ 		}
+ 
+ 		var opts []nbdnl.ConnectOption
+@@ -246,116 +324,103 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err
+ 		serverFlags := nbdnl.FlagHasFlags | nbdnl.FlagCanMulticonn |
+ 			nbdnl.FlagSendTrim | flagSendWriteZeroes
+ 
+-		idx, connectErr := nbdnl.Connect(deviceIndex, d.socksClient, uint64(size), 0, serverFlags, opts...)
++		attempt.connectTried = true
++		idx, connectErr := d.ops.connect(deviceIndex, attempt.socksClient, uint64(size), 0, serverFlags, opts...)
+ 		if connectErr == nil {
+-			// The idx should be the same as deviceIndex, because we are connecting to it,
+-			// but we will use the one returned by nbdnl
+-			deviceIndex = idx
++			attempt.connected = true
++			attempt.deviceIndex = idx
++			if idx != attempt.poolIndex {
++				cleanupErr := d.teardownAttempt(context.WithoutCancel(ctx), attempt, false)
++
++				return math.MaxUint32, errors.Join(
++					fmt.Errorf("kernel connected unexpected nbd index %d for reserved index %d", idx, attempt.poolIndex),
++					cleanupErr,
++				)
++			}
+ 
+ 			if d.afterConnect != nil {
+-				d.afterConnect(deviceIndex)
++				d.afterConnect(attempt.deviceIndex)
+ 			}
+ 
+-			break
+-		}
++			// Wait until it's connected.
++			for {
++				if ctxErr := ctx.Err(); ctxErr != nil {
++					nbdUnwoundCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("stage", "wait_connected")))
++					cleanupErr := d.teardownAttempt(context.WithoutCancel(ctx), attempt, false)
++
++					return math.MaxUint32, errors.Join(ctxErr, cleanupErr)
++				}
++
++				telemetry.ReportEvent(ctx, "waiting for NBD connection")
++				s, statusErr := d.ops.status(attempt.deviceIndex)
++				if statusErr == nil && s.Connected {
++					break
++				}
++
++				timer := time.NewTimer(100 * time.Microsecond)
++				select {
++				case <-ctx.Done():
++					if !timer.Stop() {
++						select {
++						case <-timer.C:
++						default:
++						}
++					}
++				case <-timer.C:
++				}
++			}
+ 
+-		logger.L().Error(ctx, "error opening NBD, retrying", zap.Error(connectErr), zap.Uint32("device_index", deviceIndex))
++			telemetry.ReportEvent(ctx, "connected to NBD")
+ 
+-		// Sometimes (rare), there seems to be a BADF error here. Lets just retry for now...
+-		// Close things down and try again...
+-		err := closeSocketPairs(d.socksClient, d.socksServer)
+-		if err != nil {
+-			logger.L().Error(ctx, "error closing socket pairs on error opening NBD", zap.Error(err))
++			devicePath := GetDevicePath(attempt.deviceIndex)
++			deviceFile, openErr := d.ops.openDevice(devicePath)
++			if openErr != nil {
++				nbdUnwoundCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("stage", "device_open")))
++				cleanupErr := d.teardownAttempt(context.WithoutCancel(ctx), attempt, false)
++
++				return math.MaxUint32, errors.Join(
++					fmt.Errorf("error opening NBD device %s: %w", devicePath, openErr),
++					cleanupErr,
++				)
++			}
++
++			attempt.deviceFile = deviceFile
++			d.active = attempt
++			d.deviceIndex = attempt.deviceIndex
++			d.state = directPathMountOpen
++
++			return attempt.deviceIndex, nil
+ 		}
+ 
+-		// Release the device back to the pool
+-		err = d.devicePool.ReleaseDevice(ctx, deviceIndex)
+-		if err != nil {
+-			logger.L().Error(ctx, "error opening NBD, error releasing device", zap.Error(err), zap.Uint32("device_index", deviceIndex))
++		logger.L().Error(ctx, "error opening NBD, retrying", zap.Error(connectErr), zap.Uint32("device_index", deviceIndex))
++
++		cleanupErr := d.teardownAttempt(context.WithoutCancel(ctx), attempt, false)
++		if cleanupErr != nil {
++			return math.MaxUint32, errors.Join(connectErr, fmt.Errorf("cleaning failed NBD connect attempt: %w", cleanupErr))
+ 		}
+ 
+ 		if strings.Contains(connectErr.Error(), "invalid argument") {
+ 			return math.MaxUint32, connectErr
+ 		}
+ 
++		timer := time.NewTimer(25 * time.Millisecond)
+ 		select {
+ 		case <-ctx.Done():
++			if !timer.Stop() {
++				select {
++				case <-timer.C:
++				default:
++				}
++			}
+ 			return math.MaxUint32, errors.Join(connectErr, ctx.Err())
+-		case <-time.After(25 * time.Millisecond):
+-		}
+-	}
+-
+-	// Wait until it's connected...
+-	for {
+-		select {
+-		case <-ctx.Done():
+-			closeErr := d.closeConnected(ctx, deviceIndex, "wait_connected")
+-
+-			return math.MaxUint32, errors.Join(ctx.Err(), closeErr)
+-		default:
+-		}
+-
+-		telemetry.ReportEvent(ctx, "waiting for NBD connection")
+-
+-		s, err := nbdnl.Status(deviceIndex)
+-		if err == nil && s.Connected {
+-			break
++		case <-timer.C:
+ 		}
+-
+-		time.Sleep(100 * time.Microsecond)
+ 	}
+-
+-	telemetry.ReportEvent(ctx, "connected to NBD")
+-
+-	// Open the device now, while it is still empty, so the descriptor's
+-	// writeback-error sample predates every write the guest will make. Flush
+-	// syncs this descriptor; see the deviceFile field for why a fresh one there
+-	// would not do.
+-	devicePath := GetDevicePath(deviceIndex)
+-
+-	deviceFile, err := os.Open(devicePath)
+-	if err != nil {
+-		closeErr := d.closeConnected(ctx, deviceIndex, "device_open")
+-
+-		return math.MaxUint32, errors.Join(
+-			fmt.Errorf("error opening NBD device %s: %w", devicePath, err),
+-			closeErr,
+-		)
+-	}
+-
+-	d.deviceFile = deviceFile
+-
+-	return deviceIndex, nil
+-}
+-
+-// closeConnected tears down a device that is connected but that Open cannot
+-// return. It hands the work to Close rather than unwinding by hand: Close
+-// cancels the handlers and drains the dispatchers before disconnecting, and
+-// releases the slot with infinite retry. Close reads the index off the mount,
+-// and Open's deferred assignment has not run yet, so set it first. The context
+-// Close is given has to be detached, because Close cancels Open's partway
+-// through its teardown - and Close's opening flush-and-release of the
+-// descriptor can block on the backend, canceled context or not.
+-func (d *DirectPathMount) closeConnected(ctx context.Context, deviceIndex uint32, stage string) error {
+-	nbdUnwoundCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("stage", stage)))
+-
+-	// Warn, not Debug: this is rare, it means a device and a pool slot came within
+-	// one branch of being stranded, and the build failure the caller reports does
+-	// not name either of them.
+-	logger.L().Warn(ctx, "tearing down a connected NBD device Open cannot return",
+-		zap.Uint32("device_index", deviceIndex),
+-		zap.String("stage", stage),
+-	)
+-
+-	d.deviceIndex = deviceIndex
+-
+-	return d.Close(context.WithoutCancel(ctx))
+ }
+ 
+ // Flush writes all pending data through the NBD connection and then clears the
+ // kernel's block-device buffers. Call this before reading or exporting the
+ // backend directly so it cannot observe writes that are still cached by Linux.
+-//
+ // The fsync is the part that can report a failure: writeback errors are
+ // recorded on the block device's mapping and handed to whoever fsyncs it, so a
+ // write the kernel acknowledged to the guest but could not deliver to the
+@@ -370,10 +435,16 @@ func (d *DirectPathMount) closeConnected(ctx context.Context, deviceIndex uint32
+ // empty flush bio itself and the fsync never turns into an NBD_CMD_FLUSH the
+ // dispatcher would reject.
+ func (d *DirectPathMount) Flush(ctx context.Context) error {
++	d.lifecycleMu.Lock()
++	defer d.lifecycleMu.Unlock()
++
+ 	ctx, span := tracer.Start(ctx, "direct-path-mount-flush")
+ 	defer span.End()
+ 
+-	file := d.deviceFile
++	var file *os.File
++	if d.state == directPathMountOpen && d.active != nil {
++		file = d.active.deviceFile
++	}
+ 	if file == nil {
+ 		nbdFlushCounter.Add(ctx, 1, nbdFlushOpenFailure)
+ 
+@@ -425,12 +496,48 @@ func invalidateDevice(file *os.File) error {
+ }
+ 
+ func (d *DirectPathMount) Close(ctx context.Context) error {
++	d.lifecycleMu.Lock()
++	defer d.lifecycleMu.Unlock()
++
++	switch d.state {
++	case directPathMountClosed:
++		return d.closeErr
++	case directPathMountNew:
++		d.state = directPathMountClosed
++		return nil
++	case directPathMountOpening:
++		// Open owns lifecycleMu for its whole transaction, so this state is only
++		// observable from inside Open and is unreachable through public Close.
++		return errors.New("cannot close direct path mount while it is opening")
++	case directPathMountClosing:
++		return d.closeErr
++	case directPathMountOpen:
++		d.state = directPathMountClosing
++	}
++
+ 	ctx, span := tracer.Start(ctx, "direct-path-mount-close")
+ 	defer span.End()
+ 
+-	var errs []error
++	attempt := d.active
++	d.closeErr = d.teardownAttempt(ctx, attempt, true)
++	d.active = nil
++	d.deviceIndex = math.MaxUint32
++	d.state = directPathMountClosed
++
++	return d.closeErr
++}
++
++// teardownAttempt consumes all resources belonging to one attempt exactly
++// once. Failed Connect calls use it before retrying; Close uses the same path
++// for the published attempt. The caller serializes access through lifecycleMu.
++func (d *DirectPathMount) teardownAttempt(ctx context.Context, attempt *directPathAttempt, flushDescriptor bool) error {
++	if attempt == nil {
++		return nil
++	}
+ 
+-	idx := d.deviceIndex
++	var errs []error
++	idx := attempt.deviceIndex
++	span := trace.SpanFromContext(ctx)
+ 
+ 	// Flush and release the descriptor while the dispatchers still
+ 	// serve the device: the kernel's last-close page-cache teardown waits on
+@@ -455,7 +562,7 @@ func (d *DirectPathMount) Close(ctx context.Context) error {
+ 	// several. The watchdog fires while the stall is happening -- tagging the
+ 	// step in progress -- then accounts the total on return, so a stuck
+ 	// teardown is visible during the incident and not only after it.
+-	if d.deviceFile != nil {
++	if flushDescriptor && attempt.deviceFile != nil {
+ 		closeStart := time.Now()
+ 
+ 		var stage atomic.Value
+@@ -469,7 +576,7 @@ func (d *DirectPathMount) Close(ctx context.Context) error {
+ 		})
+ 
+ 		telemetry.ReportEvent(ctx, "flushing NBD device writeback")
+-		if syncErr := d.deviceFile.Sync(); syncErr != nil {
++		if syncErr := attempt.deviceFile.Sync(); syncErr != nil {
+ 			// Mark the span the way Flush does: the backend is missing writes
+ 			// the guest was told had landed. The error also returns below.
+ 			span.SetAttributes(attribute.Int64("nbd.device_index", int64(idx)))
+@@ -480,13 +587,13 @@ func (d *DirectPathMount) Close(ctx context.Context) error {
+ 		}
+ 
+ 		stage.Store("invalidate")
+-		if invalidateErr := invalidateDevice(d.deviceFile); invalidateErr != nil {
++		if invalidateErr := invalidateDevice(attempt.deviceFile); invalidateErr != nil {
+ 			errs = append(errs, fmt.Errorf("flush NBD device buffers: %w", invalidateErr))
+ 		}
+ 
+ 		stage.Store("descriptor_close")
+ 		telemetry.ReportEvent(ctx, "closing NBD device descriptor")
+-		if err := d.deviceFile.Close(); err != nil {
++		if err := attempt.deviceFile.Close(); err != nil {
+ 			errs = append(errs, fmt.Errorf("error closing NBD device: %w", err))
+ 		}
+ 
+@@ -499,64 +606,80 @@ func (d *DirectPathMount) Close(ctx context.Context) error {
+ 
+ 		nbdCloseDuration.Record(ctx, time.Since(closeStart).Milliseconds())
+ 
+-		d.deviceFile = nil
++		attempt.deviceFile = nil
++	} else if attempt.deviceFile != nil {
++		if err := attempt.deviceFile.Close(); err != nil {
++			errs = append(errs, fmt.Errorf("error closing NBD device: %w", err))
++		}
++		attempt.deviceFile = nil
+ 	}
+ 
+ 	// Cancel the context, which will stop waiting on pending readAt/writeAt...
+ 	telemetry.ReportEvent(ctx, "canceling context")
+-	if d.cancelfn != nil {
+-		d.cancelfn()
++	if attempt.cancel != nil {
++		attempt.cancel()
++		attempt.cancel = nil
+ 	}
+ 
+ 	// Close all server socket pairs... Clearing the slices keeps a second Close
+ 	// from reporting every socket as already closed, which the Open error path
+ 	// would otherwise trigger for every caller that also closes on failure.
+ 	telemetry.ReportEvent(ctx, "closing socket pairs server")
+-	for _, v := range d.socksServer {
++	for _, v := range attempt.socksServer {
+ 		err := v.Close()
+ 		if err != nil {
+ 			errs = append(errs, fmt.Errorf("error closing server pair: %w", err))
+ 		}
+ 	}
+ 
+-	d.socksServer = nil
++	attempt.socksServer = nil
+ 
+ 	// Now wait until the handlers return
+ 	telemetry.ReportEvent(ctx, "await handlers return")
+-	d.handlersWg.Wait()
++	attempt.handlersWg.Wait()
+ 
+ 	// Now wait for any pending responses to be sent
+ 	telemetry.ReportEvent(ctx, "waiting for pending responses")
+-	for _, d := range d.dispatchers {
+-		d.Drain()
++	for _, dispatcher := range attempt.dispatchers {
++		dispatcher.Drain()
+ 	}
+-
+-	// Disconnect NBD
+-	if idx != math.MaxUint32 {
+-		err := disconnectNBDWithTimeout(ctx, idx, disconnectTimeout)
+-		if err != nil {
+-			errs = append(errs, fmt.Errorf("error disconnecting NBD: %w", err))
+-		}
++	attempt.dispatchers = nil
++
++	// Connect can return an error after the kernel consumed the request. Try a
++	// disconnect for every attempted Connect; if the pool subsequently proves
++	// the reserved index is free, an expected "not connected" error is ignored.
++	var disconnectErr error
++	if attempt.connectTried {
++		disconnectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), disconnectTimeout)
++		disconnectErr = d.ops.disconnect(disconnectCtx, idx, disconnectTimeout)
++		cancel()
+ 	}
+ 
+ 	// Close all client socket pairs...
+ 	telemetry.ReportEvent(ctx, "closing socket pairs client")
+-	for _, v := range d.socksClient {
++	for _, v := range attempt.socksClient {
+ 		err := v.Close()
+ 		if err != nil {
+ 			errs = append(errs, fmt.Errorf("error closing socket pair client: %w", err))
+ 		}
+ 	}
+ 
+-	d.socksClient = nil
++	attempt.socksClient = nil
+ 
+-	// Release the device back to the pool, retry if it is in use
+-	if idx != math.MaxUint32 {
++	var releaseErr error
++	if attempt.acquired {
+ 		telemetry.ReportEvent(ctx, "releasing device to the pool")
+-		err := d.devicePool.ReleaseDevice(ctx, idx, WithInfiniteRetry())
+-		if err != nil {
+-			errs = append(errs, fmt.Errorf("error releasing overlay device: %w", err))
+-		}
++		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), disconnectTimeout)
++		releaseErr = d.ops.releaseDevice(releaseCtx, attempt.poolIndex, WithInfiniteRetry(), WithTimeout(disconnectTimeout))
++		cancel()
++		attempt.acquired = false
++	}
++
++	if disconnectErr != nil && (attempt.connected || releaseErr != nil) {
++		errs = append(errs, fmt.Errorf("error disconnecting NBD: %w", disconnectErr))
++	}
++	if releaseErr != nil {
++		errs = append(errs, fmt.Errorf("error releasing overlay device: %w", releaseErr))
+ 	}
+ 
+ 	return errors.Join(errs...)
+diff --git a/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go b/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go
+new file mode 100644
+index 0000000..c53fdc5
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go
+@@ -0,0 +1,302 @@
++//go:build linux
++
++package nbd
++
++import (
++	"context"
++	"errors"
++	"math"
++	"net"
++	"os"
++	"sync"
++	"sync/atomic"
++	"syscall"
++	"testing"
++	"time"
++
++	"github.com/Merovius/nbd/nbdnl"
++	"github.com/stretchr/testify/require"
++	"golang.org/x/sys/unix"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd/testutils"
++	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
++	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
++)
++
++var (
++	errInjectedSocketPair = errors.New("injected socketpair failure")
++	errInjectedFileConn   = errors.New("injected FileConn failure")
++	errInjectedConnect    = errors.New("injected connect failure")
++)
++
++type lifecycleDevice struct {
++	*testutils.ZeroDevice
++}
++
++func (d *lifecycleDevice) WriteAt(p []byte, _ int64) (int, error) {
++	return len(p), nil
++}
++
++func (d *lifecycleDevice) WriteZeroesAt(_, length int64) (int, error) {
++	return int(length), nil
++}
++
++func newLifecycleMount(t *testing.T, connections int) *DirectPathMount {
++	t.Helper()
++
++	device, err := testutils.NewZeroDevice(16*1024*1024, header.RootfsBlockSize)
++	require.NoError(t, err)
++
++	mnt := NewDirectPathMount(
++		&lifecycleDevice{ZeroDevice: device},
++		nil,
++		&featureflags.Client{},
++		WithConnectionsPerDevice(connections),
++	)
++	// Unit tests exercise the lifecycle without requiring an NBD module. Every
++	// kernel/pool boundary is still represented and counted explicitly.
++	mnt.ops.openDevice = func(string) (*os.File, error) { return nil, nil }
++	mnt.ops.status = func(idx uint32) (nbdnl.DeviceStatus, error) {
++		return nbdnl.DeviceStatus{Index: idx, Connected: true}, nil
++	}
++	mnt.ops.disconnect = func(context.Context, uint32, time.Duration) error { return nil }
++
++	return mnt
++}
++
++func realSocketPair() ([2]int, error) {
++	return syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
++}
++
++func requireFDClosed(t *testing.T, fd int) {
++	t.Helper()
++
++	_, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
++	require.ErrorIs(t, err, unix.EBADF, "fd %d remains open", fd)
++}
++
++func TestDirectPathMountPartialSocketCreationCleansAttempt(t *testing.T) {
++	mnt := newLifecycleMount(t, 3)
++
++	var acquired, released atomic.Int32
++	mnt.ops.getDevice = func(context.Context) (uint32, error) {
++		acquired.Add(1)
++		return 11, nil
++	}
++	mnt.ops.releaseDevice = func(context.Context, uint32, ...ReleaseOption) error {
++		released.Add(1)
++		return nil
++	}
++
++	var calls int
++	var created [][2]int
++	mnt.ops.socketPair = func() ([2]int, error) {
++		calls++
++		if calls == 2 {
++			return [2]int{}, errInjectedSocketPair
++		}
++		pair, err := realSocketPair()
++		if err == nil {
++			created = append(created, pair)
++		}
++		return pair, err
++	}
++	mnt.ops.connect = func(uint32, []*os.File, uint64, nbdnl.ClientFlags, nbdnl.ServerFlags, ...nbdnl.ConnectOption) (uint32, error) {
++		t.Fatal("Connect called after partial socket creation failure")
++		return 0, nil
++	}
++
++	idx, err := mnt.Open(t.Context())
++	require.ErrorIs(t, err, errInjectedSocketPair)
++	require.Equal(t, uint32(math.MaxUint32), idx)
++	require.EqualValues(t, 1, acquired.Load())
++	require.EqualValues(t, 1, released.Load())
++	for _, pair := range created {
++		requireFDClosed(t, pair[0])
++		requireFDClosed(t, pair[1])
++	}
++	require.NoError(t, mnt.Close(t.Context()), "Close after failed Open must be harmless")
++}
++
++func TestDirectPathMountFileConnFailureCleansCurrentAndPriorPairs(t *testing.T) {
++	mnt := newLifecycleMount(t, 2)
++
++	var released atomic.Int32
++	mnt.ops.getDevice = func(context.Context) (uint32, error) { return 12, nil }
++	mnt.ops.releaseDevice = func(context.Context, uint32, ...ReleaseOption) error {
++		released.Add(1)
++		return nil
++	}
++
++	var created [][2]int
++	mnt.ops.socketPair = func() ([2]int, error) {
++		pair, err := realSocketPair()
++		if err == nil {
++			created = append(created, pair)
++		}
++		return pair, err
++	}
++	var fileConnCalls int
++	mnt.ops.fileConn = func(file *os.File) (net.Conn, error) {
++		fileConnCalls++
++		if fileConnCalls == 2 {
++			return nil, errInjectedFileConn
++		}
++		return net.FileConn(file)
++	}
++
++	idx, err := mnt.Open(t.Context())
++	require.ErrorIs(t, err, errInjectedFileConn)
++	require.Equal(t, uint32(math.MaxUint32), idx)
++	require.EqualValues(t, 1, released.Load())
++	for _, pair := range created {
++		requireFDClosed(t, pair[0])
++		requireFDClosed(t, pair[1])
++	}
++	require.NoError(t, mnt.Close(t.Context()))
++}
++
++func TestDirectPathMountConnectRetryFullyCleansPreviousAttempt(t *testing.T) {
++	mnt := newLifecycleMount(t, 4)
++
++	var getCalls atomic.Int32
++	mnt.ops.getDevice = func(context.Context) (uint32, error) {
++		return uint32(20 + getCalls.Add(1)), nil
++	}
++
++	var mu sync.Mutex
++	var released, disconnected []uint32
++	mnt.ops.releaseDevice = func(_ context.Context, idx uint32, _ ...ReleaseOption) error {
++		mu.Lock()
++		defer mu.Unlock()
++		released = append(released, idx)
++		return nil
++	}
++	mnt.ops.disconnect = func(_ context.Context, idx uint32, _ time.Duration) error {
++		mu.Lock()
++		defer mu.Unlock()
++		disconnected = append(disconnected, idx)
++		if idx == 21 {
++			return errors.New("not connected")
++		}
++		return nil
++	}
++
++	var connectCalls atomic.Int32
++	var firstAttemptClients []*os.File
++	mnt.ops.connect = func(idx uint32, socks []*os.File, _ uint64, _ nbdnl.ClientFlags, _ nbdnl.ServerFlags, _ ...nbdnl.ConnectOption) (uint32, error) {
++		call := connectCalls.Add(1)
++		require.Len(t, socks, 4)
++		if call == 1 {
++			firstAttemptClients = append(firstAttemptClients, socks...)
++			return 0, errInjectedConnect
++		}
++		for _, sock := range firstAttemptClients {
++			_, err := sock.Stat()
++			require.ErrorIs(t, err, os.ErrClosed, "previous-attempt client remains open")
++		}
++		return idx, nil
++	}
++
++	idx, err := mnt.Open(t.Context())
++	require.NoError(t, err)
++	require.Equal(t, uint32(22), idx)
++	require.EqualValues(t, 2, connectCalls.Load())
++	require.NoError(t, mnt.Close(t.Context()))
++
++	mu.Lock()
++	defer mu.Unlock()
++	require.Equal(t, []uint32{21, 22}, released)
++	require.Equal(t, []uint32{21, 22}, disconnected)
++}
++
++func TestDirectPathMountCancellationAfterConnectCleansConnectedAttempt(t *testing.T) {
++	mnt := newLifecycleMount(t, 3)
++
++	var released, disconnected atomic.Int32
++	mnt.ops.getDevice = func(context.Context) (uint32, error) { return 31, nil }
++	mnt.ops.releaseDevice = func(context.Context, uint32, ...ReleaseOption) error {
++		released.Add(1)
++		return nil
++	}
++	mnt.ops.disconnect = func(context.Context, uint32, time.Duration) error {
++		disconnected.Add(1)
++		return nil
++	}
++	mnt.ops.connect = func(idx uint32, socks []*os.File, _ uint64, _ nbdnl.ClientFlags, _ nbdnl.ServerFlags, _ ...nbdnl.ConnectOption) (uint32, error) {
++		require.Len(t, socks, 3)
++		return idx, nil
++	}
++
++	ctx, cancel := context.WithCancel(t.Context())
++	mnt.afterConnect = func(uint32) { cancel() }
++
++	idx, err := mnt.Open(ctx)
++	require.ErrorIs(t, err, context.Canceled)
++	require.Equal(t, uint32(math.MaxUint32), idx)
++	require.EqualValues(t, 1, released.Load())
++	require.EqualValues(t, 1, disconnected.Load())
++	require.NoError(t, mnt.Close(t.Context()))
++	require.EqualValues(t, 1, released.Load(), "idempotent Close released the slot again")
++}
++
++func TestDirectPathMountCloseIsSerializedAndIdempotent(t *testing.T) {
++	mnt := newLifecycleMount(t, 2)
++
++	var releases, disconnects atomic.Int32
++	mnt.ops.getDevice = func(context.Context) (uint32, error) { return 41, nil }
++	mnt.ops.releaseDevice = func(context.Context, uint32, ...ReleaseOption) error {
++		releases.Add(1)
++		return nil
++	}
++	mnt.ops.disconnect = func(context.Context, uint32, time.Duration) error {
++		disconnects.Add(1)
++		return nil
++	}
++	mnt.ops.connect = func(idx uint32, socks []*os.File, _ uint64, _ nbdnl.ClientFlags, _ nbdnl.ServerFlags, _ ...nbdnl.ConnectOption) (uint32, error) {
++		require.Len(t, socks, 2)
++		return idx, nil
++	}
++
++	_, err := mnt.Open(t.Context())
++	require.NoError(t, err)
++
++	const closers = 32
++	start := make(chan struct{})
++	errs := make(chan error, closers)
++	var wg sync.WaitGroup
++	for range closers {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			<-start
++			errs <- mnt.Close(t.Context())
++		}()
++	}
++	close(start)
++	wg.Wait()
++	close(errs)
++	for err := range errs {
++		require.NoError(t, err)
++	}
++
++	require.EqualValues(t, 1, disconnects.Load())
++	require.EqualValues(t, 1, releases.Load())
++}
++
++func TestDirectPathMountRejectsInvalidConnectionCountBeforeAcquisition(t *testing.T) {
++	for _, connections := range []int{0, 5} {
++		t.Run(string(rune('0'+connections)), func(t *testing.T) {
++			mnt := newLifecycleMount(t, connections)
++			mnt.ops.getDevice = func(context.Context) (uint32, error) {
++				t.Fatal("invalid count acquired a device")
++				return 0, nil
++			}
++
++			idx, err := mnt.Open(t.Context())
++			require.ErrorContains(t, err, "between 1 and 4")
++			require.Equal(t, uint32(math.MaxUint32), idx)
++			require.NoError(t, mnt.Close(t.Context()))
++		})
++	}
++}
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/nbd.go b/packages/orchestrator/pkg/sandbox/rootfs/nbd.go
+index ea3811e..23892a5 100644
+--- a/packages/orchestrator/pkg/sandbox/rootfs/nbd.go
++++ b/packages/orchestrator/pkg/sandbox/rootfs/nbd.go
+@@ -40,7 +40,7 @@ type NBDProvider struct {
+ 	devicePool         *nbd.DevicePool
+ }
+ 
+-func NewNBDProvider(ctx context.Context, rootfs block.ReadonlyDevice, cachePath string, devicePool *nbd.DevicePool, featureFlags *featureflags.Client) (Provider, error) {
++func NewNBDProvider(ctx context.Context, rootfs block.ReadonlyDevice, cachePath string, devicePool *nbd.DevicePool, featureFlags *featureflags.Client, connectionsPerDevice int) (Provider, error) {
+ 	size, err := rootfs.Size(ctx)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("error getting device size: %w", err)
+@@ -55,7 +55,7 @@ func NewNBDProvider(ctx context.Context, rootfs block.ReadonlyDevice, cachePath
+ 
+ 	overlay := block.NewOverlay(rootfs, cache)
+ 
+-	mnt := nbd.NewDirectPathMount(overlay, devicePool, featureFlags)
++	mnt := nbd.NewDirectPathMount(overlay, devicePool, featureFlags, nbd.WithConnectionsPerDevice(connectionsPerDevice))
+ 
+ 	return &NBDProvider{
+ 		mnt:                mnt,
+diff --git a/packages/orchestrator/pkg/sandbox/sandbox.go b/packages/orchestrator/pkg/sandbox/sandbox.go
+index d6e0574..0d99a31 100644
+--- a/packages/orchestrator/pkg/sandbox/sandbox.go
++++ b/packages/orchestrator/pkg/sandbox/sandbox.go
+@@ -826,7 +826,7 @@ func (f *Factory) EgressProxy() network.EgressProxy {
+ 
+ // NewDirectPathMount opens host-side NBD access without a Firecracker VM.
+ func (f *Factory) NewDirectPathMount(backend block.Device) *nbd.DirectPathMount {
+-	return nbd.NewDirectPathMount(backend, f.devicePool, f.featureFlags)
++	return nbd.NewDirectPathMount(backend, f.devicePool, f.featureFlags, nbd.WithConnectionsPerDevice(f.config.NBDConnectionCount()))
+ }
+ 
+ // PreBootFn is an optional callback invoked after the rootfs is ready but before
+@@ -911,6 +911,7 @@ func (f *Factory) CreateSandbox(
+ 			sandboxFiles.SandboxCacheRootfsPath(f.config.StorageConfig),
+ 			f.devicePool,
+ 			f.featureFlags,
++			f.config.NBDConnectionCount(),
+ 		)
+ 	} else {
+ 		rootfsProvider, err = rootfs.NewDirectProvider(
+@@ -1392,6 +1393,7 @@ func (f *Factory) ResumeSandbox(
+ 			sandboxFiles.SandboxCacheRootfsPath(f.config.StorageConfig),
+ 			f.devicePool,
+ 			f.featureFlags,
++			f.config.NBDConnectionCount(),
+ 		)
+ 		if err != nil {
+ 			return nil, fmt.Errorf("failed to create rootfs overlay: %w", err)

@@ -17,6 +17,7 @@ ENGINE_MAX_STARTING_SANDBOXES=${BREZEL_ENGINE_MAX_STARTING_SANDBOXES:-3}
 ENGINE_NETWORK_NEW_SLOTS=${BREZEL_ENGINE_NETWORK_NEW_SLOTS:-32}
 ENGINE_NETWORK_REUSED_SLOTS=${BREZEL_ENGINE_NETWORK_REUSED_SLOTS:-100}
 ENGINE_NBD_POOL_SIZE=${BREZEL_ENGINE_NBD_POOL_SIZE:-64}
+ENGINE_NBD_CONNECTIONS_PER_DEVICE=${BREZEL_ENGINE_NBD_CONNECTIONS_PER_DEVICE:-1}
 
 if [ ! -s "$TOKEN_FILE" ]; then
   echo "runtime service token is missing; run install.sh first" >&2
@@ -304,6 +305,7 @@ run_engine_fast_path_qualification() {
   if ! capability_json=$(engine_compose exec -T orchestrator \
     nsenter -t 1 -m -u -i -n -p -C -- /bin/sh -s -- live "$engine_sandbox_id" "$min_network_slots" "$max_starting_sandboxes" \
       "$ENGINE_NETWORK_NEW_SLOTS" "$ENGINE_NETWORK_REUSED_SLOTS" "$ENGINE_NBD_POOL_SIZE" \
+      "$ENGINE_NBD_CONNECTIONS_PER_DEVICE" \
       "${BREZEL_ENGINE_FIRECRACKER_SMT:-false}" "${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}" \
     < "$ENGINE_CAPABILITY_PROBE"); then
     echo "the installed engine did not satisfy the live fast-path contract" >&2
