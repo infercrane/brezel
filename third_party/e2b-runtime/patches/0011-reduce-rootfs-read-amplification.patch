@@ -1,0 +1,291 @@
+diff --git a/packages/orchestrator/pkg/sandbox/block/local.go b/packages/orchestrator/pkg/sandbox/block/local.go
+index 03557512b6e080eade002f9b3d9e845368d5a5d4..7effe7a682ec04e92af6e4af903907c044ec9816 100644
+--- a/packages/orchestrator/pkg/sandbox/block/local.go
++++ b/packages/orchestrator/pkg/sandbox/block/local.go
+@@ -58,12 +58,23 @@ func (d *Local) Path() string {
+ }
+ 
+ func (d *Local) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+-	slice, err := d.Slice(ctx, off, int64(len(p)))
++	// Preserve Slice's short-read contract at the declared device boundary while
++	// reading directly into the caller's buffer. The previous implementation
++	// allocated a temporary slice and copied it for every read.
++	length := int64(len(p))
++	end := off + length
++	size := int64(d.Header().Metadata.Size)
++	if end > size {
++		end = size
++		length = end - off
++	}
++
++	n, err := d.f.ReadAt(p[:length], off)
+ 	if err != nil {
+ 		return 0, fmt.Errorf("failed to slice mmap: %w", err)
+ 	}
+ 
+-	return copy(p, slice), nil
++	return n, nil
+ }
+ 
+ func (d *Local) Size(_ context.Context) (int64, error) {
+diff --git a/packages/orchestrator/pkg/sandbox/block/local_test.go b/packages/orchestrator/pkg/sandbox/block/local_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b51f1e498bd33558f80ffcf6f22c9af1815d8402
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/block/local_test.go
+@@ -0,0 +1,65 @@
++//go:build linux
++
++package block
++
++import (
++	"context"
++	"fmt"
++	"os"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/stretchr/testify/require"
++)
++
++func TestLocalReadAtPreservesBoundarySemantics(t *testing.T) {
++	t.Parallel()
++
++	path := t.TempDir() + "/base"
++	require.NoError(t, os.WriteFile(path, []byte("abcdefgh"), 0o600))
++	local, err := NewLocal(path, 4, uuid.New())
++	require.NoError(t, err)
++	t.Cleanup(func() { require.NoError(t, local.Close()) })
++
++	buf := []byte("XXXXXXXX")
++	n, err := local.ReadAt(t.Context(), buf, 4)
++	require.NoError(t, err)
++	require.Equal(t, 4, n)
++	require.Equal(t, []byte("efghXXXX"), buf)
++
++	n, err = local.ReadAt(t.Context(), buf, 8)
++	require.NoError(t, err)
++	require.Zero(t, n)
++
++	n, err = local.ReadAt(t.Context(), buf, -1)
++	require.ErrorContains(t, err, "failed to slice mmap")
++	require.Zero(t, n)
++}
++
++func BenchmarkLocalReadAt(b *testing.B) {
++	for _, size := range []int64{4 << 10, 128 << 10, 1 << 20} {
++		b.Run(fmt.Sprintf("%dKiB", size>>10), func(b *testing.B) {
++			path := b.TempDir() + "/base"
++			if err := os.WriteFile(path, make([]byte, size), 0o600); err != nil {
++				b.Fatal(err)
++			}
++			local, err := NewLocal(path, 4<<10, uuid.New())
++			if err != nil {
++				b.Fatal(err)
++			}
++			b.Cleanup(func() { _ = local.Close() })
++
++			buf := make([]byte, size)
++			ctx := context.Background()
++			b.SetBytes(size)
++			b.ReportAllocs()
++			b.ResetTimer()
++			for range b.N {
++				if _, err := local.ReadAt(ctx, buf, 0); err != nil {
++					b.Fatal(err)
++				}
++			}
++			overlayReadBenchmarkSink = buf[len(buf)-1]
++		})
++	}
++}
+diff --git a/packages/orchestrator/pkg/sandbox/block/overlay.go b/packages/orchestrator/pkg/sandbox/block/overlay.go
+index 982049d5b97c7530fe71e0cbfb81ccedfa2cda23..e8a202b6492ba625f7dc2ec3e8569af90689cb57 100644
+--- a/packages/orchestrator/pkg/sandbox/block/overlay.go
++++ b/packages/orchestrator/pkg/sandbox/block/overlay.go
+@@ -59,9 +59,22 @@ func (o *Overlay) ReadAt(ctx context.Context, p []byte, off int64) (int, error)
+ 	cache := o.cache.Load()
+ 	sealing := o.sealing.Load()
+ 
+-	blocks := header.BlocksOffsets(int64(len(p)), o.blockSize)
++	// The common write-heavy path is entirely present in the writable cache.
++	// Read it in one operation instead of taking the cache and tracker read locks
++	// once per block. A miss falls through to the existing layered block walk.
++	length := int64(len(p))
++	cacheRangeValid := off >= 0 && off <= cache.size && length <= cache.size-off
++	if cacheRangeValid && length > o.blockSize && length%o.blockSize == 0 {
++		if _, err := cache.ReadAt(p, off); err == nil {
++			return len(p), nil
++		} else if !errors.As(err, &BytesNotAvailableError{}) {
++			return 0, fmt.Errorf("error reading from cache: %w", err)
++		}
++	}
+ 
+-	for _, blockOff := range blocks {
++	// Iterate offsets directly. header.BlocksOffsets allocated an offsets slice
++	// proportional to the request size on every cache miss.
++	for blockOff := int64(0); blockOff < int64(len(p)); blockOff += o.blockSize {
+ 		buf := p[blockOff : blockOff+o.blockSize]
+ 		blockAbsOff := off + blockOff
+ 
+diff --git a/packages/orchestrator/pkg/sandbox/block/overlay_read_bench_test.go b/packages/orchestrator/pkg/sandbox/block/overlay_read_bench_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f31b7da2c1a3975ad61bacd522855e9159aa6a85
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/block/overlay_read_bench_test.go
+@@ -0,0 +1,62 @@
++//go:build linux
++
++package block
++
++import (
++	"context"
++	"fmt"
++	"testing"
++
++	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
++)
++
++var overlayReadBenchmarkSink byte
++
++func BenchmarkOverlayReadAt(b *testing.B) {
++	for _, size := range []int64{4 << 10, 128 << 10, 1 << 20} {
++		b.Run(fmt.Sprintf("all-writable/%dKiB", size>>10), func(b *testing.B) {
++			benchmarkOverlayReadAt(b, size, true)
++		})
++		b.Run(fmt.Sprintf("all-base/%dKiB", size>>10), func(b *testing.B) {
++			benchmarkOverlayReadAt(b, size, false)
++		})
++	}
++}
++
++func benchmarkOverlayReadAt(b *testing.B, size int64, writable bool) {
++	b.Helper()
++
++	base := &fakeOriginalDevice{data: make([]byte, size)}
++	cache, err := NewCache(size, int64(header.PageSize), b.TempDir()+"/cache", false)
++	if err != nil {
++		b.Fatal(err)
++	}
++	b.Cleanup(func() { _ = cache.Close() })
++
++	overlay := NewOverlay(base, cache)
++	if writable {
++		data := make([]byte, size)
++		for i := range data {
++			data[i] = byte(i)
++		}
++		if _, err := overlay.WriteAt(data, 0); err != nil {
++			b.Fatal(err)
++		}
++	}
++
++	buf := make([]byte, size)
++	ctx := context.Background()
++	base.reads = 0
++	b.SetBytes(size)
++	b.ReportAllocs()
++	b.ResetTimer()
++	for range b.N {
++		if _, err := overlay.ReadAt(ctx, buf, 0); err != nil {
++			b.Fatal(err)
++		}
++	}
++	b.StopTimer()
++
++	b.ReportMetric(float64(base.reads)/float64(b.N), "base_reads/op")
++	overlayReadBenchmarkSink = buf[len(buf)-1]
++}
+diff --git a/packages/orchestrator/pkg/sandbox/block/overlay_read_test.go b/packages/orchestrator/pkg/sandbox/block/overlay_read_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..134228fe98e6de8664741de24939c6ac7b84f4f7
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/block/overlay_read_test.go
+@@ -0,0 +1,87 @@
++//go:build linux
++
++package block
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
++)
++
++func TestOverlayReadAtWholeWritableRange(t *testing.T) {
++	t.Parallel()
++
++	const blocks = int64(32)
++	blockSize := int64(header.PageSize)
++	size := blocks * blockSize
++	base := &fakeOriginalDevice{data: make([]byte, size)}
++	cache, err := NewCache(size, blockSize, t.TempDir()+"/cache", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, cache)
++	t.Cleanup(func() { require.NoError(t, overlay.Close()) })
++
++	want := make([]byte, size)
++	for i := range want {
++		want[i] = byte(i)
++	}
++	_, err = overlay.WriteAt(want, 0)
++	require.NoError(t, err)
++
++	got := make([]byte, size)
++	n, err := overlay.ReadAt(t.Context(), got, 0)
++	require.NoError(t, err)
++	require.Equal(t, len(got), n)
++	require.Equal(t, want, got)
++	require.Zero(t, base.reads, "an all-writable read must not reach the base device")
++}
++
++func TestOverlayReadAtAllBaseRetainsBlockFallback(t *testing.T) {
++	t.Parallel()
++
++	const blocks = int64(32)
++	blockSize := int64(header.PageSize)
++	size := blocks * blockSize
++	want := make([]byte, size)
++	for i := range want {
++		want[i] = byte(i)
++	}
++	base := &fakeOriginalDevice{data: want}
++	cache, err := NewCache(size, blockSize, t.TempDir()+"/cache", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, cache)
++	t.Cleanup(func() { require.NoError(t, overlay.Close()) })
++
++	got := make([]byte, size)
++	n, err := overlay.ReadAt(t.Context(), got, 0)
++	require.NoError(t, err)
++	require.Equal(t, len(got), n)
++	require.Equal(t, want, got)
++	require.EqualValues(t, blocks, base.reads, "base fallback remains block-granular")
++}
++
++func TestOverlayReadAtMixedWritableAndBaseBlocks(t *testing.T) {
++	t.Parallel()
++
++	blockSize := int64(header.PageSize)
++	size := 3 * blockSize
++	baseData := append(append(fill(blockSize, 0x10), fill(blockSize, 0x20)...), fill(blockSize, 0x30)...)
++	base := &fakeOriginalDevice{data: baseData}
++	cache, err := NewCache(size, blockSize, t.TempDir()+"/cache", false)
++	require.NoError(t, err)
++	overlay := NewOverlay(base, cache)
++	t.Cleanup(func() { require.NoError(t, overlay.Close()) })
++
++	_, err = overlay.WriteAt(fill(blockSize, 0xAA), blockSize)
++	require.NoError(t, err)
++
++	got := make([]byte, size)
++	n, err := overlay.ReadAt(t.Context(), got, 0)
++	require.NoError(t, err)
++	require.Equal(t, len(got), n)
++	require.Equal(t, fill(blockSize, 0x10), got[:blockSize])
++	require.Equal(t, fill(blockSize, 0xAA), got[blockSize:2*blockSize])
++	require.Equal(t, fill(blockSize, 0x30), got[2*blockSize:])
++	require.Equal(t, 2, base.reads)
++}

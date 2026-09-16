@@ -39,6 +39,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"envd_process_tag_patch_sha256":            "0008-fix-envd-process-tag-resolution.patch",
 		"envd_process_replay_patch_sha256":         "0009-add-bounded-process-output-replay.patch",
 		"orchestrator_cpu_topology_patch_sha256":   "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
+		"orchestrator_rootfs_read_patch_sha256":    "0011-reduce-rootfs-read-amplification.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -784,6 +785,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		hex.EncodeToString(orchestratorDigest[:]),
 		patchDigest, patchDigest, patchDigest, patchDigest, patchDigest,
 		patchDigest,
+		patchDigest,
 		hex.EncodeToString(envdDigest[:]), patchDigest,
 		patchDigest,
 	)
@@ -804,6 +806,8 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.orchestrator.cpu_topology_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.guest_smt=operator-configured-default-disabled",
 		"artifact.orchestrator.exclusive_cpu_topology=disabled-pending-cpuset",
+		"artifact.orchestrator.rootfs_read_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.rootfs_read_path=allocation-free-local-and-whole-writable-range",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -971,6 +975,9 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewNBDProvider\n",
 		"packages/shared/pkg/featureflags/flags.go":                           "NewStringFlag(\"resume-prefetch-source\", \"init\")\n",
 		"packages/shared/pkg/storage/sandbox.go":                              "fmt.Sprintf(\"rootfs-%s-%s.cow\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/sandbox\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/template\"\n",
+		"packages/orchestrator/pkg/sandbox/block/local.go":                    "d.f.ReadAt(p[:length], off)\n",
+		"packages/orchestrator/pkg/sandbox/block/overlay.go":                  "if cacheRangeValid && length > o.blockSize && length%o.blockSize == 0 {\n",
+		"packages/orchestrator/pkg/sandbox/block/overlay_read_test.go":        "TestOverlayReadAtMixedWritableAndBaseBlocks\n",
 		"packages/orchestrator/pkg/sandbox/network/pool.go":                   "NewSlotsPoolSize    = 32\nReusedSlotsPoolSize = 100\n",
 		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
@@ -1281,7 +1288,7 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 		"orchestrator_cpu_topology_patch_sha256",
 		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPU_TOPOLOGY_PATCH"`,
 		"engine Firecracker CPU-topology patch verification failed",
-		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"`,
+		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"`,
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing CPU-topology invariant %q", required)
@@ -1341,6 +1348,56 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 	}
 }
 
+func TestInstallerPinsAndValidatesRootfsReadPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0011-reduce-rootfs-read-amplification.patch",
+		"orchestrator_rootfs_read_patch_sha256",
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_READ_PATCH"`,
+		"engine rootfs-read patch verification failed",
+		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing rootfs-read invariant %q", required)
+		}
+	}
+
+	probeData, err := os.ReadFile("engine-capabilities.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := string(probeData)
+	for _, required := range []string{
+		"the allocation-free local rootfs read path",
+		"the whole writable-range rootfs read path",
+		"TestOverlayReadAtMixedWritableAndBaseBlocks",
+		`"whole_writable_range":"single-cache-read"`,
+	} {
+		if !strings.Contains(probe, required) {
+			t.Fatalf("engine capability probe is missing rootfs-read contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.rootfs_read_patch_sha256",
+		"artifact.orchestrator.rootfs_read_path=allocation-free-local-and-whole-writable-range",
+		"the rootfs-read patch requires the CPU-topology patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("distribution manifest writer is missing rootfs-read identity %q", required)
+		}
+	}
+}
+
 func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 	installerData, err := os.ReadFile("install.sh")
 	if err != nil {
@@ -1359,7 +1416,7 @@ func TestInstallerPinsBuildsAndAttestsEnvdProcessTagPatch(t *testing.T) {
 		`BREZEL_ENGINE_ENVD_BINARY="$INSTALL_DIR/artifacts/envd"`,
 		`BREZEL_ENGINE_ENVD_SHA256=$(sha256sum "$BREZEL_ENGINE_ENVD_BINARY"`,
 		`run --rm --no-deps brezel-envd-install`,
-		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256"`,
+		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$BREZEL_ENGINE_ENVD_SHA256" "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256"`,
 		`"$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256"`,
 		"engine envd process-tag patch verification failed",
 		"engine envd process-replay patch verification failed",

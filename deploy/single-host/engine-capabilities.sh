@@ -57,6 +57,12 @@ check_source() {
     'envDefault:"${ORCHESTRATOR_BASE_PATH}/sandbox"' "the local sandbox cache default"
   require_literal "$source_root/packages/shared/pkg/storage/sandbox.go" \
     'envDefault:"${ORCHESTRATOR_BASE_PATH}/template"' "the local template cache default"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/block/local.go" \
+    'd.f.ReadAt(p[:length], off)' "the allocation-free local rootfs read path"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/block/overlay.go" \
+    'if cacheRangeValid && length > o.blockSize && length%o.blockSize == 0 {' "the whole writable-range rootfs read path"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/block/overlay_read_test.go" \
+    'TestOverlayReadAtMixedWritableAndBaseBlocks' "the mixed overlay read regression test"
 
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/network/pool.go" \
     "NewSlotsPoolSize    = 32" "the new network-slot pool"
@@ -167,7 +173,7 @@ check_source() {
   require_literal "$source_root/packages/envd/internal/services/process/handler/journal_test.go" \
     'TestEventJournalAtomicReplayToWaitHandoff' "the gap-free replay-to-live handoff regression test"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"disabled-pending-cgroup-cpuset-qualification","experimental_affinity_code":"present-not-runnable"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","rootfs_read_path":{"local":"allocation-free","whole_writable_range":"single-cache-read","mixed_range":"layered-fallback"},"durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"disabled-pending-cgroup-cpuset-qualification","experimental_affinity_code":"present-not-runnable"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
 }
 
 find_orchestrator_pid() {
