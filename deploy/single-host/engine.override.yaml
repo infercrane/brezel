@@ -14,6 +14,9 @@ services:
       # pages are faulted in. The product-level global sandbox limit remains
       # the physical-memory admission boundary.
       BREZEL_VM_OVERCOMMIT_MEMORY: ${BREZEL_VM_OVERCOMMIT_MEMORY:-1}
+      BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY: ${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}
+      BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS: ${BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS:-}
+      BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS: ${BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS:-}
     volumes:
       - ${BREZEL_HOST_TUNING_SCRIPT:?set BREZEL_HOST_TUNING_SCRIPT to the audited host tuning script}:/opt/brezel/host-tuning.sh:ro
     command: ["/bin/sh", "-c", "cat /opt/e2b/scripts/host-setup.sh /opt/brezel/host-tuning.sh | exec nsenter -t 1 -m -u -i -n -p -- /bin/bash -s"]
@@ -189,6 +192,9 @@ services:
       BUILD_CACHE_TTL: ${BREZEL_BUILD_CACHE_TTL:?set the audited build cache TTL}
       BUILD_CACHE_MAX_BYTES: ${BREZEL_BUILD_CACHE_MAX_BYTES:?set the audited build cache byte high water}
       BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT: ${BREZEL_BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT:?set the audited build cache disk high water}
+      # Exact, comma-separated immutable template IDs only. Empty preserves
+      # the fleet default; malformed and duplicate lists fail at startup.
+      BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS: ${BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS:-}
       # Keep concurrent VM starts within the locally qualified host envelope.
       # An explicit value is operator-owned and is not replaced by a remote
       # feature-flag refresh.
@@ -203,6 +209,10 @@ services:
       # this single-host release has no multi-VM physical-core allocator yet.
       FIRECRACKER_SMT: ${BREZEL_ENGINE_FIRECRACKER_SMT:-false}
       FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY: ${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}
+      FIRECRACKER_CPUSET_CPUS: ${BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS:-}
+      FIRECRACKER_CPUSET_MEMS: ${BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS:-}
+      FIRECRACKER_VCPU_CPUS: ${BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS:-}
+      FIRECRACKER_VMM_CPUS: ${BREZEL_ENGINE_FIRECRACKER_VMM_CPUS:-}
       # The upstream launcher enters the host mount namespace before starting
       # the orchestrator. Pass the protected absolute host path rather than a
       # container mount target. The engine exposes workspace contents only

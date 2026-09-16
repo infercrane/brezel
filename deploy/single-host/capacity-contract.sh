@@ -28,6 +28,35 @@ non_negative_integer() {
   esac
 }
 
+normalize_index_set() {
+  value=$1
+  printf '%s\n' "$value" | awk '
+    BEGIN { valid=1 }
+    {
+      count=split($0, parts, ",")
+      if (count < 1) valid=0
+      for (i=1; i<=count; i++) {
+        if (parts[i] !~ /^[0-9]+(-[0-9]+)?$/) { valid=0; continue }
+        bounds=split(parts[i], range, "-")
+        first=range[1]+0; last=first
+        if (bounds == 2) last=range[2]+0
+        if (last < first || last-first > 1048576) { valid=0; continue }
+        for (n=first; n<=last; n++) print n
+      }
+    }
+    END { if (!valid) exit 2 }
+  ' | sort -n -u | paste -sd, -
+}
+
+set_has() {
+  set=$1
+  needle=$2
+  case ",$set," in
+    *",$needle,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 MODE=${1:-plan}
 MEMINFO=${BREZEL_TEST_MEMINFO_FILE:-/proc/meminfo}
 STORAGE_PATH=${BREZEL_CAPACITY_STORAGE_PATH:-/var/lib}
@@ -44,6 +73,10 @@ MIN_SYSTEM_MEMORY_MIB=${BREZEL_MIN_SYSTEM_MEMORY_MIB:-8192}
 MIN_SYSTEM_CPUS=${BREZEL_MIN_SYSTEM_CPUS:-2}
 FIRECRACKER_SMT=${BREZEL_ENGINE_FIRECRACKER_SMT:-false}
 EXCLUSIVE_CPU_TOPOLOGY=${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}
+FIRECRACKER_CPUSET_CPUS=${BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS:-}
+FIRECRACKER_CPUSET_MEMS=${BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS:-}
+FIRECRACKER_VCPU_CPUS=${BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS:-}
+FIRECRACKER_VMM_CPUS=${BREZEL_ENGINE_FIRECRACKER_VMM_CPUS:-}
 CPU_TOPOLOGY_FILE=${BREZEL_TEST_CPU_TOPOLOGY_FILE:-}
 MIN_SYSTEM_DISK_MIB=${BREZEL_MIN_SYSTEM_DISK_MIB:-8192}
 NETWORK_NEW_SLOTS=${BREZEL_ENGINE_NETWORK_NEW_SLOTS:-32}
@@ -97,8 +130,36 @@ case "$EXCLUSIVE_CPU_TOPOLOGY" in
   true|false) ;;
   *) fail "BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY must be true or false" ;;
 esac
+normalized_cpuset_cpus=
+normalized_cpuset_mems=
+normalized_vcpu_cpus=
+normalized_vmm_cpus=
 if [ "$EXCLUSIVE_CPU_TOPOLOGY" = true ]; then
-  fail "exclusive Firecracker CPU topology is disabled until cgroup cpuset isolation is qualified"
+  [ "$FIRECRACKER_SMT" = false ] || fail "exclusive Firecracker CPU topology requires guest SMT to be disabled"
+  [ -n "$FIRECRACKER_CPUSET_CPUS" ] || fail "BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS is required for exclusive placement"
+  [ -n "$FIRECRACKER_CPUSET_MEMS" ] || fail "BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS is required for exclusive placement"
+  [ -n "$FIRECRACKER_VCPU_CPUS" ] || fail "BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS is required for exclusive placement"
+  [ -n "$FIRECRACKER_VMM_CPUS" ] || fail "BREZEL_ENGINE_FIRECRACKER_VMM_CPUS is required for exclusive placement"
+  normalized_cpuset_cpus=$(normalize_index_set "$FIRECRACKER_CPUSET_CPUS") || fail "BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS is invalid"
+  normalized_cpuset_mems=$(normalize_index_set "$FIRECRACKER_CPUSET_MEMS") || fail "BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS is invalid"
+  normalized_vcpu_cpus=$(normalize_index_set "$FIRECRACKER_VCPU_CPUS") || fail "BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS is invalid"
+  normalized_vmm_cpus=$(normalize_index_set "$FIRECRACKER_VMM_CPUS") || fail "BREZEL_ENGINE_FIRECRACKER_VMM_CPUS is invalid"
+  case "$normalized_cpuset_mems" in ""|*,*) fail "exclusive placement requires exactly one NUMA memory node" ;; esac
+  vcpu_count=$(printf '%s\n' "$normalized_vcpu_cpus" | awk -F, '{print NF}')
+  [ "$vcpu_count" -eq "$GUEST_VCPUS" ] || fail "exclusive placement assigns $vcpu_count host CPUs to a $GUEST_VCPUS-vCPU guest"
+  old_ifs=$IFS
+  IFS=,
+  for cpu in $normalized_vcpu_cpus; do
+    set_has "$normalized_cpuset_cpus" "$cpu" || fail "vCPU CPU $cpu is outside the isolated cpuset"
+    set_has "$normalized_vmm_cpus" "$cpu" && fail "CPU $cpu is assigned to both a vCPU and the VMM"
+  done
+  for cpu in $normalized_vmm_cpus; do
+    set_has "$normalized_cpuset_cpus" "$cpu" || fail "VMM CPU $cpu is outside the isolated cpuset"
+  done
+  IFS=$old_ifs
+else
+  [ -z "$FIRECRACKER_CPUSET_CPUS$FIRECRACKER_CPUSET_MEMS$FIRECRACKER_VCPU_CPUS$FIRECRACKER_VMM_CPUS" ] ||
+    fail "Firecracker cpuset settings require exclusive CPU topology to be enabled"
 fi
 if [ "$WARM_POOL_SIZE" -gt 0 ] && [ "$WARM_POOL_STRICT" = true ] && [ "$WARM_POOL_SIZE" -ne "$MAX_ACTIVE_TOTAL" ]; then
   fail "strict warm capacity must equal BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL"
@@ -121,6 +182,12 @@ if [ "$WARM_POOL_STRICT" = false ]; then
 fi
 [ "$provisioned_capacity" -le 4096 ] || \
   fail "tenant capacity plus non-strict warm capacity cannot exceed 4096"
+if [ "$EXCLUSIVE_CPU_TOPOLOGY" = true ]; then
+  [ "$provisioned_capacity" -eq 1 ] || \
+    fail "exclusive Firecracker CPU topology is a single-sandbox profile until a physical-core allocator is qualified"
+  [ "$MAX_STARTING_SANDBOXES" -eq 1 ] || \
+    fail "exclusive Firecracker CPU topology requires a one-sandbox start limit"
+fi
 [ "$MAX_ACTIVE_PROJECT" -le "$MAX_ACTIVE_TOTAL" ] || \
   fail "the per-project active limit cannot exceed the host active limit"
 [ "$MAX_STARTING_SANDBOXES" -le "$provisioned_capacity" ] || \
@@ -184,10 +251,12 @@ if [ "$EXCLUSIVE_CPU_TOPOLOGY" = true ]; then
   host_physical_cores=${topology_counts#* }
   positive_integer "$max_numa_physical_cores" max_numa_physical_cores
   positive_integer "$host_physical_cores" host_physical_cores
-  [ "$max_numa_physical_cores" -ge "$GUEST_VCPUS" ] || \
-    fail "no NUMA node has $GUEST_VCPUS distinct physical cores for the guest"
-  [ "$host_physical_cores" -gt "$GUEST_VCPUS" ] || \
-    fail "exclusive placement requires at least one separate physical core for Firecracker helper threads"
+  required_numa_cores=$((GUEST_VCPUS + 1))
+  required_physical_cores=$((GUEST_VCPUS + 4))
+  [ "$max_numa_physical_cores" -ge "$required_numa_cores" ] || \
+    fail "no NUMA node has $required_numa_cores distinct physical cores for the guest plus VMM"
+  [ "$host_physical_cores" -ge "$required_physical_cores" ] || \
+    fail "exclusive placement requires at least $required_physical_cores physical cores: guest, VMM, NBD, and housekeeping"
 fi
 
 if [ -n "${BREZEL_TEST_AVAILABLE_DISK_KIB:-}" ]; then
@@ -219,6 +288,25 @@ case "$MODE" in
       fail "host reserved $hugepages_total hugepages; configured profile requires $HUGEPAGES"
     [ "$hugepages_free" -ge "$required_hugepages" ] || \
       fail "host has $hugepages_free free hugepages; empty-host qualification requires $required_hugepages"
+    if [ "$EXCLUSIVE_CPU_TOPOLOGY" = true ]; then
+      partition=/sys/fs/cgroup/e2b
+      [ -d "$partition" ] && [ ! -L "$partition" ] || fail "the exclusive Firecracker cgroup is missing or is a symlink"
+      [ "$(cat "$partition/cpuset.cpus.partition" 2>/dev/null || true)" = isolated ] || fail "the Firecracker cgroup is not an isolated cpuset partition"
+      live_cpus=$(normalize_index_set "$(cat "$partition/cpuset.cpus.effective" 2>/dev/null || true)") || fail "cannot read the effective Firecracker cpuset"
+      live_exclusive=$(normalize_index_set "$(cat "$partition/cpuset.cpus.exclusive.effective" 2>/dev/null || true)") || fail "cannot read the exclusive Firecracker cpuset"
+      live_mems=$(normalize_index_set "$(cat "$partition/cpuset.mems.effective" 2>/dev/null || true)") || fail "cannot read the Firecracker NUMA set"
+      [ "$live_cpus" = "$normalized_cpuset_cpus" ] && [ "$live_exclusive" = "$normalized_cpuset_cpus" ] && [ "$live_mems" = "$normalized_cpuset_mems" ] ||
+        fail "the live Firecracker cpuset partition differs from the configured contract"
+      [ ! -s "$partition/cgroup.procs" ] || fail "the Firecracker partition contains direct processes instead of sandbox child cgroups"
+      node_hugepages=/sys/devices/system/node/node${normalized_cpuset_mems}/hugepages/hugepages-2048kB
+      [ -r "$node_hugepages/nr_hugepages" ] && [ -r "$node_hugepages/free_hugepages" ] || fail "cannot read 2 MiB hugepages for NUMA node $normalized_cpuset_mems"
+      node_hugepages_total=$(cat "$node_hugepages/nr_hugepages")
+      node_hugepages_free=$(cat "$node_hugepages/free_hugepages")
+      positive_integer "$node_hugepages_total" node_hugepages_total
+      positive_integer "$node_hugepages_free" node_hugepages_free
+      [ "$node_hugepages_total" -ge "$HUGEPAGES" ] || fail "NUMA node $normalized_cpuset_mems has only $node_hugepages_total reserved hugepages; require $HUGEPAGES"
+      [ "$node_hugepages_free" -ge "$required_hugepages" ] || fail "NUMA node $normalized_cpuset_mems has only $node_hugepages_free free hugepages; require $required_hugepages"
+    fi
     if [ -n "${BREZEL_TEST_NBD_MAX:-}" ]; then
       kernel_nbd_max=$BREZEL_TEST_NBD_MAX
     else
@@ -236,4 +324,4 @@ case "$MODE" in
 esac
 
 printf '%s\n' \
-  "{\"capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"guest_vcpus\":$GUEST_VCPUS,\"guest_memory_mib\":$GUEST_MEMORY_MIB,\"guest_min_free_disk_mib\":$GUEST_MIN_FREE_DISK_MIB,\"guest_max_free_disk_mib\":$GUEST_MAX_FREE_DISK_MIB,\"max_active_sandboxes\":$MAX_ACTIVE_TOTAL,\"warm_pool_size\":$WARM_POOL_SIZE,\"strict_warm_pool\":$WARM_POOL_STRICT,\"provisioned_capacity\":$provisioned_capacity,\"max_active_sandboxes_per_project\":$MAX_ACTIVE_PROJECT,\"max_starting_sandboxes\":$MAX_STARTING_SANDBOXES,\"network_new_slots\":$NETWORK_NEW_SLOTS,\"network_reused_slots\":$NETWORK_REUSED_SLOTS,\"nbd_pool_size\":$NBD_POOL_SIZE,\"nbd_connections_per_device\":$NBD_CONNECTIONS_PER_DEVICE,\"required_nbd_slots\":$required_nbd_slots,\"hugepages_2m\":$HUGEPAGES,\"required_hugepages_2m\":$required_hugepages,\"lifecycle_headroom_sandboxes\":$HEADROOM_SANDBOXES,\"system_memory_reserve_mib\":$MIN_SYSTEM_MEMORY_MIB,\"system_cpu_reserve\":$MIN_SYSTEM_CPUS,\"firecracker_smt\":$FIRECRACKER_SMT,\"exclusive_cpu_topology\":$EXCLUSIVE_CPU_TOPOLOGY,\"max_numa_physical_cores\":$max_numa_physical_cores,\"host_physical_cores\":$host_physical_cores,\"required_host_cpus\":$required_host_cpus,\"host_memory_mib\":$memory_total_mib,\"host_cpu_count\":$host_cpu_count,\"available_disk_mib\":$available_disk_mib,\"required_disk_mib\":$required_disk_mib}"
+  "{\"capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"guest_vcpus\":$GUEST_VCPUS,\"guest_memory_mib\":$GUEST_MEMORY_MIB,\"guest_min_free_disk_mib\":$GUEST_MIN_FREE_DISK_MIB,\"guest_max_free_disk_mib\":$GUEST_MAX_FREE_DISK_MIB,\"max_active_sandboxes\":$MAX_ACTIVE_TOTAL,\"warm_pool_size\":$WARM_POOL_SIZE,\"strict_warm_pool\":$WARM_POOL_STRICT,\"provisioned_capacity\":$provisioned_capacity,\"max_active_sandboxes_per_project\":$MAX_ACTIVE_PROJECT,\"max_starting_sandboxes\":$MAX_STARTING_SANDBOXES,\"network_new_slots\":$NETWORK_NEW_SLOTS,\"network_reused_slots\":$NETWORK_REUSED_SLOTS,\"nbd_pool_size\":$NBD_POOL_SIZE,\"nbd_connections_per_device\":$NBD_CONNECTIONS_PER_DEVICE,\"required_nbd_slots\":$required_nbd_slots,\"hugepages_2m\":$HUGEPAGES,\"required_hugepages_2m\":$required_hugepages,\"lifecycle_headroom_sandboxes\":$HEADROOM_SANDBOXES,\"system_memory_reserve_mib\":$MIN_SYSTEM_MEMORY_MIB,\"system_cpu_reserve\":$MIN_SYSTEM_CPUS,\"firecracker_smt\":$FIRECRACKER_SMT,\"exclusive_cpu_topology\":$EXCLUSIVE_CPU_TOPOLOGY,\"firecracker_cpuset_cpus\":\"$normalized_cpuset_cpus\",\"firecracker_cpuset_mems\":\"$normalized_cpuset_mems\",\"firecracker_vcpu_cpus\":\"$normalized_vcpu_cpus\",\"firecracker_vmm_cpus\":\"$normalized_vmm_cpus\",\"max_numa_physical_cores\":$max_numa_physical_cores,\"host_physical_cores\":$host_physical_cores,\"required_host_cpus\":$required_host_cpus,\"host_memory_mib\":$memory_total_mib,\"host_cpu_count\":$host_cpu_count,\"available_disk_mib\":$available_disk_mib,\"required_disk_mib\":$required_disk_mib}"

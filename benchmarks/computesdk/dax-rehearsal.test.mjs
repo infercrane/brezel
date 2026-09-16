@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { structuredLines, summarizeAttempts, transcriptValid } from "./dax-rehearsal.mjs";
+import { pairedABIdentity, structuredLines, summarizeAttempts, transcriptValid } from "./dax-rehearsal.mjs";
 
 const completeOutput = `BENCH_PHASE\tprepare\t10
 BENCH_CACHE\tguest_page_cache\tdropped
@@ -81,4 +81,20 @@ test("summarizeAttempts publishes leaderboard phase medians without dropping tai
     p99Ms: 30,
     maxMs: 30,
   });
+});
+
+test("pairedABIdentity is absent or complete and rejects partial identity", () => {
+  assert.equal(pairedABIdentity({}), undefined);
+  assert.deepEqual(pairedABIdentity({
+    BREZEL_DAX_PAIRED_PLAN_ID: "1".repeat(64),
+    BREZEL_DAX_PAIRED_SLOT_ID: "pair-001-baseline",
+    BREZEL_DAX_HOST_IDENTITY_SHA256: "2".repeat(64),
+    BREZEL_DAX_CONFIGURATION_IDENTITY_SHA256: "3".repeat(64),
+  }), {
+    planId: "1".repeat(64),
+    slotId: "pair-001-baseline",
+    hostIdentitySha256: "2".repeat(64),
+    configurationIdentitySha256: "3".repeat(64),
+  });
+  assert.throws(() => pairedABIdentity({ BREZEL_DAX_PAIRED_PLAN_ID: "1".repeat(64) }), /must be supplied together/);
 });

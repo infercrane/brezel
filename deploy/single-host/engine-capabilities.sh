@@ -100,7 +100,13 @@ check_source() {
   require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
     'env:"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY"' "the opt-in exclusive CPU-topology setting"
   require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
-    'FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation' "the fail-closed exclusive CPU-topology release gate"
+    'env:"FIRECRACKER_CPUSET_CPUS"' "the complete isolated CPU set"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'is required when FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true' "the fail-closed exclusive CPU-topology configuration gate"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/cgroup/manager.go" \
+    'cpuset.cpus.partition' "the cgroup v2 isolated-partition validator"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/cgroup/manager.go" \
+    'cpuset.cpus.exclusive.effective' "the effective exclusive CPU-set validator"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
     'no NUMA node has %d distinct physical cores' "fail-closed same-NUMA physical-core selection"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
@@ -109,10 +115,32 @@ check_source() {
     'Firecracker vCPU thread %d was not present after VM start' "complete vCPU-thread placement verification"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
     'stabilizeExclusiveCPUPlacement' "bounded startup reconciliation for late Firecracker helper threads"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
+    'Firecracker is outside the qualified exclusive CPU cgroup' "continuous Firecracker cgroup-membership verification"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
+    'validateEffectiveSandboxCPUSet(cgroupPath, placement.reservedCPUs, expectedMems)' "continuous per-sandbox effective-cpuset verification"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go" \
+    'return fmt.Errorf("Firecracker sandbox %s drifted", check.name)' "fail-closed effective-cpuset drift handling"
+  require_literal "$source_root/packages/orchestrator/pkg/sandbox/sandbox.go" \
+    'exclusive CPU placement requires sandbox cgroup creation' "fail-closed atomic cgroup placement"
+  require_literal "$source_root/packages/orchestrator/pkg/factories/run.go" \
+    'exclusive CPU placement requires complete startup resource reclamation' "fail-closed exclusive startup reclamation"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/process.go" \
     'monitorExclusiveCPUPlacement' "continuous fail-closed CPU-affinity reconciliation"
   require_literal "$source_root/packages/orchestrator/pkg/sandbox/fc/process.go" \
     'reconcile exclusive Firecracker CPU topology' "runtime affinity-drift failure propagation"
+  require_literal "$source_root/packages/orchestrator/pkg/template/build/buildcontext/context.go" \
+    'Ext4DirIndex bool' "the resolved ext4 directory-index build option"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'env:"BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS"' "the operator-owned ext4 directory-index template allowlist"
+  require_literal "$source_root/packages/orchestrator/pkg/cfg/model.go" \
+    'BuildExt4DirIndexForTemplate' "exact template selection for ext4 directory indexing"
+  require_literal "$source_root/packages/orchestrator/pkg/template/build/builder.go" \
+    'featureflags.BuildExt4DirIndex' "the per-template ext4 directory-index rollout"
+  require_literal "$source_root/packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go" \
+    'DirIndex: r.buildContext.Rootfs.Ext4DirIndex' "mkfs using the resolved ext4 directory-index option"
+  require_literal "$source_root/packages/orchestrator/pkg/template/build/phases/base/hash.go" \
+    'ext4-dir-index:v1' "the ext4 directory-index base-layer cache identity"
   require_literal "$source_root/packages/orchestrator/pkg/server/main.go" \
     "resolveStartingSandboxesLimit" "the local concurrent-start limit resolver"
   require_literal "$source_root/packages/api/internal/orchestrator/placement/placement.go" \
@@ -183,7 +211,7 @@ check_source() {
   require_literal "$source_root/packages/envd/internal/services/process/handler/journal_test.go" \
     'TestEventJournalAtomicReplayToWaitHandoff' "the gap-free replay-to-live handoff regression test"
 
-  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","rootfs_read_path":{"local":"allocation-free","whole_writable_range":"single-cache-read","mixed_range":"layered-fallback"},"durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"disabled-pending-cgroup-cpuset-qualification","experimental_affinity_code":"present-not-runnable"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64,"connections_per_device":{"default":1,"minimum":1,"maximum":4,"values_above_one":"pending-kvm-ab-qualification"},"lifecycle":"attempt-owned-idempotent-cleanup"},"base_template":{"cpu_memory_and_free_disk":"operator_configurable"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
+  printf '%s\n' '{"source_contract":"conformant","snapshot_restore":"present","lazy_paging":"present","template_prefetch":"best_effort_requires_live_gate","cow_rootfs":"present","local_template_cache":"present","rootfs_read_path":{"local":"allocation-free","whole_writable_range":"single-cache-read","mixed_range":"layered-fallback"},"durable_workspace":{"write_acknowledgement":"fsync_before_success","namespace_acknowledgement":"parent_fsync_before_success"},"start_admission":{"local_limit":"present","resource_exhausted_backoff":"bounded-cancellation-aware"},"cpu_topology":{"guest_smt":"operator-configurable-default-disabled","exclusive_placement":"qualified-opt-in-disabled-by-default","isolation":"cgroup-v2-isolated-partition-plus-thread-affinity"},"snapshot_diff_cache":{"configurable_ttl":"present","minimum_ttl_seconds":3600,"physical_byte_high_water":"present","disk_usage_high_water":"present","observation_failure":"evict_conservatively","metrics":"present"},"network_slot_pool":{"operator_configurable":true,"default_new":32,"default_reused":100},"nbd_pool":{"operator_configurable":true,"default":64,"connections_per_device":{"default":1,"minimum":1,"maximum":4,"values_above_one":"pending-kvm-ab-qualification"},"lifecycle":"attempt-owned-idempotent-cleanup"},"base_template":{"cpu_memory_and_free_disk":"operator_configurable","ext4_dir_index":"targeted-opt-in-default-disabled"},"envd_process_lookup":{"live_tag_resolution":"complete-map-scan","regression_test":"multi-process"},"envd_process_output_recovery":{"protocol":"generation-bound-cursor-journal","process_bytes":8388608,"store_bytes":33554432,"eviction":"fail-closed"},"network_version":1}'
 }
 
 find_orchestrator_pid() {
@@ -356,6 +384,25 @@ check_live() {
     fail "the live Firecracker SMT setting is $actual_firecracker_smt; expected $expected_firecracker_smt"
   [ "$actual_exclusive_cpu_topology" = "$expected_exclusive_cpu_topology" ] || \
     fail "the live exclusive CPU-topology setting is $actual_exclusive_cpu_topology; expected $expected_exclusive_cpu_topology"
+  expected_cpuset_cpus=${10:-}
+  expected_cpuset_mems=${11:-}
+  expected_vcpu_cpus=${12:-}
+  expected_vmm_cpus=${13:-}
+  actual_cpuset_cpus=$(process_environment_value "$orchestrator_pid" FIRECRACKER_CPUSET_CPUS)
+  actual_cpuset_mems=$(process_environment_value "$orchestrator_pid" FIRECRACKER_CPUSET_MEMS)
+  actual_vcpu_cpus=$(process_environment_value "$orchestrator_pid" FIRECRACKER_VCPU_CPUS)
+  actual_vmm_cpus=$(process_environment_value "$orchestrator_pid" FIRECRACKER_VMM_CPUS)
+  [ "$actual_cpuset_cpus" = "$expected_cpuset_cpus" ] || fail "the live Firecracker cpuset differs from the configured contract"
+  [ "$actual_cpuset_mems" = "$expected_cpuset_mems" ] || fail "the live Firecracker NUMA set differs from the configured contract"
+  [ "$actual_vcpu_cpus" = "$expected_vcpu_cpus" ] || fail "the live Firecracker vCPU set differs from the configured contract"
+  [ "$actual_vmm_cpus" = "$expected_vmm_cpus" ] || fail "the live Firecracker VMM set differs from the configured contract"
+  if [ "$expected_exclusive_cpu_topology" = true ]; then
+    [ -n "$expected_cpuset_cpus" ] && [ -n "$expected_cpuset_mems" ] && [ -n "$expected_vcpu_cpus" ] && [ -n "$expected_vmm_cpus" ] ||
+      fail "exclusive CPU topology is enabled without the complete cpuset contract"
+  else
+    [ -z "$expected_cpuset_cpus$expected_cpuset_mems$expected_vcpu_cpus$expected_vmm_cpus" ] ||
+      fail "cpuset values are armed while exclusive CPU topology is disabled"
+  fi
   [ -r /sys/module/nbd/parameters/nbds_max ] || \
     fail "the live host does not expose the kernel NBD device ceiling"
   kernel_nbd_max=$(cat /sys/module/nbd/parameters/nbds_max)
@@ -443,7 +490,7 @@ case "${1:-}" in
     check_cache
     ;;
   *)
-    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID MIN_READY_NETWORK_SLOTS MAX_STARTING_SANDBOXES NETWORK_NEW_SLOTS NETWORK_REUSED_SLOTS NBD_POOL_SIZE NBD_CONNECTIONS_PER_DEVICE FIRECRACKER_SMT EXCLUSIVE_CPU_TOPOLOGY | cache" >&2
+    echo "usage: $0 source ENGINE_SOURCE_DIR | live ENGINE_SANDBOX_ID MIN_READY_NETWORK_SLOTS MAX_STARTING_SANDBOXES NETWORK_NEW_SLOTS NETWORK_REUSED_SLOTS NBD_POOL_SIZE NBD_CONNECTIONS_PER_DEVICE FIRECRACKER_SMT EXCLUSIVE_CPU_TOPOLOGY CPUSET_CPUS CPUSET_MEMS VCPU_CPUS VMM_CPUS | cache" >&2
     exit 2
     ;;
 esac

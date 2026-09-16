@@ -1,0 +1,990 @@
+diff --git a/packages/orchestrator/pkg/cfg/model.go b/packages/orchestrator/pkg/cfg/model.go
+index 1c85f1a..07951ae 100644
+--- a/packages/orchestrator/pkg/cfg/model.go
++++ b/packages/orchestrator/pkg/cfg/model.go
+@@ -29,6 +29,10 @@ type BuilderConfig struct {
+ 	FirecrackerVersionsDir          string `env:"FIRECRACKER_VERSIONS_DIR" envDefault:"/fc-versions"`
+ 	FirecrackerSMT                  bool   `env:"FIRECRACKER_SMT"          envDefault:"false"`
+ 	FirecrackerExclusiveCPUTopology bool   `env:"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY" envDefault:"false"`
++	FirecrackerCPUSetCPUs           string `env:"FIRECRACKER_CPUSET_CPUS"`
++	FirecrackerCPUSetMems           string `env:"FIRECRACKER_CPUSET_MEMS"`
++	FirecrackerVCPUCPUs             string `env:"FIRECRACKER_VCPU_CPUS"`
++	FirecrackerVMMCPUs              string `env:"FIRECRACKER_VMM_CPUS"`
+ 	BusyboxVersion                  string `env:"BUSYBOX_VERSION"          envDefault:"1.36.1"`
+ 	HostBusyboxDir                  string `env:"HOST_BUSYBOX_DIR"         envDefault:"/fc-busybox"`
+ 	HostEnvdPath                    string `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
+@@ -182,8 +186,8 @@ func Parse() (Config, error) {
+ 	if err != nil {
+ 		return config, err
+ 	}
+-	if config.FirecrackerExclusiveCPUTopology {
+-		return config, fmt.Errorf("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation")
++	if err := validateExclusiveCPUConfig(config.BuilderConfig); err != nil {
++		return config, err
+ 	}
+ 	if config.NBDConnectionsPerDevice < 1 || config.NBDConnectionsPerDevice > 4 {
+ 		return config, fmt.Errorf("NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4")
+@@ -249,8 +253,8 @@ func ParseBuilder() (BuilderConfig, error) {
+ 	if err != nil {
+ 		return BuilderConfig{}, err
+ 	}
+-	if model.FirecrackerExclusiveCPUTopology {
+-		return BuilderConfig{}, fmt.Errorf("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation")
++	if err := validateExclusiveCPUConfig(model); err != nil {
++		return BuilderConfig{}, err
+ 	}
+ 	if model.NBDConnectionsPerDevice < 1 || model.NBDConnectionsPerDevice > 4 {
+ 		return BuilderConfig{}, fmt.Errorf("NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4")
+@@ -266,3 +270,31 @@ func ParseBuilder() (BuilderConfig, error) {
+ 
+ 	return model, nil
+ }
++
++func validateExclusiveCPUConfig(config BuilderConfig) error {
++	values := []struct{ name, value string }{
++		{name: "FIRECRACKER_CPUSET_CPUS", value: config.FirecrackerCPUSetCPUs},
++		{name: "FIRECRACKER_CPUSET_MEMS", value: config.FirecrackerCPUSetMems},
++		{name: "FIRECRACKER_VCPU_CPUS", value: config.FirecrackerVCPUCPUs},
++		{name: "FIRECRACKER_VMM_CPUS", value: config.FirecrackerVMMCPUs},
++	}
++	if !config.FirecrackerExclusiveCPUTopology {
++		for _, item := range values {
++			if strings.TrimSpace(item.value) != "" {
++				return fmt.Errorf("%s requires FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true", item.name)
++			}
++		}
++
++		return nil
++	}
++	if config.FirecrackerSMT {
++		return fmt.Errorf("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY requires FIRECRACKER_SMT=false")
++	}
++	for _, item := range values {
++		if strings.TrimSpace(item.value) == "" {
++			return fmt.Errorf("%s is required when FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true", item.name)
++		}
++	}
++
++	return nil
++}
+diff --git a/packages/orchestrator/pkg/cfg/model_test.go b/packages/orchestrator/pkg/cfg/model_test.go
+index 3d08d98..fdd0608 100644
+--- a/packages/orchestrator/pkg/cfg/model_test.go
++++ b/packages/orchestrator/pkg/cfg/model_test.go
+@@ -22,11 +22,42 @@ func TestParse(t *testing.T) {
+ 		assert.Equal(t, 1, config.NBDConnectionsPerDevice)
+ 	})
+ 
+-	t.Run("exclusive Firecracker CPU topology fails closed until cpuset isolation is qualified", func(t *testing.T) {
++	t.Run("exclusive Firecracker CPU topology requires the complete cpuset contract", func(t *testing.T) {
+ 		t.Setenv("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY", "true")
+ 
+ 		_, err := Parse()
+-		require.ErrorContains(t, err, "not qualified without cgroup cpuset isolation")
++		require.ErrorContains(t, err, "FIRECRACKER_CPUSET_CPUS is required")
++	})
++
++	t.Run("exclusive Firecracker CPU topology accepts a complete contract", func(t *testing.T) {
++		t.Setenv("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY", "true")
++		t.Setenv("FIRECRACKER_CPUSET_CPUS", "2-19")
++		t.Setenv("FIRECRACKER_CPUSET_MEMS", "0")
++		t.Setenv("FIRECRACKER_VCPU_CPUS", "2,4,6,8,10,12,14,16")
++		t.Setenv("FIRECRACKER_VMM_CPUS", "18-19")
++
++		config, err := Parse()
++		require.NoError(t, err)
++		assert.True(t, config.FirecrackerExclusiveCPUTopology)
++	})
++
++	t.Run("exclusive Firecracker CPU topology rejects guest SMT", func(t *testing.T) {
++		t.Setenv("FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY", "true")
++		t.Setenv("FIRECRACKER_SMT", "true")
++		t.Setenv("FIRECRACKER_CPUSET_CPUS", "2-19")
++		t.Setenv("FIRECRACKER_CPUSET_MEMS", "0")
++		t.Setenv("FIRECRACKER_VCPU_CPUS", "2,4,6,8,10,12,14,16")
++		t.Setenv("FIRECRACKER_VMM_CPUS", "18-19")
++
++		_, err := Parse()
++		require.ErrorContains(t, err, "requires FIRECRACKER_SMT=false")
++	})
++
++	t.Run("cpuset settings cannot be armed while exclusive placement is disabled", func(t *testing.T) {
++		t.Setenv("FIRECRACKER_VCPU_CPUS", "2-16:2")
++
++		_, err := Parse()
++		require.ErrorContains(t, err, "requires FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true")
+ 	})
+ 
+ 	t.Run("firecracker SMT can be enabled explicitly", func(t *testing.T) {
+diff --git a/packages/orchestrator/pkg/factories/run.go b/packages/orchestrator/pkg/factories/run.go
+index 5e497f0..dc5edd5 100644
+--- a/packages/orchestrator/pkg/factories/run.go
++++ b/packages/orchestrator/pkg/factories/run.go
+@@ -669,7 +669,11 @@ func run(config cfg.Config, opts Options) (success bool) {
+ 	hostStatsDelivery := clickhousehoststats.NewMultiDelivery(hostStatsTargets...)
+ 
+ 	// cgroup manager for resource accounting
+-	cgroupManager, err := cgroup.NewManager()
++	cgroupManager, err := cgroup.NewManager(cgroup.IsolationConfig{
++		Enabled: config.FirecrackerExclusiveCPUTopology,
++		CPUs:    config.FirecrackerCPUSetCPUs,
++		Mems:    config.FirecrackerCPUSetMems,
++	})
+ 	if err != nil {
+ 		logger.L().Fatal(ctx, "failed to initialize cgroup manager", zap.Error(err))
+ 	}
+@@ -772,6 +776,9 @@ func run(config cfg.Config, opts Options) (success bool) {
+ 	// partial failure leaves anchor namespaces that must keep their v2 set entries.
+ 	reclaimClean := false
+ 	reclaimRan := false
++	if usesSandboxRuntime && config.FirecrackerExclusiveCPUTopology && config.DisableStartupReclaim {
++		logger.L().Fatal(ctx, "exclusive CPU placement requires startup resource reclamation")
++	}
+ 	if usesSandboxRuntime && !config.DisableStartupReclaim {
+ 		reclaimRan = true
+ 		summary := startupreclaim.Run(ctx, startupreclaim.Config{
+@@ -781,6 +788,9 @@ func run(config cfg.Config, opts Options) (success bool) {
+ 			StorageConfig: config.StorageConfig,
+ 		})
+ 		reclaimClean = !summary.HasFailures()
++		if config.FirecrackerExclusiveCPUTopology && !reclaimClean {
++			logger.L().Fatal(ctx, "exclusive CPU placement requires complete startup resource reclamation")
++		}
+ 	}
+ 
+ 	// device pool
+diff --git a/packages/orchestrator/pkg/sandbox/cgroup/manager.go b/packages/orchestrator/pkg/sandbox/cgroup/manager.go
+index 5f7f66d..0aa0083 100644
+--- a/packages/orchestrator/pkg/sandbox/cgroup/manager.go
++++ b/packages/orchestrator/pkg/sandbox/cgroup/manager.go
+@@ -349,29 +349,54 @@ type Manager interface {
+ 	Destroy(ctx context.Context, cgroupName string) error
+ }
+ 
+-type managerImpl struct{}
++type IsolationConfig struct {
++	Enabled bool
++	CPUs    string
++	Mems    string
++}
++
++type managerImpl struct {
++	rootPath  string
++	isolation IsolationConfig
++}
+ 
+ // NewManager creates a new cgroup manager
+ // Returns error if cgroups v2 is not available on the system
+-func NewManager() (Manager, error) {
++func NewManager(isolation ...IsolationConfig) (Manager, error) {
+ 	if _, err := os.Stat(filepath.Join(cgroupV2MountPoint, "cgroup.controllers")); err != nil {
+ 		return nil, fmt.Errorf("cgroups v2 not available: %w", err)
+ 	}
++	config := IsolationConfig{}
++	if len(isolation) > 1 {
++		return nil, fmt.Errorf("at most one cgroup isolation configuration is allowed")
++	}
++	if len(isolation) == 1 {
++		config = isolation[0]
++	}
+ 
+-	return &managerImpl{}, nil
++	return &managerImpl{rootPath: RootCgroupPath, isolation: config}, nil
+ }
+ 
+ func (m *managerImpl) Initialize(ctx context.Context) error {
+-	if err := os.MkdirAll(RootCgroupPath, 0o755); err != nil {
++	rootPath := m.root()
++	if m.isolation.Enabled {
++		if err := validateIsolationRoot(rootPath, m.isolation); err != nil {
++			return fmt.Errorf("exclusive CPU cgroup is not qualified: %w", err)
++		}
++	} else if err := os.MkdirAll(rootPath, 0o755); err != nil {
+ 		return fmt.Errorf("failed to create root cgroup directory: %w", err)
+ 	}
+ 
+-	controllersPath := filepath.Join(RootCgroupPath, "cgroup.subtree_control")
+-	if err := os.WriteFile(controllersPath, []byte("+cpu +memory"), 0o644); err != nil {
++	controllers := "+cpu +memory"
++	if m.isolation.Enabled {
++		controllers += " +cpuset"
++	}
++	controllersPath := filepath.Join(rootPath, "cgroup.subtree_control")
++	if err := os.WriteFile(controllersPath, []byte(controllers), 0o644); err != nil {
+ 		return fmt.Errorf("failed to enable controllers: %w", err)
+ 	}
+ 
+-	logger.L().Info(ctx, "initialized root cgroup", zap.String("path", RootCgroupPath))
++	logger.L().Info(ctx, "initialized root cgroup", zap.String("path", rootPath))
+ 
+ 	return nil
+ }
+@@ -537,7 +562,116 @@ func (m *managerImpl) readAndResetMemoryPeak(ctx context.Context, memoryPeakFile
+ 
+ // cgroupPath returns the filesystem path for a sandbox's cgroup
+ func (m *managerImpl) cgroupPath(cgroupName string) string {
+-	return filepath.Join(RootCgroupPath, cgroupName)
++	return filepath.Join(m.root(), cgroupName)
++}
++
++func (m *managerImpl) root() string {
++	if m.rootPath == "" {
++		return RootCgroupPath
++	}
++
++	return m.rootPath
++}
++
++func validateIsolationRoot(root string, config IsolationConfig) error {
++	if !config.Enabled {
++		return nil
++	}
++	info, err := os.Lstat(root)
++	if err != nil {
++		return fmt.Errorf("inspect %s: %w", root, err)
++	}
++	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
++		return fmt.Errorf("%s must be a non-symlink directory", root)
++	}
++	checks := []struct {
++		name     string
++		expected string
++		set      bool
++	}{
++		{name: "cpuset.cpus.partition", expected: "isolated"},
++		{name: "cpuset.cpus.effective", expected: config.CPUs, set: true},
++		{name: "cpuset.cpus.exclusive.effective", expected: config.CPUs, set: true},
++		{name: "cpuset.mems.effective", expected: config.Mems, set: true},
++	}
++	for _, check := range checks {
++		value, readErr := os.ReadFile(filepath.Join(root, check.name))
++		if readErr != nil {
++			return fmt.Errorf("read %s: %w", check.name, readErr)
++		}
++		actual := strings.TrimSpace(string(value))
++		if check.set {
++			equal, compareErr := indexSetsEqual(actual, check.expected)
++			if compareErr != nil {
++				return fmt.Errorf("validate %s: %w", check.name, compareErr)
++			}
++			if !equal {
++				return fmt.Errorf("%s is %q; expected %q", check.name, actual, check.expected)
++			}
++		} else if actual != check.expected {
++			return fmt.Errorf("%s is %q; expected %q", check.name, actual, check.expected)
++		}
++	}
++	procs, err := os.ReadFile(filepath.Join(root, "cgroup.procs"))
++	if err != nil {
++		return fmt.Errorf("read cgroup.procs: %w", err)
++	}
++	if strings.TrimSpace(string(procs)) != "" {
++		return fmt.Errorf("exclusive CPU cgroup contains direct processes before orchestrator start")
++	}
++
++	return nil
++}
++
++func indexSetsEqual(left, right string) (bool, error) {
++	a, err := parseIndexSet(left)
++	if err != nil {
++		return false, fmt.Errorf("parse %q: %w", left, err)
++	}
++	b, err := parseIndexSet(right)
++	if err != nil {
++		return false, fmt.Errorf("parse %q: %w", right, err)
++	}
++	return slices.Equal(a, b), nil
++}
++
++func parseIndexSet(value string) ([]int, error) {
++	value = strings.TrimSpace(value)
++	if value == "" {
++		return nil, errors.New("empty index set")
++	}
++	seen := make(map[int]struct{})
++	for _, part := range strings.Split(value, ",") {
++		part = strings.TrimSpace(part)
++		bounds := strings.Split(part, "-")
++		if len(bounds) > 2 || bounds[0] == "" {
++			return nil, fmt.Errorf("invalid component %q", part)
++		}
++		first, err := strconv.Atoi(bounds[0])
++		if err != nil || first < 0 {
++			return nil, fmt.Errorf("invalid component %q", part)
++		}
++		last := first
++		if len(bounds) == 2 {
++			last, err = strconv.Atoi(bounds[1])
++			if err != nil || last < first {
++				return nil, fmt.Errorf("invalid component %q", part)
++			}
++		}
++		if last > 1<<20 || last-first > 1<<20 {
++			return nil, fmt.Errorf("component %q exceeds the supported range", part)
++		}
++		for index := first; index <= last; index++ {
++			seen[index] = struct{}{}
++		}
++	}
++	result := make([]int, 0, len(seen))
++	for index := range seen {
++		result = append(result, index)
++	}
++	slices.Sort(result)
++
++	return result, nil
+ }
+ 
+ func IsSandboxCgroupName(name string) bool {
+diff --git a/packages/orchestrator/pkg/sandbox/cgroup/manager_test.go b/packages/orchestrator/pkg/sandbox/cgroup/manager_test.go
+index cb1ea5e..7997502 100644
+--- a/packages/orchestrator/pkg/sandbox/cgroup/manager_test.go
++++ b/packages/orchestrator/pkg/sandbox/cgroup/manager_test.go
+@@ -54,6 +54,45 @@ func TestNewManager(t *testing.T) {
+ 	require.NotNil(t, mgr)
+ }
+ 
++func TestValidateIsolationRoot(t *testing.T) {
++	t.Parallel()
++
++	root := t.TempDir()
++	write := func(name, value string) {
++		t.Helper()
++		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(value), 0o600))
++	}
++	write("cpuset.cpus.partition", "isolated\n")
++	write("cpuset.cpus.effective", "2-19\n")
++	write("cpuset.cpus.exclusive.effective", "2-19\n")
++	write("cpuset.mems.effective", "0\n")
++	write("cgroup.procs", "\n")
++
++	config := IsolationConfig{Enabled: true, CPUs: "2,3,4-19", Mems: "0"}
++	require.NoError(t, validateIsolationRoot(root, config))
++
++	write("cpuset.cpus.partition", "member\n")
++	require.ErrorContains(t, validateIsolationRoot(root, config), "expected \"isolated\"")
++	write("cpuset.cpus.partition", "isolated\n")
++	write("cpuset.cpus.exclusive.effective", "2-18\n")
++	require.ErrorContains(t, validateIsolationRoot(root, config), "cpuset.cpus.exclusive.effective")
++	write("cpuset.cpus.exclusive.effective", "2-19\n")
++	write("cgroup.procs", "123\n")
++	require.ErrorContains(t, validateIsolationRoot(root, config), "contains direct processes")
++}
++
++func TestParseIndexSet(t *testing.T) {
++	t.Parallel()
++
++	parsed, err := parseIndexSet("4,1-2,2")
++	require.NoError(t, err)
++	require.Equal(t, []int{1, 2, 4}, parsed)
++	for _, invalid := range []string{"", "-1", "2-1", "1-2-3", "x"} {
++		_, err := parseIndexSet(invalid)
++		require.Error(t, err, invalid)
++	}
++}
++
+ func TestManagerInitialize(t *testing.T) {
+ 	t.Parallel()
+ 
+diff --git a/packages/orchestrator/pkg/sandbox/cgroup_required_test.go b/packages/orchestrator/pkg/sandbox/cgroup_required_test.go
+new file mode 100644
+index 0000000..0be926f
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/cgroup_required_test.go
+@@ -0,0 +1,42 @@
++//go:build linux
++
++package sandbox
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/cgroup"
++)
++
++type failingCgroupManager struct{ err error }
++
++func (m failingCgroupManager) Initialize(context.Context) error { return m.err }
++
++func (m failingCgroupManager) Create(context.Context, string) (*cgroup.CgroupHandle, error) {
++	return nil, m.err
++}
++
++func (m failingCgroupManager) Destroy(context.Context, string) error { return m.err }
++
++func TestCreateCgroupFailsClosedWhenExclusivePlacementRequiresIt(t *testing.T) {
++	t.Parallel()
++
++	want := errors.New("cgroup unavailable")
++	handle, fd, err := createCgroup(t.Context(), failingCgroupManager{err: want}, "sbx-test", true)
++	require.Nil(t, handle)
++	require.Equal(t, cgroup.NoCgroupFD, fd)
++	require.ErrorIs(t, err, want)
++}
++
++func TestCreateCgroupRetainsLegacyFailOpenBehaviorWhenIsolationIsDisabled(t *testing.T) {
++	t.Parallel()
++
++	handle, fd, err := createCgroup(t.Context(), failingCgroupManager{err: errors.New("cgroup unavailable")}, "sbx-test", false)
++	require.NoError(t, err)
++	require.Nil(t, handle)
++	require.Equal(t, cgroup.NoCgroupFD, fd)
++}
+diff --git a/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go
+index c90700e..477f48f 100644
+--- a/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go
++++ b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go
+@@ -22,9 +22,12 @@ type hostCPU struct {
+ }
+ 
+ type exclusiveCPUPlacement struct {
+-	vcpuCPUs   []int
+-	helperCPUs []int
+-	lease      *os.File
++	vcpuCPUs     []int
++	helperCPUs   []int
++	reservedCPUs []int
++	cgroupRoot   string
++	expectedMems string
++	lease        *os.File
+ }
+ 
+ type firecrackerTask struct {
+@@ -45,7 +48,7 @@ const (
+ 	exclusiveCPUPlacementPollInterval  = 10 * time.Millisecond
+ )
+ 
+-func acquireExclusiveCPUPlacement(vcpuCount int) (*exclusiveCPUPlacement, error) {
++func acquireExclusiveCPUPlacement(vcpuCount int, reservedList, vcpuList, vmmList, expectedMems string) (*exclusiveCPUPlacement, error) {
+ 	lease, err := acquireExclusiveCPULease(exclusiveCPULockPath)
+ 	if err != nil {
+ 		return nil, err
+@@ -57,14 +60,28 @@ func acquireExclusiveCPUPlacement(vcpuCount int) (*exclusiveCPUPlacement, error)
+ 		}
+ 	}()
+ 
+-	topology, err := readHostCPUTopology(os.Getpid())
++	reserved, err := parseCPUList(reservedList)
++	if err != nil {
++		return nil, fmt.Errorf("parse FIRECRACKER_CPUSET_CPUS: %w", err)
++	}
++	vcpuCPUs, err := parseCPUList(vcpuList)
++	if err != nil {
++		return nil, fmt.Errorf("parse FIRECRACKER_VCPU_CPUS: %w", err)
++	}
++	vmmCPUs, err := parseCPUList(vmmList)
++	if err != nil {
++		return nil, fmt.Errorf("parse FIRECRACKER_VMM_CPUS: %w", err)
++	}
++	topology, err := readOnlineHostCPUTopology()
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	placement, err := chooseExclusiveCPUPlacement(topology, vcpuCount)
++	placement, err := configuredExclusiveCPUPlacement(topology, reserved, vcpuCPUs, vmmCPUs, vcpuCount)
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	placement.cgroupRoot = "/sys/fs/cgroup/e2b"
++	placement.expectedMems = expectedMems
+ 	placement.lease = lease
+ 	releaseOnError = false
+ 	return &placement, nil
+@@ -126,6 +143,9 @@ func (p *exclusiveCPUPlacement) release() error {
+ }
+ 
+ func applyExclusiveCPUPlacement(pid int, placement *exclusiveCPUPlacement) error {
++	if err := validateExclusiveCPUIsolation(pid, placement); err != nil {
++		return err
++	}
+ 	tasks, err := readFirecrackerTasks(pid)
+ 	if err != nil {
+ 		return err
+@@ -142,6 +162,251 @@ func applyExclusiveCPUPlacement(pid int, placement *exclusiveCPUPlacement) error
+ 	return nil
+ }
+ 
++func configuredExclusiveCPUPlacement(topology []hostCPU, reserved, vcpuCPUs, vmmCPUs []int, vcpuCount int) (exclusiveCPUPlacement, error) {
++	if len(vcpuCPUs) != vcpuCount {
++		return exclusiveCPUPlacement{}, fmt.Errorf("configured %d vCPU CPUs for a %d-vCPU guest", len(vcpuCPUs), vcpuCount)
++	}
++	if len(vmmCPUs) == 0 {
++		return exclusiveCPUPlacement{}, fmt.Errorf("no VMM CPUs configured")
++	}
++	type coreKey struct{ node, packageID, coreID int }
++	byID := make(map[int]hostCPU, len(topology))
++	byCore := make(map[coreKey][]int)
++	for _, cpu := range topology {
++		byID[cpu.id] = cpu
++		key := coreKey{node: cpu.node, packageID: cpu.packageID, coreID: cpu.coreID}
++		byCore[key] = append(byCore[key], cpu.id)
++	}
++	reservedSet := intSet(reserved)
++	vcpuSet := intSet(vcpuCPUs)
++	vmmSet := intSet(vmmCPUs)
++	for cpu := range vcpuSet {
++		if _, ok := vmmSet[cpu]; ok {
++			return exclusiveCPUPlacement{}, fmt.Errorf("CPU %d is assigned to both a vCPU and the VMM", cpu)
++		}
++	}
++	selectedCores := make(map[coreKey]struct{}, len(vcpuCPUs))
++	selectedNode := -1
++	for _, id := range vcpuCPUs {
++		cpu, ok := byID[id]
++		if !ok {
++			return exclusiveCPUPlacement{}, fmt.Errorf("vCPU CPU %d is not online", id)
++		}
++		if _, ok := reservedSet[id]; !ok {
++			return exclusiveCPUPlacement{}, fmt.Errorf("vCPU CPU %d is outside the isolated cpuset", id)
++		}
++		key := coreKey{node: cpu.node, packageID: cpu.packageID, coreID: cpu.coreID}
++		if _, exists := selectedCores[key]; exists {
++			return exclusiveCPUPlacement{}, fmt.Errorf("multiple vCPUs share physical core %d/%d", cpu.packageID, cpu.coreID)
++		}
++		selectedCores[key] = struct{}{}
++		if selectedNode == -1 {
++			selectedNode = cpu.node
++		} else if cpu.node != selectedNode {
++			return exclusiveCPUPlacement{}, fmt.Errorf("vCPU CPUs cross NUMA nodes")
++		}
++	}
++	var vmmCore coreKey
++	for index, id := range vmmCPUs {
++		cpu, ok := byID[id]
++		if !ok {
++			return exclusiveCPUPlacement{}, fmt.Errorf("VMM CPU %d is not online", id)
++		}
++		if _, ok := reservedSet[id]; !ok {
++			return exclusiveCPUPlacement{}, fmt.Errorf("VMM CPU %d is outside the isolated cpuset", id)
++		}
++		key := coreKey{node: cpu.node, packageID: cpu.packageID, coreID: cpu.coreID}
++		if index == 0 {
++			vmmCore = key
++		} else if key != vmmCore {
++			return exclusiveCPUPlacement{}, fmt.Errorf("VMM CPUs span more than one physical core")
++		}
++	}
++	if vmmCore.node != selectedNode {
++		return exclusiveCPUPlacement{}, fmt.Errorf("VMM and vCPU CPUs cross NUMA nodes")
++	}
++	if _, exists := selectedCores[vmmCore]; exists {
++		return exclusiveCPUPlacement{}, fmt.Errorf("VMM shares a physical core with a vCPU")
++	}
++	expectedReserved := make(map[int]struct{})
++	for core := range selectedCores {
++		for _, id := range byCore[core] {
++			expectedReserved[id] = struct{}{}
++		}
++	}
++	for _, id := range byCore[vmmCore] {
++		expectedReserved[id] = struct{}{}
++		if _, ok := vmmSet[id]; !ok {
++			return exclusiveCPUPlacement{}, fmt.Errorf("VMM cpuset omits sibling CPU %d", id)
++		}
++	}
++	if !sameIntSet(reservedSet, expectedReserved) {
++		return exclusiveCPUPlacement{}, fmt.Errorf("isolated cpuset must contain exactly every sibling of the vCPU and VMM physical cores")
++	}
++	placement := exclusiveCPUPlacement{
++		vcpuCPUs:     append([]int(nil), vcpuCPUs...),
++		helperCPUs:   append([]int(nil), vmmCPUs...),
++		reservedCPUs: append([]int(nil), reserved...),
++	}
++	sort.Ints(placement.vcpuCPUs)
++	sort.Ints(placement.helperCPUs)
++	sort.Ints(placement.reservedCPUs)
++
++	return placement, nil
++}
++
++func intSet(values []int) map[int]struct{} {
++	result := make(map[int]struct{}, len(values))
++	for _, value := range values {
++		result[value] = struct{}{}
++	}
++	return result
++}
++
++func sameIntSet(left, right map[int]struct{}) bool {
++	if len(left) != len(right) {
++		return false
++	}
++	for value := range left {
++		if _, ok := right[value]; !ok {
++			return false
++		}
++	}
++	return true
++}
++
++func parseCPUList(value string) ([]int, error) {
++	value = strings.TrimSpace(value)
++	if value == "" {
++		return nil, fmt.Errorf("empty CPU list")
++	}
++	seen := make(map[int]struct{})
++	for _, component := range strings.Split(value, ",") {
++		bounds := strings.Split(strings.TrimSpace(component), "-")
++		if len(bounds) > 2 || len(bounds) == 0 || bounds[0] == "" {
++			return nil, fmt.Errorf("invalid component %q", component)
++		}
++		first, err := strconv.Atoi(bounds[0])
++		if err != nil || first < 0 {
++			return nil, fmt.Errorf("invalid component %q", component)
++		}
++		last := first
++		if len(bounds) == 2 {
++			last, err = strconv.Atoi(bounds[1])
++			if err != nil || last < first {
++				return nil, fmt.Errorf("invalid component %q", component)
++			}
++		}
++		if last > 1<<20 || last-first > 1<<20 {
++			return nil, fmt.Errorf("component %q exceeds supported range", component)
++		}
++		for cpu := first; cpu <= last; cpu++ {
++			seen[cpu] = struct{}{}
++		}
++	}
++	result := make([]int, 0, len(seen))
++	for cpu := range seen {
++		result = append(result, cpu)
++	}
++	sort.Ints(result)
++
++	return result, nil
++}
++
++func validateExclusiveCPUIsolation(pid int, placement *exclusiveCPUPlacement) error {
++	if placement == nil || placement.cgroupRoot == "" {
++		return fmt.Errorf("exclusive CPU isolation contract is missing")
++	}
++	checks := []struct {
++		name     string
++		expected string
++		set      []int
++	}{
++		{name: "cpuset.cpus.partition", expected: "isolated"},
++		{name: "cpuset.cpus.effective", set: placement.reservedCPUs},
++		{name: "cpuset.cpus.exclusive.effective", set: placement.reservedCPUs},
++	}
++	for _, check := range checks {
++		value, err := os.ReadFile(filepath.Join(placement.cgroupRoot, check.name))
++		if err != nil {
++			return fmt.Errorf("read exclusive CPU %s: %w", check.name, err)
++		}
++		actual := strings.TrimSpace(string(value))
++		if check.set != nil {
++			parsed, err := parseCPUList(actual)
++			if err != nil || !equalInts(parsed, check.set) {
++				return fmt.Errorf("exclusive CPU %s drifted to %q", check.name, actual)
++			}
++		} else if actual != check.expected {
++			return fmt.Errorf("exclusive CPU %s drifted to %q", check.name, actual)
++		}
++	}
++	mems, err := os.ReadFile(filepath.Join(placement.cgroupRoot, "cpuset.mems.effective"))
++	if err != nil {
++		return fmt.Errorf("read exclusive CPU cpuset.mems.effective: %w", err)
++	}
++	actualMems, err := parseCPUList(strings.TrimSpace(string(mems)))
++	if err != nil {
++		return fmt.Errorf("parse exclusive CPU cpuset.mems.effective: %w", err)
++	}
++	expectedMems, err := parseCPUList(placement.expectedMems)
++	if err != nil || !equalInts(actualMems, expectedMems) {
++		return fmt.Errorf("exclusive CPU cpuset.mems.effective drifted")
++	}
++	cgroupData, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
++	if err != nil {
++		return fmt.Errorf("read Firecracker cgroup membership: %w", err)
++	}
++	wantPrefix := strings.TrimPrefix(placement.cgroupRoot, "/sys/fs/cgroup") + "/"
++	cgroupPath := ""
++	for _, line := range strings.Split(string(cgroupData), "\n") {
++		if strings.HasPrefix(line, "0::"+wantPrefix) {
++			cgroupPath = filepath.Join("/sys/fs/cgroup", strings.TrimPrefix(strings.TrimPrefix(line, "0::"), "/"))
++			break
++		}
++	}
++	if cgroupPath == "" {
++		return fmt.Errorf("Firecracker is outside the qualified exclusive CPU cgroup")
++	}
++	return validateEffectiveSandboxCPUSet(cgroupPath, placement.reservedCPUs, expectedMems)
++}
++
++func validateEffectiveSandboxCPUSet(cgroupPath string, expectedCPUs, expectedMems []int) error {
++	if info, err := os.Lstat(cgroupPath); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
++		return fmt.Errorf("Firecracker sandbox cgroup is not a real directory")
++	}
++	for _, check := range []struct {
++		name     string
++		expected []int
++	}{
++		{name: "cpuset.cpus.effective", expected: expectedCPUs},
++		{name: "cpuset.mems.effective", expected: expectedMems},
++	} {
++		value, err := os.ReadFile(filepath.Join(cgroupPath, check.name))
++		if err != nil {
++			return fmt.Errorf("read Firecracker sandbox %s: %w", check.name, err)
++		}
++		actual, err := parseCPUList(strings.TrimSpace(string(value)))
++		if err != nil || !equalInts(actual, check.expected) {
++			return fmt.Errorf("Firecracker sandbox %s drifted", check.name)
++		}
++	}
++
++	return nil
++}
++
++func equalInts(left, right []int) bool {
++	if len(left) != len(right) {
++		return false
++	}
++	for index := range left {
++		if left[index] != right[index] {
++			return false
++		}
++	}
++	return true
++}
++
+ func readFirecrackerTasks(pid int) ([]firecrackerTask, error) {
+ 	entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
+ 	if err != nil {
+@@ -278,11 +543,31 @@ func readHostCPUTopology(pid int) ([]hostCPU, error) {
+ 	if err := unix.SchedGetaffinity(pid, &allowed); err != nil {
+ 		return nil, fmt.Errorf("read Firecracker allowed CPUs: %w", err)
+ 	}
+-	var topology []hostCPU
++	var ids []int
+ 	for cpu := 0; cpu < len(allowed)*64; cpu++ {
+ 		if !allowed.IsSet(cpu) {
+ 			continue
+ 		}
++		ids = append(ids, cpu)
++	}
++	return readHostCPUTopologyIDs(ids)
++}
++
++func readOnlineHostCPUTopology() ([]hostCPU, error) {
++	online, err := os.ReadFile("/sys/devices/system/cpu/online")
++	if err != nil {
++		return nil, fmt.Errorf("read online host CPUs: %w", err)
++	}
++	ids, err := parseCPUList(string(online))
++	if err != nil {
++		return nil, fmt.Errorf("parse online host CPUs: %w", err)
++	}
++	return readHostCPUTopologyIDs(ids)
++}
++
++func readHostCPUTopologyIDs(ids []int) ([]hostCPU, error) {
++	var topology []hostCPU
++	for _, cpu := range ids {
+ 		base := fmt.Sprintf("/sys/devices/system/cpu/cpu%d", cpu)
+ 		coreID, err := readTopologyInteger(filepath.Join(base, "topology/core_id"))
+ 		if err != nil {
+@@ -306,7 +591,7 @@ func readHostCPUTopology(pid int) ([]hostCPU, error) {
+ 		topology = append(topology, hostCPU{id: cpu, node: node, packageID: packageID, coreID: coreID})
+ 	}
+ 	if len(topology) == 0 {
+-		return nil, fmt.Errorf("Firecracker has no allowed host CPUs")
++		return nil, fmt.Errorf("host has no selected CPUs")
+ 	}
+ 	return topology, nil
+ }
+diff --git a/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go
+index 3d98568..bb133f4 100644
+--- a/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go
++++ b/packages/orchestrator/pkg/sandbox/fc/cpu_affinity_test.go
+@@ -4,6 +4,7 @@ package fc
+ 
+ import (
+ 	"errors"
++	"os"
+ 	"path/filepath"
+ 	"testing"
+ 	"time"
+@@ -74,6 +75,79 @@ func TestChooseExclusiveCPUPlacementRejectsCrossNUMAVCPUs(t *testing.T) {
+ 	require.ErrorContains(t, err, "no NUMA node has 2 distinct physical cores")
+ }
+ 
++func TestConfiguredExclusiveCPUPlacementReservesWholePhysicalCores(t *testing.T) {
++	t.Parallel()
++
++	var topology []hostCPU
++	for core := 0; core < 9; core++ {
++		topology = append(topology,
++			hostCPU{id: 2 + core*2, node: 0, packageID: 0, coreID: core},
++			hostCPU{id: 3 + core*2, node: 0, packageID: 0, coreID: core},
++		)
++	}
++	reserved, err := parseCPUList("2-19")
++	require.NoError(t, err)
++	placement, err := configuredExclusiveCPUPlacement(
++		topology,
++		reserved,
++		[]int{2, 4, 6, 8, 10, 12, 14, 16},
++		[]int{18, 19},
++		8,
++	)
++	require.NoError(t, err)
++	require.Equal(t, []int{2, 4, 6, 8, 10, 12, 14, 16}, placement.vcpuCPUs)
++	require.Equal(t, []int{18, 19}, placement.helperCPUs)
++	require.Equal(t, reserved, placement.reservedCPUs)
++}
++
++func TestConfiguredExclusiveCPUPlacementRejectsUnreservedSibling(t *testing.T) {
++	t.Parallel()
++
++	topology := []hostCPU{
++		{id: 2, node: 0, packageID: 0, coreID: 0},
++		{id: 3, node: 0, packageID: 0, coreID: 0},
++		{id: 4, node: 0, packageID: 0, coreID: 1},
++		{id: 5, node: 0, packageID: 0, coreID: 1},
++	}
++	_, err := configuredExclusiveCPUPlacement(topology, []int{2, 4, 5}, []int{2}, []int{4, 5}, 1)
++	require.ErrorContains(t, err, "exactly every sibling")
++}
++
++func TestConfiguredExclusiveCPUPlacementRejectsVMMOnVCPUCore(t *testing.T) {
++	t.Parallel()
++
++	topology := []hostCPU{
++		{id: 2, node: 0, packageID: 0, coreID: 0},
++		{id: 3, node: 0, packageID: 0, coreID: 0},
++	}
++	_, err := configuredExclusiveCPUPlacement(topology, []int{2, 3}, []int{2}, []int{3}, 1)
++	require.ErrorContains(t, err, "physical core with a vCPU")
++}
++
++func TestParseCPUList(t *testing.T) {
++	t.Parallel()
++
++	parsed, err := parseCPUList("5,1-3,2")
++	require.NoError(t, err)
++	require.Equal(t, []int{1, 2, 3, 5}, parsed)
++	for _, invalid := range []string{"", "-1", "3-1", "1-2-3", "cpu0"} {
++		_, err := parseCPUList(invalid)
++		require.Error(t, err, invalid)
++	}
++}
++
++func TestValidateEffectiveSandboxCPUSet(t *testing.T) {
++	t.Parallel()
++
++	root := t.TempDir()
++	require.NoError(t, os.WriteFile(filepath.Join(root, "cpuset.cpus.effective"), []byte("2-19\n"), 0o600))
++	require.NoError(t, os.WriteFile(filepath.Join(root, "cpuset.mems.effective"), []byte("0\n"), 0o600))
++	require.NoError(t, validateEffectiveSandboxCPUSet(root, []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, []int{0}))
++
++	require.NoError(t, os.WriteFile(filepath.Join(root, "cpuset.cpus.effective"), []byte("2-18\n"), 0o600))
++	require.ErrorContains(t, validateEffectiveSandboxCPUSet(root, []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, []int{0}), "cpuset.cpus.effective drifted")
++}
++
+ func TestFirecrackerVCPUIndex(t *testing.T) {
+ 	t.Parallel()
+ 
+diff --git a/packages/orchestrator/pkg/sandbox/fc/process.go b/packages/orchestrator/pkg/sandbox/fc/process.go
+index 0ce8f6d..edc15ef 100644
+--- a/packages/orchestrator/pkg/sandbox/fc/process.go
++++ b/packages/orchestrator/pkg/sandbox/fc/process.go
+@@ -384,7 +384,13 @@ func (p *Process) Create(
+ 		return fmt.Errorf("error symlinking rootfs: %w", err)
+ 	}
+ 	if p.config.FirecrackerExclusiveCPUTopology {
+-		placement, err := acquireExclusiveCPUPlacement(int(vCPUCount))
++		placement, err := acquireExclusiveCPUPlacement(
++			int(vCPUCount),
++			p.config.FirecrackerCPUSetCPUs,
++			p.config.FirecrackerVCPUCPUs,
++			p.config.FirecrackerVMMCPUs,
++			p.config.FirecrackerCPUSetMems,
++		)
+ 		if err != nil {
+ 			return fmt.Errorf("error acquiring exclusive Firecracker CPU topology: %w", err)
+ 		}
+@@ -578,7 +584,13 @@ func (p *Process) Resume(
+ 		return fmt.Errorf("error symlinking rootfs: %w", err)
+ 	}
+ 	if p.config.FirecrackerExclusiveCPUTopology {
+-		placement, err := acquireExclusiveCPUPlacement(int(vCPUCount))
++		placement, err := acquireExclusiveCPUPlacement(
++			int(vCPUCount),
++			p.config.FirecrackerCPUSetCPUs,
++			p.config.FirecrackerVCPUCPUs,
++			p.config.FirecrackerVMMCPUs,
++			p.config.FirecrackerCPUSetMems,
++		)
+ 		if err != nil {
+ 			return fmt.Errorf("error acquiring exclusive Firecracker CPU topology: %w", err)
+ 		}
+diff --git a/packages/orchestrator/pkg/sandbox/sandbox.go b/packages/orchestrator/pkg/sandbox/sandbox.go
+index 0d99a31..830844f 100644
+--- a/packages/orchestrator/pkg/sandbox/sandbox.go
++++ b/packages/orchestrator/pkg/sandbox/sandbox.go
+@@ -962,7 +962,10 @@ func (f *Factory) CreateSandbox(
+ 		}
+ 	}
+ 
+-	cgroupHandle, cgroupFD := createCgroup(ctx, f.cgroupManager, sandboxFiles.SandboxCgroupName())
++	cgroupHandle, cgroupFD, cgroupErr := createCgroup(ctx, f.cgroupManager, sandboxFiles.SandboxCgroupName(), f.config.FirecrackerExclusiveCPUTopology)
++	if cgroupErr != nil {
++		return nil, cgroupErr
++	}
+ 	defer releaseCgroupFD(ctx, cgroupHandle, runtime.SandboxID)
+ 
+ 	cleanup.Add(ctx, func(ctx context.Context) error {
+@@ -1516,7 +1519,10 @@ func (f *Factory) ResumeSandbox(
+ 	}
+ 
+ 	// Create cgroup for sandbox resource accounting
+-	cgroupHandle, cgroupFD := createCgroup(ctx, f.cgroupManager, sandboxFiles.SandboxCgroupName())
++	cgroupHandle, cgroupFD, cgroupErr := createCgroup(ctx, f.cgroupManager, sandboxFiles.SandboxCgroupName(), f.config.FirecrackerExclusiveCPUTopology)
++	if cgroupErr != nil {
++		return nil, cgroupErr
++	}
+ 	defer releaseCgroupFD(ctx, cgroupHandle, runtime.SandboxID)
+ 
+ 	cleanup.Add(ctx, func(ctx context.Context) error {
+@@ -4024,7 +4030,7 @@ func (s *Sandbox) runInPlaceRootfsExport(
+ //
+ // Returns the CgroupHandle and the cgroup directory FD to pass to the
+ // Firecracker process or (nil, cgroup.NoCgroupFD) on error.
+-func createCgroup(ctx context.Context, cgroupManager cgroup.Manager, cgroupName string) (*cgroup.CgroupHandle, int) {
++func createCgroup(ctx context.Context, cgroupManager cgroup.Manager, cgroupName string, required bool) (*cgroup.CgroupHandle, int, error) {
+ 	ctx, span := tracer.Start(ctx, "sandbox-create-cgroup", trace.WithAttributes(
+ 		attribute.String("cgroup_name", cgroupName),
+ 	))
+@@ -4032,16 +4038,23 @@ func createCgroup(ctx context.Context, cgroupManager cgroup.Manager, cgroupName
+ 
+ 	handle, err := cgroupManager.Create(ctx, cgroupName)
+ 	if err != nil {
++		if required {
++			return nil, cgroup.NoCgroupFD, fmt.Errorf("exclusive CPU placement requires sandbox cgroup creation: %w", err)
++		}
+ 		logger.L().Warn(ctx, "failed to create cgroup, continuing without cgroup accounting",
+ 			zap.String("cgroup_name", cgroupName),
+ 			zap.Error(err))
+ 
+ 		telemetry.ReportEvent(ctx, "cgroup creation failed, continuing without accounting")
+ 
+-		return nil, cgroup.NoCgroupFD
++		return nil, cgroup.NoCgroupFD, nil
++	}
++	if required && handle.GetFD() == cgroup.NoCgroupFD {
++		_ = handle.Remove(ctx)
++		return nil, cgroup.NoCgroupFD, errors.New("exclusive CPU placement requires an atomic sandbox cgroup file descriptor")
+ 	}
+ 
+-	return handle, handle.GetFD()
++	return handle, handle.GetFD(), nil
+ }
+ 
+ func getNetworkSlot(

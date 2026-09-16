@@ -30,18 +30,20 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		t.Fatalf("engine.lock commit %q differs from audited adapter revision %q", values["commit"], e2b.AuditedRevision)
 	}
 	patches := map[string]string{
-		"api_patch_sha256":                         "0001-harden-volume-secrets-and-cleanup.patch",
-		"api_build_patch_sha256":                   "0002-pin-api-build-images.patch",
-		"orchestrator_lifecycle_patch_sha256":      "0003-acknowledge-delete-after-sandbox-teardown.patch",
-		"orchestrator_cache_patch_sha256":          "0004-bound-snapshot-diff-cache.patch",
-		"orchestrator_nfs_durability_patch_sha256": "0005-make-nfs-writes-crash-durable.patch",
-		"engine_start_admission_patch_sha256":      "0006-bound-start-admission-retries.patch",
-		"engine_local_capacity_patch_sha256":       "0007-scale-local-resource-pools-and-template-shape.patch",
-		"envd_process_tag_patch_sha256":            "0008-fix-envd-process-tag-resolution.patch",
-		"envd_process_replay_patch_sha256":         "0009-add-bounded-process-output-replay.patch",
-		"orchestrator_cpu_topology_patch_sha256":   "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
-		"orchestrator_rootfs_read_patch_sha256":    "0011-reduce-rootfs-read-amplification.patch",
-		"orchestrator_nbd_multiqueue_patch_sha256": "0012-harden-nbd-multiqueue-lifecycle.patch",
+		"api_patch_sha256":                               "0001-harden-volume-secrets-and-cleanup.patch",
+		"api_build_patch_sha256":                         "0002-pin-api-build-images.patch",
+		"orchestrator_lifecycle_patch_sha256":            "0003-acknowledge-delete-after-sandbox-teardown.patch",
+		"orchestrator_cache_patch_sha256":                "0004-bound-snapshot-diff-cache.patch",
+		"orchestrator_nfs_durability_patch_sha256":       "0005-make-nfs-writes-crash-durable.patch",
+		"engine_start_admission_patch_sha256":            "0006-bound-start-admission-retries.patch",
+		"engine_local_capacity_patch_sha256":             "0007-scale-local-resource-pools-and-template-shape.patch",
+		"envd_process_tag_patch_sha256":                  "0008-fix-envd-process-tag-resolution.patch",
+		"envd_process_replay_patch_sha256":               "0009-add-bounded-process-output-replay.patch",
+		"orchestrator_cpu_topology_patch_sha256":         "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
+		"orchestrator_rootfs_read_patch_sha256":          "0011-reduce-rootfs-read-amplification.patch",
+		"orchestrator_nbd_multiqueue_patch_sha256":       "0012-harden-nbd-multiqueue-lifecycle.patch",
+		"orchestrator_cpuset_qualification_patch_sha256": "0013-qualify-cpuset-exclusive-cpu-topology.patch",
+		"orchestrator_ext4_dir_index_patch_sha256":       "0014-opt-in-ext4-dir-index.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -65,6 +67,75 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		digest := sha256.Sum256(content)
 		if got := hex.EncodeToString(digest[:]); got != values[lockKey] {
 			t.Fatalf("%s digest = %s, lock = %s", name, got, values[lockKey])
+		}
+	}
+}
+
+func TestInstallerPinsTargetedExt4DirIndexPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"ENGINE_EXT4_DIR_INDEX_PATCH=",
+		"orchestrator_ext4_dir_index_patch_sha256",
+		"engine ext4-dir-index patch verification failed",
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_EXT4_DIR_INDEX_PATCH"`,
+		`"$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256"`,
+		"BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS",
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing ext4-dir-index integrity binding %q", required)
+		}
+	}
+	cpusetApply := strings.Index(installer, `-p1 < "$ENGINE_CPUSET_QUALIFICATION_PATCH"`)
+	dirIndexApply := strings.Index(installer, `-p1 < "$ENGINE_EXT4_DIR_INDEX_PATCH"`)
+	if cpusetApply < 0 || dirIndexApply <= cpusetApply {
+		t.Fatal("ext4-dir-index patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0014-opt-in-ext4-dir-index.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		`env:"BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS"`,
+		"BuildExt4DirIndexForTemplate",
+		"Ext4DirIndex bool",
+		"featureflags.BuildExt4DirIndex",
+		"DirIndex: r.buildContext.Rootfs.Ext4DirIndex",
+		`const ext4DirIndexKey = "ext4-dir-index:v1"`,
+		"the fallback preserves the legacy filesystem",
+		"the flag can target one template without changing its siblings",
+		"a build from a template inherits the parent's filesystem",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("ext4-dir-index patch is missing contract %q", required)
+		}
+	}
+
+	overrideData, err := os.ReadFile("engine.override.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(overrideData), "BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS: ${BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS:-}") {
+		t.Fatal("engine override does not pass the default-empty ext4 directory-index template allowlist")
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.ext4_dir_index_patch_sha256",
+		"artifact.template.ext4_dir_index=targeted-opt-in-default-disabled",
+		"the ext4-dir-index patch requires the cpuset-qualification patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing ext4-dir-index contract %q", required)
 		}
 	}
 }
@@ -427,32 +498,66 @@ func TestCapacityContractMatchesSandboxQuotaAndHugepagePool(t *testing.T) {
 		t.Fatalf("capacity contract accepted an invalid exclusive CPU-topology setting: %s", output)
 	}
 	if output, err := run("plan", "BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true"); err == nil {
-		t.Fatalf("capacity contract accepted unqualified exclusive CPU placement: %s", output)
-	} else if !strings.Contains(string(output), "disabled until cgroup cpuset isolation is qualified") {
+		t.Fatalf("capacity contract accepted exclusive CPU placement without a cpuset contract: %s", output)
+	} else if !strings.Contains(string(output), "BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS is required") {
 		t.Fatalf("exclusive CPU-topology failure was unclear: %s", output)
 	}
-	if output, err := run("plan",
+	exclusiveTopology := filepath.Join(t.TempDir(), "exclusive-cpu-topology.csv")
+	var exclusiveTopologyRows strings.Builder
+	for cpu := 0; cpu < 40; cpu++ {
+		core := cpu % 20
+		node := core / 10
+		fmt.Fprintf(&exclusiveTopologyRows, "%d,%d,0,%d\n", cpu, node, core)
+	}
+	if err := os.WriteFile(exclusiveTopology, []byte(exclusiveTopologyRows.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exclusiveContract := []string{
 		"BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true",
+		"BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS=0-8,20-28",
+		"BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS=0",
+		"BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS=0-7",
+		"BREZEL_ENGINE_FIRECRACKER_VMM_CPUS=8,28",
+		"BREZEL_TEST_CPU_COUNT=40",
+		"BREZEL_TEST_CPU_TOPOLOGY_FILE=" + exclusiveTopology,
 		"BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=1",
 		"BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=1",
 		"BREZEL_ENGINE_MAX_STARTING_SANDBOXES=1",
 		"BREZEL_GUEST_VCPUS=8",
 		"BREZEL_MIN_SYSTEM_CPUS=8",
 		"BREZEL_ENGINE_HUGEPAGES=5120",
-	); err == nil {
-		t.Fatalf("capacity contract accepted affinity-only exclusive CPU placement: %s", output)
-	} else if !strings.Contains(string(output), "disabled until cgroup cpuset isolation is qualified") {
-		t.Fatalf("exclusive CPU-topology failure was unclear: %s", output)
+	}
+	if output, err := run("plan", exclusiveContract...); err != nil {
+		t.Fatalf("capacity contract rejected a complete exclusive CPU contract: %v: %s", err, output)
+	} else if !strings.Contains(string(output), `"firecracker_cpuset_cpus":"0,1,2,3,4,5,6,7,8,20,21,22,23,24,25,26,27,28"`) {
+		t.Fatalf("capacity contract did not normalize the qualified CPU set: %s", output)
+	}
+	multiSandboxContract := append([]string{}, exclusiveContract...)
+	for index, value := range multiSandboxContract {
+		if strings.HasPrefix(value, "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=") {
+			multiSandboxContract[index] = "BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=2"
+		}
+		if strings.HasPrefix(value, "BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=") {
+			multiSandboxContract[index] = "BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=2"
+		}
+	}
+	if output, err := run("plan", multiSandboxContract...); err == nil {
+		t.Fatalf("capacity contract accepted more than one sandbox in the exclusive profile: %s", output)
+	} else if !strings.Contains(string(output), "single-sandbox profile") {
+		t.Fatalf("exclusive single-sandbox failure was unclear: %s", output)
 	}
 	if output, err := run("plan",
-		"BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true",
-		"BREZEL_ENGINE_FIRECRACKER_SMT=true",
-		"BREZEL_MAX_ACTIVE_SANDBOXES_TOTAL=1",
-		"BREZEL_MAX_ACTIVE_SANDBOXES_PER_PROJECT=1",
-		"BREZEL_ENGINE_MAX_STARTING_SANDBOXES=1",
+		"BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS=0-7",
 	); err == nil {
+		t.Fatalf("capacity contract accepted armed cpuset values while exclusive placement was disabled: %s", output)
+	} else if !strings.Contains(string(output), "cpuset settings require exclusive CPU topology") {
+		t.Fatalf("disabled exclusive CPU-topology failure was unclear: %s", output)
+	}
+	smtContract := append([]string{}, exclusiveContract...)
+	smtContract = append(smtContract, "BREZEL_ENGINE_FIRECRACKER_SMT=true")
+	if output, err := run("plan", smtContract...); err == nil {
 		t.Fatalf("capacity contract accepted exclusive CPU placement with guest SMT: %s", output)
-	} else if !strings.Contains(string(output), "disabled until cgroup cpuset isolation is qualified") {
+	} else if !strings.Contains(string(output), "requires guest SMT to be disabled") {
 		t.Fatalf("exclusive SMT failure was unclear: %s", output)
 	}
 	if output, err := run("plan", "BREZEL_TEST_AVAILABLE_DISK_KIB=1024"); err == nil {
@@ -796,7 +901,9 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		patchDigest,
 		patchDigest,
 		patchDigest,
+		patchDigest,
 		hex.EncodeToString(envdDigest[:]), patchDigest,
+		patchDigest,
 		patchDigest,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
@@ -815,12 +922,16 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.envd.process_output_recovery=generation-bound-cursor-journal",
 		"artifact.orchestrator.cpu_topology_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.guest_smt=operator-configured-default-disabled",
-		"artifact.orchestrator.exclusive_cpu_topology=disabled-pending-cpuset",
+		"artifact.orchestrator.exclusive_cpu_topology=disabled-by-default",
 		"artifact.orchestrator.rootfs_read_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.rootfs_read_path=allocation-free-local-and-whole-writable-range",
 		"artifact.orchestrator.nbd_multiqueue_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.nbd_connections_per_device=operator-configured-default-one-range-one-to-four",
 		"artifact.orchestrator.nbd_lifecycle=attempt-owned-idempotent-cleanup",
+		"artifact.orchestrator.cpuset_qualification_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.exclusive_cpu_isolation=qualified-only-when-explicitly-configured",
+		"artifact.orchestrator.ext4_dir_index_patch_sha256=" + patchDigest,
+		"artifact.template.ext4_dir_index=targeted-opt-in-default-disabled",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -983,22 +1094,26 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 	files := map[string]string{
 		"packages/orchestrator/pkg/sandbox/fc/client.go":                      "models.MemoryBackendBackendTypeUffd\nOperations.LoadSnapshot\nResumeVM:            false\n",
 		"packages/orchestrator/pkg/sandbox/uffd/uffd.go":                      "userfaultfd.NewUserfaultfdFromFd\n",
-		"packages/orchestrator/pkg/template/build/builder.go":                 "builders = append(builders, optimizeBuilder)\n",
+		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"NBD_CONNECTIONS_PER_DEVICE\"\nNBD_CONNECTIONS_PER_DEVICE must be between 1 and 4\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nenv:\"FIRECRACKER_CPUSET_CPUS\"\nis required when FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\nenv:\"BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS\"\nBuildExt4DirIndexForTemplate\n",
+		"packages/orchestrator/pkg/template/build/builder.go":                 "builders = append(builders, optimizeBuilder)\nfeatureflags.BuildExt4DirIndex\n",
+		"packages/orchestrator/pkg/template/build/buildcontext/context.go":    "Ext4DirIndex bool\n",
+		"packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go":      "DirIndex: r.buildContext.Rootfs.Ext4DirIndex\n",
+		"packages/orchestrator/pkg/template/build/phases/base/hash.go":        "ext4-dir-index:v1\n",
 		"packages/orchestrator/pkg/template/build/phases/optimize/builder.go": "WithPrefetch(&metadata.Prefetch\ncontinuing without prefetch\n",
-		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewNBDProvider\n",
+		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewNBDProvider\nexclusive CPU placement requires sandbox cgroup creation\n",
+		"packages/orchestrator/pkg/sandbox/cgroup/manager.go":                 "cpuset.cpus.partition\ncpuset.cpus.exclusive.effective\n",
 		"packages/shared/pkg/featureflags/flags.go":                           "NewStringFlag(\"resume-prefetch-source\", \"init\")\n",
 		"packages/shared/pkg/storage/sandbox.go":                              "fmt.Sprintf(\"rootfs-%s-%s.cow\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/sandbox\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/template\"\n",
 		"packages/orchestrator/pkg/sandbox/block/local.go":                    "d.f.ReadAt(p[:length], off)\n",
 		"packages/orchestrator/pkg/sandbox/block/overlay.go":                  "if cacheRangeValid && length > o.blockSize && length%o.blockSize == 0 {\n",
 		"packages/orchestrator/pkg/sandbox/block/overlay_read_test.go":        "TestOverlayReadAtMixedWritableAndBaseBlocks\n",
 		"packages/orchestrator/pkg/sandbox/network/pool.go":                   "NewSlotsPoolSize    = 32\nReusedSlotsPoolSize = 100\n",
-		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\n",
+		"packages/orchestrator/pkg/factories/run.go":                          "network.NewPool(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize\nnetworkv2.WithPoolSizes(config.NetworkNewSlotsPoolSize, config.NetworkReusedSlotsPoolSize)\nexclusive CPU placement requires complete startup resource reclamation\n",
 		"packages/orchestrator/pkg/server/sandboxes.go":                       "if err := sbx.Stop(ctx); err != nil\nSandboxes.WaitLifecycle(ctx\n",
 		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
-		"packages/orchestrator/pkg/cfg/model.go":                              "env:\"MAX_STARTING_INSTANCES_PER_NODE\"\nenv:\"NETWORK_NEW_SLOTS_POOL_SIZE\"\nenv:\"NETWORK_REUSED_SLOTS_POOL_SIZE\"\nenv:\"NBD_CONNECTIONS_PER_DEVICE\"\nNBD_CONNECTIONS_PER_DEVICE must be between 1 and 4\nenv:\"FIRECRACKER_SMT\"\nenv:\"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY\"\nFIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation\nenv:\"BUILD_CACHE_TTL\"\nenv:\"BUILD_CACHE_MAX_BYTES\"\nenv:\"BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT\"\nBUILD_CACHE_TTL must be at least 1h\nBUILD_CACHE_MAX_BYTES must be zero or at least 1 GiB\nBUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100\n",
 		"packages/orchestrator/pkg/sandbox/nbd/path_direct.go":                "WithConnectionsPerDevice\n",
 		"packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go": "TestDirectPathMountConnectRetryFullyCleansPreviousAttempt\nTestDirectPathMountCloseIsSerializedAndIdempotent\n",
-		"packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go":                "no NUMA node has %d distinct physical cores\nanother Firecracker process holds the exclusive CPU lease\nFirecracker vCPU thread %d was not present after VM start\nstabilizeExclusiveCPUPlacement\n",
+		"packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go":                "no NUMA node has %d distinct physical cores\nanother Firecracker process holds the exclusive CPU lease\nFirecracker vCPU thread %d was not present after VM start\nstabilizeExclusiveCPUPlacement\nFirecracker is outside the qualified exclusive CPU cgroup\nvalidateEffectiveSandboxCPUSet(cgroupPath, placement.reservedCPUs, expectedMems)\nreturn fmt.Errorf(\"Firecracker sandbox %s drifted\", check.name)\n",
 		"packages/orchestrator/pkg/sandbox/fc/process.go":                     "monitorExclusiveCPUPlacement\nreconcile exclusive Firecracker CPU topology\n",
 		"packages/orchestrator/pkg/server/main.go":                            "resolveStartingSandboxesLimit\n",
 		"packages/api/internal/orchestrator/placement/placement.go":           "resourceExhaustedRetryDelay\n",
@@ -1307,7 +1422,11 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 		"orchestrator_cpu_topology_patch_sha256",
 		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPU_TOPOLOGY_PATCH"`,
 		"engine Firecracker CPU-topology patch verification failed",
-		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256"`,
+		"0013-qualify-cpuset-exclusive-cpu-topology.patch",
+		"orchestrator_cpuset_qualification_patch_sha256",
+		`patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_CPUSET_QUALIFICATION_PATCH"`,
+		"engine cpuset-qualification patch verification failed",
+		`"$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" "$ENGINE_ROOTFS_READ_PATCH_SHA256" "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256"`,
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer is missing CPU-topology invariant %q", required)
@@ -1322,6 +1441,10 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 	for _, required := range []string{
 		"FIRECRACKER_SMT: ${BREZEL_ENGINE_FIRECRACKER_SMT:-false}",
 		"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY: ${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}",
+		"FIRECRACKER_CPUSET_CPUS: ${BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS:-}",
+		"FIRECRACKER_CPUSET_MEMS: ${BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS:-}",
+		"FIRECRACKER_VCPU_CPUS: ${BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS:-}",
+		"FIRECRACKER_VMM_CPUS: ${BREZEL_ENGINE_FIRECRACKER_VMM_CPUS:-}",
 	} {
 		if !strings.Contains(override, required) {
 			t.Fatalf("engine override is missing CPU-topology setting %q", required)
@@ -1336,14 +1459,22 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 	for _, required := range []string{
 		`env:"FIRECRACKER_SMT"`,
 		`env:"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY"`,
+		`env:"FIRECRACKER_CPUSET_CPUS"`,
+		"is required when FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY=true",
+		"cpuset.cpus.partition",
+		"cpuset.cpus.exclusive.effective",
 		"no NUMA node has %d distinct physical cores",
 		"Firecracker vCPU thread %d was not present after VM start",
 		"stabilizeExclusiveCPUPlacement",
+		"Firecracker is outside the qualified exclusive CPU cgroup",
+		"validateEffectiveSandboxCPUSet(cgroupPath, placement.reservedCPUs, expectedMems)",
+		`return fmt.Errorf("Firecracker sandbox %s drifted", check.name)`,
+		"exclusive CPU placement requires sandbox cgroup creation",
+		"exclusive CPU placement requires complete startup resource reclamation",
 		"monitorExclusiveCPUPlacement",
 		"reconcile exclusive Firecracker CPU topology",
-		"FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY is not qualified without cgroup cpuset isolation",
-		`"exclusive_placement":"disabled-pending-cgroup-cpuset-qualification"`,
-		`"experimental_affinity_code":"present-not-runnable"`,
+		`"exclusive_placement":"qualified-opt-in-disabled-by-default"`,
+		`"isolation":"cgroup-v2-isolated-partition-plus-thread-affinity"`,
 	} {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("engine capability probe is missing CPU-topology contract %q", required)
@@ -1358,8 +1489,11 @@ func TestInstallerPinsAndValidatesFirecrackerCPUTopologyPatch(t *testing.T) {
 	for _, required := range []string{
 		"artifact.orchestrator.cpu_topology_patch_sha256",
 		"artifact.orchestrator.guest_smt=operator-configured-default-disabled",
-		"artifact.orchestrator.exclusive_cpu_topology=disabled-pending-cpuset",
+		"artifact.orchestrator.exclusive_cpu_topology=disabled-by-default",
+		"artifact.orchestrator.cpuset_qualification_patch_sha256",
+		"artifact.orchestrator.exclusive_cpu_isolation=qualified-only-when-explicitly-configured",
 		"the CPU-topology patch requires the local-capacity patch identity",
+		"the cpuset-qualification patch requires the NBD-multiqueue patch identity",
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("distribution manifest writer is missing CPU-topology identity %q", required)

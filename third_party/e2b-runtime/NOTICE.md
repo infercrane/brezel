@@ -36,5 +36,11 @@ Firecracker process from sharing the profile. Each guest vCPU is pinned to a
 different host-visible core on one NUMA node, sibling threads of those cores
 remain unused by Firecracker, and helper threads use separate cores. It fails
 before guest execution when the host cannot enforce the requested topology.
+The thirteenth patch qualifies that opt-in profile only when a pre-created
+cgroup v2 isolated partition exactly matches an explicit CPU and NUMA contract.
+It requires atomic Firecracker launch into a per-sandbox child cgroup, rejects
+partial physical-core sibling sets, and continuously verifies cgroup membership
+and thread affinity. The default remains disabled, and any missing or drifting
+isolation contract stops the sandbox rather than silently sharing CPUs.
 
 Upstream source: <https://github.com/e2b-dev/runtime>

@@ -5,9 +5,41 @@ import { pathToFileURL } from "node:url";
 import { createBrezelComputeFromEnv } from "./adapter.mjs";
 import { DAX_PHASES, parseDaxTranscript, validateDaxTranscript } from "./dax-transcript.mjs";
 
-const UPSTREAM_COMMIT = "273927519c0ac6558d3e545eed9d59eb56a47ec7";
-const UPSTREAM_SCRIPT_SHA256 = "58f4640ac170b366f87e8466a9ac1e9f50383faa59553246e4664c77af34d550";
-const UPSTREAM_SCRIPT_URL = `https://raw.githubusercontent.com/computesdk/benchmarks/${UPSTREAM_COMMIT}/benchmarks/scripts/dax-benchmark.sh`;
+export const DAX_UPSTREAM = Object.freeze({
+  commit: "273927519c0ac6558d3e545eed9d59eb56a47ec7",
+  scriptSha256: "58f4640ac170b366f87e8466a9ac1e9f50383faa59553246e4664c77af34d550",
+});
+const UPSTREAM_SCRIPT_URL = `https://raw.githubusercontent.com/computesdk/benchmarks/${DAX_UPSTREAM.commit}/benchmarks/scripts/dax-benchmark.sh`;
+
+function optionalDigest(name, environment) {
+  const value = environment[name];
+  if (value === undefined) return undefined;
+  if (!/^[0-9a-f]{64}$/.test(value)) throw new Error(`${name} must be a lowercase SHA-256 digest`);
+  return value;
+}
+
+function optionalSlotID(name, environment) {
+  const value = environment[name];
+  if (value === undefined) return undefined;
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(value)) {
+    throw new Error(`${name} must be a lowercase benchmark slot identifier`);
+  }
+  return value;
+}
+
+export function pairedABIdentity(environment = process.env) {
+  const identity = {
+    planId: optionalDigest("BREZEL_DAX_PAIRED_PLAN_ID", environment),
+    slotId: optionalSlotID("BREZEL_DAX_PAIRED_SLOT_ID", environment),
+    hostIdentitySha256: optionalDigest("BREZEL_DAX_HOST_IDENTITY_SHA256", environment),
+    configurationIdentitySha256: optionalDigest("BREZEL_DAX_CONFIGURATION_IDENTITY_SHA256", environment),
+  };
+  const present = Object.values(identity).filter((value) => value !== undefined).length;
+  if (present !== 0 && present !== Object.keys(identity).length) {
+    throw new Error("paired DAX identity variables must be supplied together");
+  }
+  return present === 0 ? undefined : identity;
+}
 
 function boundedInteger(name, fallback, minimum, maximum) {
   const raw = process.env[name] ?? String(fallback);
@@ -64,8 +96,8 @@ async function fetchPinnedScript() {
   if (!response.ok) throw new Error(`upstream DAX script download failed with ${response.status}`);
   const script = await response.text();
   const digest = createHash("sha256").update(script).digest("hex");
-  if (digest !== UPSTREAM_SCRIPT_SHA256) {
-    throw new Error(`upstream DAX script digest ${digest} does not match ${UPSTREAM_SCRIPT_SHA256}`);
+  if (digest !== DAX_UPSTREAM.scriptSha256) {
+    throw new Error(`upstream DAX script digest ${digest} does not match ${DAX_UPSTREAM.scriptSha256}`);
   }
   return script;
 }
@@ -109,6 +141,7 @@ export async function run() {
   const sourceRevision = process.env.BREZEL_SOURCE_REVISION ?? "";
   if (!/^[0-9a-f]{40}$/.test(sourceRevision)) throw new Error("BREZEL_SOURCE_REVISION must be the exact 40-character Brezel git revision");
   const environmentRevision = process.env.BREZEL_ENVIRONMENT_REVISION;
+  const pairedAB = pairedABIdentity();
   const endpoint = new URL(process.env.BREZEL_API_URL);
   const before = await compute.sandbox.list();
   if (before.length !== 0) throw new Error("the dedicated DAX benchmark project must be empty before execution");
@@ -165,7 +198,7 @@ export async function run() {
   const report = {
     schemaVersion: 2,
     suite: "computesdk-dax-rehearsal",
-    upstream: { commit: UPSTREAM_COMMIT, scriptSha256: UPSTREAM_SCRIPT_SHA256 },
+    upstream: DAX_UPSTREAM,
     region,
     startedAt: runStartedAt,
     finishedAt: new Date().toISOString(),
@@ -176,6 +209,7 @@ export async function run() {
       runner: { node: process.version, platform: process.platform, arch: process.arch },
       allowInternet: true,
       measuredState: "fresh sandbox after one disclosed shape preflight",
+      ...(pairedAB ? { pairedAB } : {}),
     },
     methodology: {
       iterations,

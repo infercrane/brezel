@@ -307,6 +307,8 @@ run_engine_fast_path_qualification() {
       "$ENGINE_NETWORK_NEW_SLOTS" "$ENGINE_NETWORK_REUSED_SLOTS" "$ENGINE_NBD_POOL_SIZE" \
       "$ENGINE_NBD_CONNECTIONS_PER_DEVICE" \
       "${BREZEL_ENGINE_FIRECRACKER_SMT:-false}" "${BREZEL_ENGINE_FIRECRACKER_EXCLUSIVE_CPU_TOPOLOGY:-false}" \
+      "${BREZEL_ENGINE_FIRECRACKER_CPUSET_CPUS:-}" "${BREZEL_ENGINE_FIRECRACKER_CPUSET_MEMS:-}" \
+      "${BREZEL_ENGINE_FIRECRACKER_VCPU_CPUS:-}" "${BREZEL_ENGINE_FIRECRACKER_VMM_CPUS:-}" \
     < "$ENGINE_CAPABILITY_PROBE"); then
     echo "the installed engine did not satisfy the live fast-path contract" >&2
     return 1

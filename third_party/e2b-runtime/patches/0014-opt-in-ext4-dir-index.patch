@@ -1,0 +1,403 @@
+diff --git a/packages/orchestrator/pkg/cfg/model.go b/packages/orchestrator/pkg/cfg/model.go
+index 07951ae..55b45c1 100644
+--- a/packages/orchestrator/pkg/cfg/model.go
++++ b/packages/orchestrator/pkg/cfg/model.go
+@@ -42,6 +42,7 @@ type BuilderConfig struct {
+ 	SandboxDir                      string `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
+ 	SharedChunkCacheDir             string `env:"SHARED_CHUNK_CACHE_PATH"`
+ 	TemplatesDir                    string `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
++	BuildExt4DirIndexTemplateIDs    string `env:"BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS"`
+ 
+ 	DefaultCacheDir string `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
+ 
+@@ -51,6 +52,42 @@ type BuilderConfig struct {
+ 	NetworkConfig network.Config
+ }
+ 
++// BuildExt4DirIndexForTemplate reports whether an operator explicitly selected
++// this immutable template identity. Matching is exact: normalization here
++// would let a typo silently affect a different build than the operator named.
++func (c BuilderConfig) BuildExt4DirIndexForTemplate(templateID string) bool {
++	if c.BuildExt4DirIndexTemplateIDs == "" {
++		return false
++	}
++
++	for _, configured := range strings.Split(c.BuildExt4DirIndexTemplateIDs, ",") {
++		if configured == templateID {
++			return true
++		}
++	}
++
++	return false
++}
++
++func validateBuildExt4DirIndexTemplateIDs(raw string) error {
++	if raw == "" {
++		return nil
++	}
++
++	seen := make(map[string]struct{})
++	for _, templateID := range strings.Split(raw, ",") {
++		if templateID == "" || strings.TrimSpace(templateID) != templateID {
++			return fmt.Errorf("BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS must be a comma-separated list of non-empty exact template IDs without whitespace")
++		}
++		if _, exists := seen[templateID]; exists {
++			return fmt.Errorf("BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS contains duplicate template ID %q", templateID)
++		}
++		seen[templateID] = struct{}{}
++	}
++
++	return nil
++}
++
+ // NBDConnectionCount returns the process-static queue count. A zero-value
+ // BuilderConfig is common in tests and small tools, so it preserves the safe
+ // single-queue default used by parsed production configuration.
+@@ -189,6 +226,9 @@ func Parse() (Config, error) {
+ 	if err := validateExclusiveCPUConfig(config.BuilderConfig); err != nil {
+ 		return config, err
+ 	}
++	if err := validateBuildExt4DirIndexTemplateIDs(config.BuildExt4DirIndexTemplateIDs); err != nil {
++		return config, err
++	}
+ 	if config.NBDConnectionsPerDevice < 1 || config.NBDConnectionsPerDevice > 4 {
+ 		return config, fmt.Errorf("NBD_CONNECTIONS_PER_DEVICE must be between 1 and 4")
+ 	}
+diff --git a/packages/orchestrator/pkg/cfg/model_test.go b/packages/orchestrator/pkg/cfg/model_test.go
+index fdd0608..870ec64 100644
+--- a/packages/orchestrator/pkg/cfg/model_test.go
++++ b/packages/orchestrator/pkg/cfg/model_test.go
+@@ -247,6 +247,27 @@ func TestParse(t *testing.T) {
+ 		_, err := Parse()
+ 		require.ErrorContains(t, err, "BUILD_CACHE_DISK_USAGE_HIGH_WATER_PERCENT must be between 1 and 100")
+ 	})
++
++	t.Run("ext4 directory index template allowlist is exact and default empty", func(t *testing.T) {
++		config, err := Parse()
++		require.NoError(t, err)
++		assert.False(t, config.BuildExt4DirIndexForTemplate("template-1"))
++
++		t.Setenv("BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS", "template-1,template-3")
++		config, err = Parse()
++		require.NoError(t, err)
++		assert.True(t, config.BuildExt4DirIndexForTemplate("template-1"))
++		assert.False(t, config.BuildExt4DirIndexForTemplate("template-2"))
++		assert.True(t, config.BuildExt4DirIndexForTemplate("template-3"))
++	})
++
++	for _, invalid := range []string{"template-1,", ",template-1", "template-1, template-2", "template-1,template-1"} {
++		t.Run("ext4 directory index template allowlist rejects "+invalid, func(t *testing.T) {
++			t.Setenv("BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS", invalid)
++			_, err := Parse()
++			require.ErrorContains(t, err, "BUILD_EXT4_DIR_INDEX_TEMPLATE_IDS")
++		})
++	}
+ }
+ 
+ func TestAdditionalClickhouseEndpoints(t *testing.T) {
+diff --git a/packages/orchestrator/pkg/template/build/buildcontext/context.go b/packages/orchestrator/pkg/template/build/buildcontext/context.go
+index fc37aa9..0a2359e 100644
+--- a/packages/orchestrator/pkg/template/build/buildcontext/context.go
++++ b/packages/orchestrator/pkg/template/build/buildcontext/context.go
+@@ -31,4 +31,9 @@ type RootfsOptions struct {
+ 	// on every template, into envd.service and a system.slice drop-in (see
+ 	// core/rootfs/files/system.slice.d-envd.conf.tpl for why the slice).
+ 	EnvdMemoryProtection bool
++
++	// Ext4DirIndex keeps ext4's htree directory index enabled when the OCI
++	// image is materialized into a new rootfs. It is resolved once per build so
++	// the cache key and mkfs cannot observe different flag evaluations.
++	Ext4DirIndex bool
+ }
+diff --git a/packages/orchestrator/pkg/template/build/builder.go b/packages/orchestrator/pkg/template/build/builder.go
+index 9c116c7..7b56ae5 100644
+--- a/packages/orchestrator/pkg/template/build/builder.go
++++ b/packages/orchestrator/pkg/template/build/builder.go
+@@ -274,7 +274,7 @@ func (b *Builder) Build(ctx context.Context, paths storage.Paths, cfg config.Tem
+ 		EnvdVersion:    envdVersion,
+ 		CacheScope:     cacheScope,
+ 		Version:        cfg.Version,
+-		Rootfs:         resolveRootfsOptions(ctx, b.featureFlags, cfg),
++		Rootfs:         resolveRootfsOptions(ctx, b.config, b.featureFlags, cfg),
+ 	}
+ 
+ 	return runBuild(ctx, l, buildContext, b)
+@@ -283,7 +283,14 @@ func (b *Builder) Build(ctx context.Context, paths storage.Paths, cfg config.Tem
+ // resolveRootfsOptions evaluates, once per build, the flags that shape the
+ // baked rootfs files; buildcontext.RootfsOptions says why once. It uses the
+ // template and team contexts, as the provision version does.
+-func resolveRootfsOptions(ctx context.Context, featureFlags *featureflags.Client, cfg config.TemplateConfig) buildcontext.RootfsOptions {
++func resolveRootfsOptions(ctx context.Context, builderConfig cfg.BuilderConfig, featureFlags *featureflags.Client, cfg config.TemplateConfig) buildcontext.RootfsOptions {
++	ext4DirIndex := featureFlags.BoolFlag(
++		ctx,
++		featureflags.BuildExt4DirIndex,
++		featureflags.TemplateContext(cfg.TemplateID),
++		featureflags.TeamContext(cfg.TeamID),
++	) || builderConfig.BuildExt4DirIndexForTemplate(cfg.TemplateID)
++
+ 	return buildcontext.RootfsOptions{
+ 		EnvdMemoryProtection: featureFlags.BoolFlag(
+ 			ctx,
+@@ -291,6 +298,7 @@ func resolveRootfsOptions(ctx context.Context, featureFlags *featureflags.Client
+ 			featureflags.TemplateContext(cfg.TemplateID),
+ 			featureflags.TeamContext(cfg.TeamID),
+ 		),
++		Ext4DirIndex: ext4DirIndex,
+ 	}
+ }
+ 
+diff --git a/packages/orchestrator/pkg/template/build/builder_test.go b/packages/orchestrator/pkg/template/build/builder_test.go
+index 03136e4..b133193 100644
+--- a/packages/orchestrator/pkg/template/build/builder_test.go
++++ b/packages/orchestrator/pkg/template/build/builder_test.go
+@@ -10,6 +10,7 @@ import (
+ 	"github.com/stretchr/testify/assert"
+ 	"github.com/stretchr/testify/require"
+ 
++	cfgpkg "github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
+ 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/config"
+ 	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
+ )
+@@ -40,7 +41,7 @@ func TestResolveRootfsOptions(t *testing.T) {
+ 		assert.False(t, flag.Fallback())
+ 
+ 		client := newFlagClient(t, ldtestdata.DataSource())
+-		assert.False(t, resolveRootfsOptions(t.Context(), client, cfg).EnvdMemoryProtection)
++		assert.False(t, resolveRootfsOptions(t.Context(), cfgpkg.BuilderConfig{}, client, cfg).EnvdMemoryProtection)
+ 	})
+ 
+ 	t.Run("the flag on turns the protection on", func(t *testing.T) {
+@@ -50,7 +51,7 @@ func TestResolveRootfsOptions(t *testing.T) {
+ 		source.Update(source.Flag(flag.Key()).BooleanFlag().VariationForAll(true))
+ 
+ 		client := newFlagClient(t, source)
+-		assert.True(t, resolveRootfsOptions(t.Context(), client, cfg).EnvdMemoryProtection)
++		assert.True(t, resolveRootfsOptions(t.Context(), cfgpkg.BuilderConfig{}, client, cfg).EnvdMemoryProtection)
+ 	})
+ 
+ 	t.Run("the flag is evaluated on the build's team", func(t *testing.T) {
+@@ -66,10 +67,77 @@ func TestResolveRootfsOptions(t *testing.T) {
+ 			VariationForKey(featureflags.TeamKind, cfg.TeamID, true))
+ 
+ 		client := newFlagClient(t, source)
+-		assert.True(t, resolveRootfsOptions(t.Context(), client, cfg).EnvdMemoryProtection)
++		assert.True(t, resolveRootfsOptions(t.Context(), cfgpkg.BuilderConfig{}, client, cfg).EnvdMemoryProtection)
+ 
+ 		other := cfg
+ 		other.TeamID = "team-2"
+-		assert.False(t, resolveRootfsOptions(t.Context(), client, other).EnvdMemoryProtection)
++		assert.False(t, resolveRootfsOptions(t.Context(), cfgpkg.BuilderConfig{}, client, other).EnvdMemoryProtection)
++	})
++}
++
++func TestResolveRootfsOptionsExt4DirIndex(t *testing.T) {
++	t.Parallel()
++
++	cfg := config.TemplateConfig{TemplateID: "template-1", TeamID: "team-1"}
++	flag := featureflags.BuildExt4DirIndex
++
++	t.Run("the fallback preserves the legacy filesystem", func(t *testing.T) {
++		t.Parallel()
++
++		assert.False(t, flag.Fallback())
++
++		client := newFlagClient(t, ldtestdata.DataSource())
++		assert.False(t, resolveRootfsOptions(t.Context(), cfgpkg.BuilderConfig{}, client, cfg).Ext4DirIndex)
++	})
++
++	t.Run("the flag on keeps the directory index", func(t *testing.T) {
++		t.Parallel()
++
++		source := ldtestdata.DataSource()
++		source.Update(source.Flag(flag.Key()).BooleanFlag().VariationForAll(true))
++
++		client := newFlagClient(t, source)
++		assert.True(t, resolveRootfsOptions(t.Context(), cfgpkg.BuilderConfig{}, client, cfg).Ext4DirIndex)
++	})
++
++	t.Run("the flag can target one template without changing its siblings", func(t *testing.T) {
++		t.Parallel()
++
++		source := ldtestdata.DataSource()
++		source.Update(source.Flag(flag.Key()).BooleanFlag().
++			VariationForAll(false).
++			VariationForKey(featureflags.TemplateKind, cfg.TemplateID, true))
++
++		client := newFlagClient(t, source)
++		assert.True(t, resolveRootfsOptions(t.Context(), cfgpkg.BuilderConfig{}, client, cfg).Ext4DirIndex)
++
++		other := cfg
++		other.TemplateID = "template-2"
++		assert.False(t, resolveRootfsOptions(t.Context(), cfgpkg.BuilderConfig{}, client, other).Ext4DirIndex)
++	})
++
++	t.Run("the operator can select one exact template without LaunchDarkly", func(t *testing.T) {
++		t.Parallel()
++
++		client := newFlagClient(t, ldtestdata.DataSource())
++		builderConfig := cfgpkg.BuilderConfig{BuildExt4DirIndexTemplateIDs: "template-1,template-3"}
++		assert.True(t, resolveRootfsOptions(t.Context(), builderConfig, client, cfg).Ext4DirIndex)
++
++		other := cfg
++		other.TemplateID = "template-2"
++		assert.False(t, resolveRootfsOptions(t.Context(), builderConfig, client, other).Ext4DirIndex)
++	})
++
++	t.Run("rootfs options resolve independently", func(t *testing.T) {
++		t.Parallel()
++
++		source := ldtestdata.DataSource()
++		source.Update(source.Flag(featureflags.BuildEnvdMemoryProtection.Key()).BooleanFlag().VariationForAll(true))
++		source.Update(source.Flag(flag.Key()).BooleanFlag().VariationForAll(false))
++
++		client := newFlagClient(t, source)
++		options := resolveRootfsOptions(t.Context(), cfgpkg.BuilderConfig{}, client, cfg)
++		assert.True(t, options.EnvdMemoryProtection)
++		assert.False(t, options.Ext4DirIndex)
+ 	})
+ }
+diff --git a/packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go b/packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go
+index 3285264..08a6622 100644
+--- a/packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go
++++ b/packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go
+@@ -156,7 +156,7 @@ func (r *Rootfs) CreateExt4Filesystem(
+ 	l.Info(ctx, "Creating file system and pulling Docker image")
+ 	maxRootfsSize := units.MBToBytes(int64(r.featureFlags.IntFlag(ctx, featureflags.BuildBaseRootfsSizeLimitMB)))
+ 	mkfsOpts := filesystem.MakeOptions{
+-		DirIndex: r.featureFlags.BoolFlag(ctx, featureflags.BuildExt4DirIndex),
++		DirIndex: r.buildContext.Rootfs.Ext4DirIndex,
+ 	}
+ 	ext4Size, err := oci.ToExt4(ctx, l, img, rootfsPath, maxRootfsSize, template.RootfsBlockSize(), mkfsOpts)
+ 	if err != nil {
+diff --git a/packages/orchestrator/pkg/template/build/phases/base/hash.go b/packages/orchestrator/pkg/template/build/phases/base/hash.go
+index ea14a6d..39a0c4f 100644
+--- a/packages/orchestrator/pkg/template/build/phases/base/hash.go
++++ b/packages/orchestrator/pkg/template/build/phases/base/hash.go
+@@ -73,7 +73,10 @@ func (bb *BaseBuilder) Hash(ctx context.Context, _ phases.LayerResult) (string,
+ 		// image) or never reads them (OpenRC) gains nothing from the request
+ 		// reported here, and such a template still rebuilds once when the
+ 		// option flips, for no runtime effect.
+-		attrs = append(attrs, attribute.Int64("envd_memory_min_mib", envdMemoryMinMiB(bb.BuildContext)))
++		attrs = append(attrs,
++			attribute.Int64("envd_memory_min_mib", envdMemoryMinMiB(bb.BuildContext)),
++			attribute.Bool("ext4_dir_index", bb.BuildContext.Rootfs.Ext4DirIndex),
++		)
+ 	}
+ 	telemetry.SetAttributes(ctx, attrs...)
+ 
+@@ -106,6 +109,11 @@ func envdMemoryMinMiB(buildContext buildcontext.BuildContext) int64 {
+ // return a team to the key its existing layers are stored under.
+ const envdMemoryProtectionKey = "envd-memory-protection"
+ 
++// ext4DirIndexKey is versioned because the option changes bytes on disk rather
++// than files rendered into the image. Keep it absent when the option is off so
++// existing rootfs cache keys remain byte-for-byte stable.
++const ext4DirIndexKey = "ext4-dir-index:v1"
++
+ // baseLayerKey assembles the base layer's cache key from inputs that are
+ // already resolved. It is pure so that the properties the key must have — the
+ // same digest as before for a build that opts into nothing, a distinct one for
+@@ -148,5 +156,9 @@ func baseLayerKey(indexVersion, provisionVersion, baseSource string, buildContex
+ 		keys = append(keys, fmt.Sprintf("%s:%d:%d", envdMemoryProtectionKey, rootfs.EnvdMemoryMinMiB, rootfs.EnvdMemoryLowMiB))
+ 	}
+ 
++	if rendersRootfsFiles(buildContext) && buildContext.Rootfs.Ext4DirIndex {
++		keys = append(keys, ext4DirIndexKey)
++	}
++
+ 	return cache.HashKeys(indexVersion, keys...)
+ }
+diff --git a/packages/orchestrator/pkg/template/build/phases/base/hash_test.go b/packages/orchestrator/pkg/template/build/phases/base/hash_test.go
+index c9805c6..c4009d2 100644
+--- a/packages/orchestrator/pkg/template/build/phases/base/hash_test.go
++++ b/packages/orchestrator/pkg/template/build/phases/base/hash_test.go
+@@ -23,6 +23,13 @@ func envdMemoryContext(on bool, memoryMB int64) buildcontext.BuildContext {
+ 	}
+ }
+ 
++func ext4DirIndexContext(on bool) buildcontext.BuildContext {
++	return buildcontext.BuildContext{
++		Config: config.TemplateConfig{DiskSizeMB: testDiskSizeMB},
++		Rootfs: buildcontext.RootfsOptions{Ext4DirIndex: on},
++	}
++}
++
+ func fromTemplate(buildContext buildcontext.BuildContext) buildcontext.BuildContext {
+ 	buildContext.Config.FromTemplate = &templatemanager.FromTemplateConfig{Alias: "parent", BuildID: "parent-build"}
+ 
+@@ -133,6 +140,60 @@ func TestEnvdMemoryMinMiBAttribute(t *testing.T) {
+ 	})
+ }
+ 
++func TestExt4DirIndexCacheKey(t *testing.T) {
++	t.Parallel()
++
++	off := testLayerKey(ext4DirIndexContext(false))
++	on := testLayerKey(ext4DirIndexContext(true))
++
++	t.Run("off contributes nothing and keeps the legacy digest", func(t *testing.T) {
++		t.Parallel()
++
++		assert.Equal(t, legacyLayerKey(), off)
++	})
++
++	t.Run("on cannot reuse an image built off", func(t *testing.T) {
++		t.Parallel()
++
++		assert.NotEqual(t, off, on)
++		assert.Equal(t, cache.HashKeys(testIndexVersion, testProvisionVersion, "1024", testBaseSource, "ext4-dir-index:v1"), on)
++	})
++
++	t.Run("off again returns to the legacy digest", func(t *testing.T) {
++		t.Parallel()
++
++		assert.Equal(t, legacyLayerKey(), testLayerKey(ext4DirIndexContext(false)))
++	})
++
++	t.Run("a build from a template inherits the parent's filesystem", func(t *testing.T) {
++		t.Parallel()
++
++		assert.Equal(t,
++			testLayerKey(fromTemplate(ext4DirIndexContext(false))),
++			testLayerKey(fromTemplate(ext4DirIndexContext(true))),
++		)
++	})
++
++	t.Run("the rootfs options are independent cache-key contributions", func(t *testing.T) {
++		t.Parallel()
++
++		bothContext := envdMemoryContext(true, 4096)
++		bothContext.Rootfs.Ext4DirIndex = true
++
++		keys := []string{
++			off,
++			on,
++			testLayerKey(envdMemoryContext(true, 4096)),
++			testLayerKey(bothContext),
++		}
++		for i := range keys {
++			for j := i + 1; j < len(keys); j++ {
++				assert.NotEqual(t, keys[i], keys[j], "keys %d and %d collide", i, j)
++			}
++		}
++	})
++}
++
+ func TestRendersRootfsFiles(t *testing.T) {
+ 	t.Parallel()
+ 
+diff --git a/packages/shared/pkg/featureflags/flags.go b/packages/shared/pkg/featureflags/flags.go
+index eec7eb3..6071d02 100644
+--- a/packages/shared/pkg/featureflags/flags.go
++++ b/packages/shared/pkg/featureflags/flags.go
+@@ -390,8 +390,8 @@ var (
+ 	BuildEnsureFreeDiskSpace = NewBoolFlag("build-ensure-free-disk-space", false)
+ 
+ 	// BuildExt4DirIndex keeps the htree directory index that mkfs.ext4 enables by
+-	// default on the rootfs. Read at mkfs time, so it governs only rootfs images
+-	// built after the flip.
++	// default on the rootfs. It is resolved once per build and included in the
++	// base-layer cache key, so it governs only rootfs images built after the flip.
+ 	BuildExt4DirIndex = NewBoolFlag("build-ext4-dir-index", false)
+ )
+ 

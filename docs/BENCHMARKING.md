@@ -707,6 +707,158 @@ BREZEL_BENCHMARK_REGION=us-east4 \
 node benchmarks/computesdk/dax-rehearsal.mjs > dax-report.json
 ```
 
+#### Same-host paired DAX experiments
+
+Use `dax-paired-ab.mjs` when a host, guest-shape, image, or storage change needs
+a causal before/after answer. The harness creates an immutable, seeded schedule
+of baseline/candidate pairs, validates every raw pinned-DAX transcript, and
+merges only a complete chronological schedule. It deliberately does not change
+the host or deploy a profile. The operator must activate and requalify the arm
+shown by `next` before collecting that slot.
+
+Start with at least five pairs. Put only non-secret identities in the config:
+
+```json
+{
+  "schemaVersion": 1,
+  "suite": "brezel-dax-paired-ab-config",
+  "seed": "n2-vcpu-20260916",
+  "pairs": 5,
+  "iterationsPerSlot": 3,
+  "bootstrapSamples": 10000,
+  "commonIdentity": {
+    "sourceRevision": "0123456789abcdef0123456789abcdef01234567",
+    "endpoint": "https://sandbox.example.net",
+    "region": "us-east4",
+    "hostIdentitySha256": "<sha256-of-stable-provider-host-and-topology-manifest>"
+  },
+  "arms": {
+    "baseline": {
+      "environmentRevision": "envr_baseline",
+      "configurationIdentitySha256": "<sha256-of-rendered-baseline-profile-and-image-manifest>",
+      "guest": { "cpus": 8, "architecture": "x86_64", "memoryKiB": 16392004, "minimumFreeRootKiB": 16777216, "uid": 0 }
+    },
+    "candidate": {
+      "environmentRevision": "envr_candidate",
+      "configurationIdentitySha256": "<sha256-of-rendered-candidate-profile-and-image-manifest>",
+      "guest": { "cpus": 16, "architecture": "x86_64", "memoryKiB": 32784008, "minimumFreeRootKiB": 16777216, "uid": 0 }
+    }
+  }
+}
+```
+
+Generate the plan once and do not edit it:
+
+```sh
+node benchmarks/computesdk/dax-paired-ab.mjs plan experiment.json > experiment.plan.json
+mkdir -m 700 experiment-reports
+node benchmarks/computesdk/dax-paired-ab.mjs next experiment.plan.json experiment-reports
+```
+
+After installing and qualifying the arm named by `next`, export the common
+identity and credential variables. `run-next` supplies only the planned arm's
+immutable environment revision and paired evidence bindings to the existing DAX
+runner:
+
+```sh
+export BREZEL_API_URL=https://sandbox.example.net
+export BREZEL_SERVICE_TOKEN_FILE=/run/secrets/brezel-service-token
+export BREZEL_PROJECT_ID=brezel-dax
+export BREZEL_ALLOW_INTERNET=true
+export BREZEL_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567
+export BREZEL_BENCHMARK_REGION=us-east4
+
+node benchmarks/computesdk/dax-paired-ab.mjs run-next experiment.plan.json experiment-reports
+```
+
+Repeat `next`, arm activation, qualification, and `run-next` until the schedule
+is complete, then merge it:
+
+```sh
+node benchmarks/computesdk/dax-paired-ab.mjs merge experiment.plan.json experiment-reports \
+  > experiment.paired-report.json
+```
+
+Each slot statistic is the median of its fresh-sandbox attempts. Each inferential
+observation is one randomized same-host pair, not one attempt. The merger reports
+paired median deltas, relative deltas, speedups, and deterministic percentile
+bootstrap intervals over pairs. It also binds every source report by SHA-256 and
+rejects gaps, extra reports, identity drift, machine drift, overlapping slots,
+incomplete cleanup, altered phase order, or malformed transcripts. Host and
+configuration digests are operator-supplied bindings, not hardware attestation.
+This is same-host engineering evidence; it is neither an independent ComputeSDK
+leaderboard result nor a cross-provider performance claim.
+
+##### Ext4 directory-index candidate gate
+
+The pinned engine can keep ext4's htree directory index for a selected template
+without changing the fleet default. Build two new immutable revisions from the
+same general-development OCI manifest and template contents. Leave both the
+`build-ext4-dir-index` flag and the local allowlist empty for the baseline. For
+the candidate, create the template record first, retain its immutable template
+ID, then set only that ID before restarting and requalifying the engine:
+
+```sh
+export BREZEL_ENGINE_EXT4_DIR_INDEX_TEMPLATE_IDS=template_id_from_create
+```
+
+Multiple IDs are comma-separated with no whitespace. Empty is the default;
+empty members, whitespace, and duplicates fail engine startup. A hosted
+deployment may target the same template context with `build-ext4-dir-index`
+instead, but one experiment must use one activation mechanism, not both. Submit
+the candidate build only after the requalified engine reports ready. The option
+is resolved once at build time and contributes `ext4-dir-index:v1` to the
+base-layer cache key, so do not reuse an environment revision that predates the
+change. A build derived from another template inherits its parent's filesystem;
+rebuild the OCI-based parent instead of selecting a child.
+
+Before timing, open one fresh sandbox from each revision and record:
+
+```sh
+root_device=$(findmnt -n -o SOURCE /)
+tune2fs -l "$root_device" | sed -n 's/^Filesystem features:[[:space:]]*//p'
+```
+
+Require `dir_index` only on the candidate and retain both outputs with the
+environment manifests. Keep every other paired-plan field identical: 8 vCPU,
+16 GiB, root UID, free-root floor, image manifest, host, NBD queue count,
+network policy, and release revision. The two
+`configurationIdentitySha256` values must hash those manifests and the explicit
+flag value. Use `pairs: 5` and `iterationsPerSlot: 3` in the strict paired
+runner above. Activate and qualify exactly the arm returned by `next`, then run
+`run-next`; never collect both arms under one mutable alias.
+
+Treat this as a release candidate only if all 30 fresh-sandbox attempts pass
+the pinned transcript and cleanup gates, the paired bootstrap interval excludes
+zero, provider-observed DAX total improves by at least 3%, and no phase or tail
+regresses materially. A metadata-only win does not justify promotion.
+
+Run filesystem diagnostics outside the scored DAX boundary, in fresh sandboxes
+from the same two revisions. Install the same pinned `fsmark` and `fio` packages
+in both images before they are built; do not install them during a timed run.
+For each arm, repeat these commands in five fresh sandboxes and retain stdout,
+elapsed time, guest memory, OOM counters, and host NBD/I/O telemetry:
+
+```sh
+set -eu
+rm -rf /var/tmp/brezel-fsmark /var/tmp/brezel-fio
+mkdir -p /var/tmp/brezel-fsmark /var/tmp/brezel-fio
+
+fs_mark -d /var/tmp/brezel-fsmark -D 256 -N 1000 -n 10000 \
+  -s 4096 -t 8 -S 0 -L 3 -l /tmp/fs-mark.log
+
+fio --name=small-files --directory=/var/tmp/brezel-fio --ioengine=sync \
+  --rw=randwrite --bs=4k --filesize=4k --nrfiles=32768 --openfiles=256 \
+  --numjobs=8 --create_on_open=1 --fallocate=none --fsync=0 \
+  --group_reporting --output-format=json --output=/tmp/fio.json
+```
+
+After the write diagnostic, stop and resume one sandbox from each arm, hash the
+created trees before and after resume, and require exact equality. Also run one
+concurrent create/delete cycle per arm and require clean teardown. Promote the
+option only if metadata throughput improves by at least 10% with no DAX,
+snapshot/resume, memory-pressure, or cleanup regression.
+
 For Burst TTI, reinstall and requalify the 100-way profile, then run:
 
 ```sh
