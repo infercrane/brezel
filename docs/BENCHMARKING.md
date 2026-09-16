@@ -206,6 +206,57 @@ the evidence to OS, kernel, CPU topology, memory, filesystem, KVM/TUN
 availability, Docker runtime, repository revision, runtime image, benchmark
 binary digest, engine lock digest, and before/after load.
 
+### Opt-in host telemetry for DAX diagnosis
+
+`brezel-host-telemetry` is a Linux-only, host-side diagnostic collector. It is
+not started by the installer or runtime and never enters a guest. Build it from
+the exact source revision under test, then start it before the DAX run on an
+otherwise dedicated host:
+
+```sh
+go build -trimpath -o bin/brezel-host-telemetry ./cmd/brezel-host-telemetry
+sudo bin/brezel-host-telemetry \
+  -output "/var/lib/brezel/diagnostics/c3-$(date -u +%Y%m%dT%H%M%SZ)" \
+  -duration 30m \
+  -max-bytes 134217728
+```
+
+Send `SIGINT` or `SIGTERM` after the measured workload when the configured
+duration is longer than the run. Cancellation is a successful bounded stop:
+the collector syncs `samples.ndjson`, writes `manifest.json`, writes
+`SHA256SUMS`, and syncs the artifact directory before returning. It refuses an
+existing output directory, caps process, block-device, and interface
+cardinality, and stops before the samples file exceeds its configured byte
+limit. The default maximum duration is 30 minutes; the hard maximum is 24
+hours.
+
+Each one-second sample carries both UTC and monotonic elapsed time. Fixed fields
+cover aggregate CPU busy, iowait, and steal; CPU, memory, and I/O pressure;
+memory, swap, page faults, reclaim stalls, and OOM kills; physical and NBD block
+counters; aggregate interface, TCP, and socket counters; cgroup-v2 CPU, memory,
+I/O, pressure, PID, throttling, and OOM counters; and resource counters for a
+closed allowlist of Brezel runtime process names. Process churn is expected and
+does not terminate collection.
+
+The collector never reads `/proc/*/cmdline`, `/proc/*/environ`, network
+addresses, routes, DNS configuration, guest files, command output, credentials,
+or customer labels. It does not emit cgroup paths. Read failures are fixed
+numeric counters rather than paths or error strings. Run it with sufficient
+host permission to read the relevant process and cgroup counters; missing data
+must remain visible as unavailable fields and read-error counts.
+
+Verify the artifact before analysis:
+
+```sh
+cd /var/lib/brezel/diagnostics/c3-YYYYMMDDTHHMMSSZ
+sha256sum -c SHA256SUMS
+```
+
+Collector CPU, filesystem, and logging work can perturb the host. Use this
+artifact to attribute a bottleneck, not as a leaderboard result. Confirm every
+candidate with randomized paired runs using the collector disabled before
+publishing a latency or throughput claim.
+
 The script runs all eight scenarios under all three load shapes for 24 cells.
 It continues after an ordinary measured failure so the matrix does not
 hide an unfavorable cell. It stops immediately after unconfirmed cleanup or an
