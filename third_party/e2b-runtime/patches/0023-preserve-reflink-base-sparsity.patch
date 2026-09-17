@@ -9,6 +9,24 @@ diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink.go b/packages/orch
  	"context"
  	"crypto/rand"
  	"crypto/sha256"
+@@ -22,6 +23,8 @@ import (
+ 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
+ )
+ 
++const reflinkBaseIdentityDomain = "brezel-rootfs-sparse-materialization-v1"
++
+ const (
+ 	reflinkManifestVersion = 1
+ 	reflinkBaseImageName   = "rootfs.raw"
+@@ -117,7 +120,7 @@ func reflinkSourceIdentity(rootfs block.ReadonlyDevice) (reflinkManifest, error
+ 		return reflinkManifest{}, fmt.Errorf("reflink rootfs requires a positive block-aligned image: size=%d block_size=%d", size, blockSize)
+ 	}
+ 	canonical := fmt.Sprintf(
+-		"brezel-rootfs-v1\nversion=%d\nbuild=%s\nbase=%s\ngeneration=%d\nsize=%d\nblock=%d\n",
++		reflinkBaseIdentityDomain+"\nversion=%d\nbuild=%s\nbase=%s\ngeneration=%d\nsize=%d\nblock=%d\n",
+ 		metadata.Version,
+ 		metadata.BuildId,
+ 		metadata.BaseBuildId,
 @@ -404,6 +405,61 @@ func cleanupReflinkBuild(rootfd int, name string) {
  	_ = unix.Fsync(rootfd)
  }
@@ -121,10 +139,34 @@ diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink.go b/packages/orch
 diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go b/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
 --- a/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
 +++ b/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
-@@ -194,3 +194,84 @@ func TestRememberedReflinkDigestSkipsSecondImageRead(t *testing.T) {
+@@ -6,6 +6,7 @@ import (
+ 	"context"
+ 	"crypto/sha256"
+ 	"encoding/hex"
++	"fmt"
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
+@@ -194,3 +195,100 @@ func TestRememberedReflinkDigestSkipsSecondImageRead(t *testing.T) {
  	resetReflinkDigestCache()
  	require.Error(t, validateReflinkDigest(pathFD, stat, digest, "identity"))
  }
++
++func TestSparseReflinkIdentityDoesNotReuseLegacyDenseBase(t *testing.T) {
++	t.Parallel()
++	device := newIdentityTestRootfs(t, uuid.MustParse("31a2f0bf-7bd8-4bb8-9bf2-8c4ea8e8e1ce"))
++	sparse, err := reflinkSourceIdentity(device)
++	require.NoError(t, err)
++
++	metadata := device.Header().Metadata
++	legacyCanonical := fmt.Sprintf(
++		"brezel-rootfs-v1\nversion=%d\nbuild=%s\nbase=%s\ngeneration=%d\nsize=%d\nblock=%d\n",
++		metadata.Version, metadata.BuildId, metadata.BaseBuildId, metadata.Generation, metadata.Size, metadata.BlockSize,
++	)
++	legacyIdentity := sha256.Sum256([]byte(legacyCanonical))
++	require.NotEqual(t, hex.EncodeToString(legacyIdentity[:]), sparse.Identity)
++	require.Equal(t, "brezel-rootfs-sparse-materialization-v1", reflinkBaseIdentityDomain)
++}
 +
 +func materializeSparseTestFile(t *testing.T, contents []byte) (*os.File, string) {
 +	t.Helper()

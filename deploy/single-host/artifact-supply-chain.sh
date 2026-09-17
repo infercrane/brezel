@@ -365,6 +365,7 @@ write_manifest() {
     if [ -n "$orchestrator_reflink_sparse_materialization_patch_sha256" ]; then
       printf 'artifact.orchestrator.reflink_sparse_materialization_patch_sha256=%s\n' "$orchestrator_reflink_sparse_materialization_patch_sha256"
       printf 'artifact.orchestrator.reflink_base_materialization=logical-byte-and-sha-identical-zero-chunks-sparse\n'
+      printf 'artifact.orchestrator.reflink_base_identity_domain=brezel-rootfs-sparse-materialization-v1\n'
     fi
     if [ -n "$envd_process_tag_patch_sha256" ]; then
       printf 'artifact.envd.process_tag_patch_sha256=%s\n' "$envd_process_tag_patch_sha256"

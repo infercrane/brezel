@@ -60,5 +60,9 @@ change-time fingerprint remains unchanged; a cold process or fingerprint drift
 forces a full rehash. It also replaces all-slot NBD polling with
 release-signaled, cancellation-aware backpressure while keeping every kernel
 slot usable.
+The twenty-third patch preserves zero-filled ranges as holes while still
+hashing the complete logical image. Its versioned sparse-materialization
+identity domain prevents an upgraded engine from reusing a legacy dense base
+with identical immutable build metadata.
 
 Upstream source: <https://github.com/e2b-dev/runtime>

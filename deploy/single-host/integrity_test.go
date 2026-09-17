@@ -584,8 +584,10 @@ func TestInstallerPinsSparseReflinkMaterializationPatch(t *testing.T) {
 	patch := string(patchData)
 	for _, required := range []string{
 		"materializeSparseReflinkContents",
+		`reflinkBaseIdentityDomain = "brezel-rootfs-sparse-materialization-v1"`,
 		"sparse reflink destination must be an empty regular file",
 		"bytes.Equal(buffer[:length], zeroes[:length])",
+		"TestSparseReflinkIdentityDoesNotReuseLegacyDenseBase",
 		"TestSparseReflinkMaterializationPreservesLogicalBytesAndDigest",
 		"TestSparseReflinkMaterializationRejectsNonemptyDestination",
 		"TestSparseReflinkMaterializationColdVerificationRejectsTamper",
@@ -603,6 +605,7 @@ func TestInstallerPinsSparseReflinkMaterializationPatch(t *testing.T) {
 	for _, required := range []string{
 		"artifact.orchestrator.reflink_sparse_materialization_patch_sha256",
 		"artifact.orchestrator.reflink_base_materialization=logical-byte-and-sha-identical-zero-chunks-sparse",
+		"artifact.orchestrator.reflink_base_identity_domain=brezel-rootfs-sparse-materialization-v1",
 		"the reflink sparse-materialization patch requires the reflink/NBD backpressure patch identity",
 	} {
 		if !strings.Contains(supplyChain, required) {
@@ -616,8 +619,11 @@ func TestInstallerPinsSparseReflinkMaterializationPatch(t *testing.T) {
 	}
 	for _, required := range []string{
 		"sparse immutable reflink base materialization",
+		"versioned sparse reflink base identity domain",
+		"sparse reflink upgrade-boundary regression test",
 		"zero-chunk reflink write suppression",
 		`"reflink_base_materialization":"logical-byte-and-sha-identical-zero-chunks-sparse"`,
+		`"reflink_base_identity_domain":"brezel-rootfs-sparse-materialization-v1"`,
 	} {
 		if !strings.Contains(string(capabilityData), required) {
 			t.Fatalf("engine capability probe is missing reflink sparse-materialization contract %q", required)
@@ -1867,6 +1873,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.orchestrator.nbd_saturation=release-signaled-backpressure-all-kernel-slots-usable",
 		"artifact.orchestrator.reflink_sparse_materialization_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.reflink_base_materialization=logical-byte-and-sha-identical-zero-chunks-sparse",
+		"artifact.orchestrator.reflink_base_identity_domain=brezel-rootfs-sparse-materialization-v1",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -2038,8 +2045,8 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/template/build/phases/optimize/builder.go": "WithPrefetch(&metadata.Prefetch\ncontinuing without prefetch\n",
 		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewRuntimeProvider\nexclusive CPU placement requires sandbox cgroup creation\nserveMemoryAfterOverlayReady(ctx, overlayPromise\n",
 		"packages/orchestrator/pkg/sandbox/rootfs/provider.go":                "case \"nbd\":\ncase \"direct\":\ncase \"reflink\":\nos.O_EXCL\nnewOwnedDirectProvider\n",
-		"packages/orchestrator/pkg/sandbox/rootfs/reflink.go":                 "unix.IoctlFileClone\nunix.RENAME_NOREPLACE\nreflink base is missing the filesystem immutable flag\nrememberVerifiedReflinkDigest\nopenPublishedReflinkBase\nmaterializeSparseReflinkContents\nbytes.Equal(buffer[:length], zeroes[:length])\n",
-		"packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go":            "TestRememberedReflinkDigestRejectsSameSizeTamper\nTestReflinkDigestCacheIsProcessLocalAndColdOpenStillVerifies\nTestRememberedReflinkDigestSkipsSecondImageRead\nTestSparseReflinkMaterializationPreservesLogicalBytesAndDigest\nTestSparseReflinkMaterializationColdVerificationRejectsTamper\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/reflink.go":                 "unix.IoctlFileClone\nunix.RENAME_NOREPLACE\nreflink base is missing the filesystem immutable flag\nrememberVerifiedReflinkDigest\nopenPublishedReflinkBase\nmaterializeSparseReflinkContents\nreflinkBaseIdentityDomain = \"brezel-rootfs-sparse-materialization-v1\"\nbytes.Equal(buffer[:length], zeroes[:length])\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go":            "TestRememberedReflinkDigestRejectsSameSizeTamper\nTestReflinkDigestCacheIsProcessLocalAndColdOpenStillVerifies\nTestRememberedReflinkDigestSkipsSecondImageRead\nTestSparseReflinkIdentityDoesNotReuseLegacyDenseBase\nTestSparseReflinkMaterializationPreservesLogicalBytesAndDigest\nTestSparseReflinkMaterializationColdVerificationRejectsTamper\n",
 		"packages/orchestrator/pkg/sandbox/rootfs/direct.go":                  "newOwnedDirectProvider\nremoveOwnedPath\n",
 		"packages/orchestrator/pkg/sandbox/rootfs/direct_lifecycle_test.go":   "TestBorrowedDirectProviderExportPreservesTemplateRootfs\nTestOwnedDirectRuntimeCloseRemovesOnlyPrivateClone\nTestOwnedDirectProviderExportTimeoutPreservesClone\n",
 		"packages/orchestrator/pkg/sandbox/resume_resource_order_test.go":     "TestServeMemoryAfterOverlayReadyDoesNotArmListenerDuringSlowOverlay\nTestServeMemoryAfterOverlayReadyPreservesCancellation\n",

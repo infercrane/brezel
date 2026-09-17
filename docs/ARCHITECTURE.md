@@ -278,6 +278,10 @@ the digest computed during its private immutable copy only for the exact
 device, inode, size, change-time, and digest fingerprint; restart or fingerprint
 drift forces a full rehash. A saturated NBD pool sleeps on a release notification
 rather than polling, without reserving a sentinel slot.
+Sparse base materialization uses the explicit identity domain
+`brezel-rootfs-sparse-materialization-v1`. An upgraded engine therefore cannot
+open a dense base published by the legacy identity algorithm, even when the
+immutable template metadata is otherwise identical.
 
 The current single-host profile persists a creation or deletion intent before
 calling the pinned engine. A workspace must be `ready` before attachment. The
