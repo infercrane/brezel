@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/infercrane/brezel/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public issue.
+  - name: Deployment boundary
+    url: https://github.com/infercrane/brezel/blob/main/docs/STATUS.md
+    about: Check the currently qualified host and security boundary first.

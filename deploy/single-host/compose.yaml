@@ -5,6 +5,10 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
+      args:
+        BREZEL_VERSION: ${BREZEL_BUILD_VERSION:-dev}
+        BREZEL_REVISION: ${BREZEL_BUILD_REVISION:-unknown}
+        BREZEL_BUILT_AT: ${BREZEL_BUILD_TIME:-unknown}
     entrypoint: ["/usr/local/bin/brezel-node"]
     restart: unless-stopped
     network_mode: host
@@ -41,6 +45,10 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
+      args:
+        BREZEL_VERSION: ${BREZEL_BUILD_VERSION:-dev}
+        BREZEL_REVISION: ${BREZEL_BUILD_REVISION:-unknown}
+        BREZEL_BUILT_AT: ${BREZEL_BUILD_TIME:-unknown}
     restart: unless-stopped
     network_mode: host
     user: ${BREZEL_UID:?set BREZEL_UID}:${BREZEL_GID:?set BREZEL_GID}

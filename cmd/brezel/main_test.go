@@ -172,3 +172,12 @@ func TestRunRequiresTokenFileAndDoesNotReadTokenValueEnvironment(t *testing.T) {
 		t.Fatalf("run() error = %v, want protected token-file requirement", err)
 	}
 }
+
+func TestHelpAndVersionDoNotRequireCredentials(t *testing.T) {
+	t.Setenv("BREZEL_SERVICE_TOKEN_FILE", "")
+	for _, args := range [][]string{{"help"}, {"--help"}, {"version"}, {"version", "--json"}, {"--version"}} {
+		if err := run(args); err != nil {
+			t.Fatalf("run(%q) = %v", args, err)
+		}
+	}
+}

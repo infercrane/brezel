@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/infercrane/brezel/internal/buildinfo"
 	"github.com/infercrane/brezel/internal/securefile"
 )
 
@@ -69,14 +70,31 @@ func run(args []string) error {
 	baseURL := global.String("url", env("BREZEL_API_URL", "http://127.0.0.1:8080"), "Brezel API URL")
 	tokenFile := global.String("token-file", os.Getenv("BREZEL_SERVICE_TOKEN_FILE"), "protected Brezel service token file")
 	project := global.String("project", env("BREZEL_PROJECT", "brezel-default"), "project ID")
+	showVersion := global.Bool("version", false, "print build identity")
 	if err := global.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printUsage(os.Stdout)
+			return nil
+		}
 		return usageError(err.Error())
+	}
+	if *showVersion {
+		return printVersion(os.Stdout, nil)
 	}
 	remaining := global.Args()
 	if len(remaining) == 0 {
 		return usageError("a command is required")
 	}
-	if remaining[0] == "doctor" {
+	switch remaining[0] {
+	case "help":
+		if len(remaining) != 1 {
+			return usageError("help does not accept arguments")
+		}
+		printUsage(os.Stdout)
+		return nil
+	case "version":
+		return printVersion(os.Stdout, remaining[1:])
+	case "doctor":
 		return doctor(context.Background(), os.Stdout)
 	}
 	if *tokenFile == "" {
@@ -818,6 +836,8 @@ func printUsage(destination io.Writer) {
 	fmt.Fprintln(destination, `Usage: brezel [--url URL] [--token-file FILE] [--project ID] COMMAND
 
 Commands:
+  help
+  version [--json]
   doctor
   new [--template NAME|--from CHECKPOINT_ID] [--workspace ID:/PATH] [--ttl SECONDS] [--standby-after SECONDS]
   run [--cwd PATH] [--timeout SECONDS] [--env KEY=VALUE] SANDBOX_ID COMMAND [ARG...]
@@ -840,6 +860,28 @@ Advanced:
   file put SANDBOX_ID GUEST_PATH LOCAL_PATH
   file get SANDBOX_ID GUEST_PATH LOCAL_PATH_OR_DASH
   port open [--ttl SECONDS] SANDBOX_ID PORT`)
+}
+
+func printVersion(destination io.Writer, args []string) error {
+	flags := flag.NewFlagSet("version", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	asJSON := flags.Bool("json", false, "write build identity as JSON")
+	if err := flags.Parse(args); err != nil {
+		return usageError(err.Error())
+	}
+	if flags.NArg() != 0 {
+		return usageError("version accepts only --json")
+	}
+	info := buildinfo.Current()
+	if *asJSON {
+		return prettyJSON(destination, info)
+	}
+	dirty := ""
+	if info.Modified {
+		dirty = " (modified)"
+	}
+	fmt.Fprintf(destination, "brezel %s\nrevision %s%s\nbuilt %s\n", info.Version, info.Revision, dirty, info.BuiltAt)
+	return nil
 }
 
 func env(name, fallback string) string {

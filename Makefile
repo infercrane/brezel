@@ -1,13 +1,29 @@
-.PHONY: build check test test-integrations test-race vet qualify-single-host qualify-rootdevice-reflink benchmark-single-host benchmark-dax-local
+.PHONY: build check fmt-check shell-syntax verify-engine-patches test test-integrations test-race vet qualify-single-host qualify-rootdevice-reflink benchmark-single-host benchmark-dax-local
+
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf dev)
+REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || printf unknown)
+BUILT_AT ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+GO_BUILD_FLAGS ?= -trimpath -buildvcs=true -ldflags "-X github.com/infercrane/brezel/internal/buildinfo.Version=$(VERSION) -X github.com/infercrane/brezel/internal/buildinfo.Revision=$(REVISION) -X github.com/infercrane/brezel/internal/buildinfo.BuiltAt=$(BUILT_AT)"
 
 build:
 	mkdir -p bin
-	go build -trimpath -o bin/brezeld ./cmd/brezeld
-	go build -trimpath -o bin/brezel-node ./cmd/brezel-node
-	go build -trimpath -o bin/brezel-conformance ./cmd/brezel-conformance
-	go build -trimpath -o bin/brezel-bench ./cmd/brezel-bench
-	go build -trimpath -o bin/brezel-bench-compare ./cmd/brezel-bench-compare
-	go build -trimpath -o bin/brezel ./cmd/brezel
+	go build $(GO_BUILD_FLAGS) -o bin/brezeld ./cmd/brezeld
+	go build $(GO_BUILD_FLAGS) -o bin/brezel-node ./cmd/brezel-node
+	go build $(GO_BUILD_FLAGS) -o bin/brezel-conformance ./cmd/brezel-conformance
+	go build $(GO_BUILD_FLAGS) -o bin/brezel-bench ./cmd/brezel-bench
+	go build $(GO_BUILD_FLAGS) -o bin/brezel-bench-compare ./cmd/brezel-bench-compare
+	go build $(GO_BUILD_FLAGS) -o bin/brezel ./cmd/brezel
+
+fmt-check:
+	@files="$$(find cmd internal spec deploy -type f -name '*.go' -print)"; \
+	unformatted="$$(gofmt -l $$files)"; \
+	if [ -n "$$unformatted" ]; then printf 'gofmt required:\n%s\n' "$$unformatted" >&2; exit 1; fi
+
+shell-syntax:
+	@find deploy benchmarks -type f -name '*.sh' -exec sh -c 'for file do case "$$(head -n 1 "$$file")" in *bash*) bash -n "$$file" ;; *) sh -n "$$file" ;; esac || exit 1; done' sh {} +
+
+verify-engine-patches:
+	./deploy/single-host/verify-engine-patch-chain.sh
 
 test:
 	go test ./...
@@ -28,7 +44,8 @@ test-race:
 vet:
 	go vet ./...
 
-check: test test-integrations test-race vet build
+check: fmt-check shell-syntax test test-integrations test-race vet build
+	bin/brezel version --json
 	git diff --check
 
 # Destructive: installs the pinned engine and creates real microVM resources.

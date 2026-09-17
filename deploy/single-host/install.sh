@@ -471,6 +471,10 @@ printf '%s\n' "$BREZEL_SOURCE_REVISION" | grep -Eq '^[0-9a-f]{40}$' || {
   echo "the Brezel source checkout has no exact commit" >&2
   exit 1
 }
+BREZEL_BUILD_VERSION=$(git -C "$REPO_DIR" describe --tags --always)
+BREZEL_BUILD_REVISION=$BREZEL_SOURCE_REVISION
+BREZEL_BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+export BREZEL_BUILD_VERSION BREZEL_BUILD_REVISION BREZEL_BUILD_TIME
 
 # Docker's Linux user parser accepts signed 32-bit IDs. Cloud OS Login and
 # directory-backed identities can legitimately allocate larger host IDs, but
@@ -959,7 +963,11 @@ cat > "$ACCESS_POLICY_TMP" <<EOF
 EOF
 chmod 600 "$ACCESS_POLICY_TMP"
 mv -f -- "$ACCESS_POLICY_TMP" "$SECRETS_DIR/access-policy.json"
-BREZEL_IMAGE=$(docker build -q -f "$REPO_DIR/Dockerfile" "$REPO_DIR")
+BREZEL_IMAGE=$(docker build -q \
+  --build-arg "BREZEL_VERSION=$BREZEL_BUILD_VERSION" \
+  --build-arg "BREZEL_REVISION=$BREZEL_BUILD_REVISION" \
+  --build-arg "BREZEL_BUILT_AT=$BREZEL_BUILD_TIME" \
+  -f "$REPO_DIR/Dockerfile" "$REPO_DIR")
 if [ ! -s "$SECRETS_DIR/receipt.key" ]; then
   docker run --rm \
     --user "$(id -u):$(id -g)" \

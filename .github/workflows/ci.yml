@@ -17,19 +17,17 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.23.x"
+          go-version: "1.26.6"
           cache: true
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22.x"
       - name: Verify vendored engine patch chain with GNU patch
         run: ./deploy/single-host/verify-engine-patch-chain.sh
-      - name: Unit, contract, and security-negative tests
-        run: go test ./...
-      - name: Race detector
-        run: go test -race ./...
-      - name: Vet
-        run: go vet ./...
+      - name: Repository checks
+        run: make check
+      - name: Go vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - name: Reject whitespace errors
         shell: bash
         run: |
@@ -39,23 +37,12 @@ jobs:
           else
             git diff-tree --check --no-commit-id --root -r HEAD
           fi
-      - name: ComputeSDK adapter contract
-        run: |
-          node --test benchmarks/computesdk/adapter.test.mjs
-          node --check benchmarks/computesdk/adapter.mjs
-          node --check benchmarks/computesdk/provider-entry.mjs
-          node --check benchmarks/computesdk/qualified-smoke.mjs
-      - name: Build release entrypoint
-        run: |
-          go build -trimpath -o bin/brezeld ./cmd/brezeld
-          go build -trimpath -o bin/brezel-node ./cmd/brezel-node
-          go build -trimpath -o bin/brezel-conformance ./cmd/brezel-conformance
-          go build -trimpath -o bin/brezel-bench ./cmd/brezel-bench
-          go build -trimpath -o bin/brezel-bench-compare ./cmd/brezel-bench-compare
-          go build -trimpath -o bin/brezel ./cmd/brezel
       - name: Build release image
-        run: docker build --tag brezel-ci:${{ github.sha }} .
-      - name: Validate release shell entrypoints
         run: |
-          sh -n deploy/single-host/install.sh
-          sh -n deploy/single-host/qualify.sh
+          docker build \
+            --build-arg "BREZEL_VERSION=${GITHUB_SHA::12}" \
+            --build-arg "BREZEL_REVISION=$GITHUB_SHA" \
+            --build-arg "BREZEL_BUILT_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            --tag brezel-ci:${{ github.sha }} .
+          docker run --rm --entrypoint /usr/local/bin/brezel \
+            brezel-ci:${{ github.sha }} version --json

@@ -6,7 +6,7 @@ credentials, networking, storage, or API semantics.
 
 ## Local checks
 
-Use the Go version declared by `go.mod`, then run:
+Use the exact Go toolchain declared by `go.mod`, then run:
 
 ```bash
 make check

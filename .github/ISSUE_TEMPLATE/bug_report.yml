@@ -1,0 +1,73 @@
+name: Bug report
+description: Report reproducible incorrect behavior in a supported Brezel deployment.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never include credentials, customer data, capability URLs, or private command output. Report security issues through a private security advisory.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the current status and deployment boundary.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I removed credentials and customer content.
+          required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Brezel revision
+      description: Output from `brezel version --json` or an exact Git commit.
+      placeholder: 40-character commit SHA
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: OS, architecture, CPU count, memory, and whether KVM is available.
+      placeholder: Ubuntu 24.04, x86-64, 16 vCPU, 64 GiB, KVM
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment profile
+      options:
+        - Local repository checks only
+        - Qualified single-host profile
+        - ComputeSDK DAX profile
+        - Burst 100 profile
+        - Unsupported or modified profile
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include exact commands with all secrets and customer content removed.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Content-free evidence
+      description: Relevant state names, error codes, timestamps, and sanitized logs.
