@@ -111,7 +111,7 @@ diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go b/packages
 index 756b7bd..d058534 100644
 --- a/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
 +++ b/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
-@@ -4,7 +4,10 @@ package rootfs
+@@ -4,14 +4,18 @@ package rootfs
  
  import (
  	"context"
@@ -122,7 +122,6 @@ index 756b7bd..d058534 100644
  	"testing"
 +	"time"
  
-@@ -11,6 +14,7 @@ import (
  	"github.com/google/uuid"
  	"github.com/stretchr/testify/assert"
  	"github.com/stretchr/testify/require"
@@ -130,6 +129,7 @@ index 756b7bd..d058534 100644
  
  	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
  	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
+ )
 @@ -70,3 +74,123 @@ func TestReflinkProviderFailsClosedWithoutExplicitCache(t *testing.T) {
  	_, statErr := os.Stat(target)
  	assert.ErrorIs(t, statErr, os.ErrNotExist)
