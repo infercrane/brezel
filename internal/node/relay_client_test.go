@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -143,7 +144,7 @@ func TestRelayDataPlaneEndToEndProtocol(t *testing.T) {
 	if len(events) != 3 || string(events[1].Data) != "ok\n" {
 		t.Fatalf("unexpected command events: %#v", events)
 	}
-	assertRelayDiagnostic(t, diagnostics.samples, telemetry.CommandDiagnosticRelayClient, 3, 3)
+	assertRelayDiagnostic(t, diagnostics.snapshot(), telemetry.CommandDiagnosticRelayClient, 3, 3)
 	info, err := client.WriteFile(context.Background(), binding, "/workspace/a", strings.NewReader("data"))
 	if err != nil || info.Size != 4 {
 		t.Fatalf("WriteFile()=%#v, %v", info, err)
@@ -242,11 +243,12 @@ func TestRelayDataPlaneReturnsAndCancelsAfterConfirmedExitWithoutWaitingForEOF(t
 	case <-time.After(time.Second):
 		t.Fatal("accepted terminal event did not promptly cancel the relay request")
 	}
-	if len(diagnostics.samples) != 1 {
-		t.Fatalf("command diagnostics = %#v", diagnostics.samples)
+	samples := diagnostics.snapshot()
+	if len(samples) != 1 {
+		t.Fatalf("command diagnostics = %#v", samples)
 	}
-	if tail := diagnostics.samples[0].AcceptedToEOFReady - diagnostics.samples[0].AcceptedToTerminal; tail < 0 || tail >= 250*time.Millisecond {
-		t.Fatalf("terminal-to-return tail = %s, diagnostics = %#v", tail, diagnostics.samples[0])
+	if tail := samples[0].AcceptedToEOFReady - samples[0].AcceptedToTerminal; tail < 0 || tail >= 250*time.Millisecond {
+		t.Fatalf("terminal-to-return tail = %s, diagnostics = %#v", tail, samples[0])
 	}
 }
 
@@ -346,8 +348,8 @@ func TestRelayClientAndServerEndToEnd(t *testing.T) {
 	if len(events) != 3 || harness.engine.lastEngineID != relayServerEngineID {
 		t.Fatalf("command events=%#v engine=%q", events, harness.engine.lastEngineID)
 	}
-	assertRelayDiagnostic(t, clientDiagnostics.samples, telemetry.CommandDiagnosticRelayClient, 3, 3)
-	assertRelayDiagnostic(t, serverDiagnostics.samples, telemetry.CommandDiagnosticRelayServer, 3, 3)
+	assertRelayDiagnostic(t, clientDiagnostics.waitFor(t, 1), telemetry.CommandDiagnosticRelayClient, 3, 3)
+	assertRelayDiagnostic(t, serverDiagnostics.waitFor(t, 1), telemetry.CommandDiagnosticRelayServer, 3, 3)
 	info, err := client.WriteFile(context.Background(), binding, "/workspace/e2e.txt", strings.NewReader("relay"))
 	if err != nil || info.Size != 5 || string(harness.engine.writtenData) != "relay" {
 		t.Fatalf("WriteFile()=%#v data=%q error=%v", info, harness.engine.writtenData, err)
@@ -374,11 +376,35 @@ func TestRelayClientAndServerEndToEnd(t *testing.T) {
 }
 
 type relayDiagnosticCollector struct {
+	mu      sync.Mutex
 	samples []telemetry.CommandDiagnostic
 }
 
 func (c *relayDiagnosticCollector) ObserveCommandDiagnostic(sample telemetry.CommandDiagnostic) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.samples = append(c.samples, sample)
+}
+
+func (c *relayDiagnosticCollector) snapshot() []telemetry.CommandDiagnostic {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]telemetry.CommandDiagnostic(nil), c.samples...)
+}
+
+func (c *relayDiagnosticCollector) waitFor(t *testing.T, count int) []telemetry.CommandDiagnostic {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		samples := c.snapshot()
+		if len(samples) >= count {
+			return samples
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d diagnostic samples; got %#v", count, samples)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func assertRelayDiagnostic(t *testing.T, samples []telemetry.CommandDiagnostic, component telemetry.CommandDiagnosticComponent, events, bytes uint64) {
