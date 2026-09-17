@@ -299,7 +299,7 @@ func TestGuestRunReturnsAndCancelsAfterConfirmedExitWithoutWaitingForEOF(t *test
 	}
 	select {
 	case <-processService.terminalSent:
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("guest did not send the terminal event")
 	}
 	select {

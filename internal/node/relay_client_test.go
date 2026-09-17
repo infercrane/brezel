@@ -235,7 +235,7 @@ func TestRelayDataPlaneReturnsAndCancelsAfterConfirmedExitWithoutWaitingForEOF(t
 	}
 	select {
 	case <-terminalSent:
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("relay did not send the terminal event")
 	}
 	select {
