@@ -30,25 +30,28 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		t.Fatalf("engine.lock commit %q differs from audited adapter revision %q", values["commit"], e2b.AuditedRevision)
 	}
 	patches := map[string]string{
-		"api_patch_sha256":                                "0001-harden-volume-secrets-and-cleanup.patch",
-		"api_build_patch_sha256":                          "0002-pin-api-build-images.patch",
-		"orchestrator_lifecycle_patch_sha256":             "0003-acknowledge-delete-after-sandbox-teardown.patch",
-		"orchestrator_cache_patch_sha256":                 "0004-bound-snapshot-diff-cache.patch",
-		"orchestrator_nfs_durability_patch_sha256":        "0005-make-nfs-writes-crash-durable.patch",
-		"engine_start_admission_patch_sha256":             "0006-bound-start-admission-retries.patch",
-		"engine_local_capacity_patch_sha256":              "0007-scale-local-resource-pools-and-template-shape.patch",
-		"envd_process_tag_patch_sha256":                   "0008-fix-envd-process-tag-resolution.patch",
-		"envd_process_replay_patch_sha256":                "0009-add-bounded-process-output-replay.patch",
-		"orchestrator_cpu_topology_patch_sha256":          "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
-		"orchestrator_rootfs_read_patch_sha256":           "0011-reduce-rootfs-read-amplification.patch",
-		"orchestrator_nbd_multiqueue_patch_sha256":        "0012-harden-nbd-multiqueue-lifecycle.patch",
-		"orchestrator_cpuset_qualification_patch_sha256":  "0013-qualify-cpuset-exclusive-cpu-topology.patch",
-		"orchestrator_ext4_dir_index_patch_sha256":        "0014-opt-in-ext4-dir-index.patch",
-		"base_template_identity_patch_sha256":             "0015-parameterize-base-template-identity.patch",
-		"orchestrator_direct_rootfs_patch_sha256":         "0016-opt-in-direct-rootfs-provider.patch",
-		"orchestrator_resume_cleanup_patch_sha256":        "0017-bound-resume-failure-cleanup.patch",
-		"orchestrator_nbd_provider_scope_patch_sha256":    "0018-scope-nbd-pool-to-nbd-runtime.patch",
-		"orchestrator_rootfs_mount_boundary_patch_sha256": "0019-reject-rootfs-cache-mount-shadowing.patch",
+		"api_patch_sha256":                                   "0001-harden-volume-secrets-and-cleanup.patch",
+		"api_build_patch_sha256":                             "0002-pin-api-build-images.patch",
+		"orchestrator_lifecycle_patch_sha256":                "0003-acknowledge-delete-after-sandbox-teardown.patch",
+		"orchestrator_cache_patch_sha256":                    "0004-bound-snapshot-diff-cache.patch",
+		"orchestrator_nfs_durability_patch_sha256":           "0005-make-nfs-writes-crash-durable.patch",
+		"engine_start_admission_patch_sha256":                "0006-bound-start-admission-retries.patch",
+		"engine_local_capacity_patch_sha256":                 "0007-scale-local-resource-pools-and-template-shape.patch",
+		"envd_process_tag_patch_sha256":                      "0008-fix-envd-process-tag-resolution.patch",
+		"envd_process_replay_patch_sha256":                   "0009-add-bounded-process-output-replay.patch",
+		"orchestrator_cpu_topology_patch_sha256":             "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
+		"orchestrator_rootfs_read_patch_sha256":              "0011-reduce-rootfs-read-amplification.patch",
+		"orchestrator_nbd_multiqueue_patch_sha256":           "0012-harden-nbd-multiqueue-lifecycle.patch",
+		"orchestrator_cpuset_qualification_patch_sha256":     "0013-qualify-cpuset-exclusive-cpu-topology.patch",
+		"orchestrator_ext4_dir_index_patch_sha256":           "0014-opt-in-ext4-dir-index.patch",
+		"base_template_identity_patch_sha256":                "0015-parameterize-base-template-identity.patch",
+		"orchestrator_direct_rootfs_patch_sha256":            "0016-opt-in-direct-rootfs-provider.patch",
+		"orchestrator_resume_cleanup_patch_sha256":           "0017-bound-resume-failure-cleanup.patch",
+		"orchestrator_nbd_provider_scope_patch_sha256":       "0018-scope-nbd-pool-to-nbd-runtime.patch",
+		"orchestrator_rootfs_mount_boundary_patch_sha256":    "0019-reject-rootfs-cache-mount-shadowing.patch",
+		"orchestrator_rootfs_clone_lifecycle_patch_sha256":   "0020-own-runtime-rootfs-clone-lifecycle.patch",
+		"orchestrator_uffd_rootfs_order_patch_sha256":        "0021-gate-uffd-listener-on-rootfs-readiness.patch",
+		"orchestrator_reflink_nbd_backpressure_patch_sha256": "0022-avoid-reflink-rehash-and-nbd-spin.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -350,6 +353,173 @@ func TestInstallerPinsRootfsMountBoundaryPatch(t *testing.T) {
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("artifact manifest is missing rootfs mount-boundary contract %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsRootfsCloneLifecyclePatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0020-own-runtime-rootfs-clone-lifecycle.patch",
+		"orchestrator_rootfs_clone_lifecycle_patch_sha256",
+		"engine rootfs clone-lifecycle patch verification failed",
+		`-p1 < "$ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing rootfs clone-lifecycle integrity binding %q", required)
+		}
+	}
+	boundaryApply := strings.Index(installer, `-p1 < "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH"`)
+	cloneApply := strings.Index(installer, `-p1 < "$ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH"`)
+	if boundaryApply < 0 || cloneApply <= boundaryApply {
+		t.Fatal("rootfs clone-lifecycle patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0020-own-runtime-rootfs-clone-lifecycle.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		"newOwnedDirectProvider",
+		"removeOwnedPath",
+		"TestBorrowedDirectProviderExportPreservesTemplateRootfs",
+		"TestOwnedDirectRuntimeCloseRemovesOnlyPrivateClone",
+		"TestOwnedDirectProviderExportTimeoutPreservesClone",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("rootfs clone-lifecycle patch is missing contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.rootfs_clone_lifecycle_patch_sha256",
+		"artifact.orchestrator.rootfs_clone_lifecycle=provider-owned-runtime-clones-borrowed-template-builds",
+		"the rootfs clone-lifecycle patch requires the rootfs mount-boundary patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing rootfs clone-lifecycle contract %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsUFFDRootfsOrderPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0021-gate-uffd-listener-on-rootfs-readiness.patch",
+		"orchestrator_uffd_rootfs_order_patch_sha256",
+		"engine UFFD rootfs-order patch verification failed",
+		`-p1 < "$ENGINE_UFFD_ROOTFS_ORDER_PATCH"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing UFFD rootfs-order integrity binding %q", required)
+		}
+	}
+	cloneApply := strings.Index(installer, `-p1 < "$ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH"`)
+	orderApply := strings.Index(installer, `-p1 < "$ENGINE_UFFD_ROOTFS_ORDER_PATCH"`)
+	if cloneApply < 0 || orderApply <= cloneApply {
+		t.Fatal("UFFD rootfs-order patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0021-gate-uffd-listener-on-rootfs-readiness.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		"serveMemoryAfterOverlayReady",
+		"TestServeMemoryAfterOverlayReadyDoesNotArmListenerDuringSlowOverlay",
+		"TestServeMemoryAfterOverlayReadyPreservesCancellation",
+		"TestServeMemoryAfterOverlayReadyPropagatesOverlayFailure",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("UFFD rootfs-order patch is missing contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.uffd_rootfs_order_patch_sha256",
+		"artifact.orchestrator.uffd_listener_lifecycle=armed-after-rootfs-overlay-ready",
+		"the UFFD rootfs-order patch requires the rootfs clone-lifecycle patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing UFFD rootfs-order contract %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsReflinkNBDBackpressurePatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0022-avoid-reflink-rehash-and-nbd-spin.patch",
+		"orchestrator_reflink_nbd_backpressure_patch_sha256",
+		"engine reflink/NBD backpressure patch verification failed",
+		`-p1 < "$ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing reflink/NBD backpressure integrity binding %q", required)
+		}
+	}
+	orderApply := strings.Index(installer, `-p1 < "$ENGINE_UFFD_ROOTFS_ORDER_PATCH"`)
+	backpressureApply := strings.Index(installer, `-p1 < "$ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH"`)
+	if orderApply < 0 || backpressureApply <= orderApply {
+		t.Fatal("reflink/NBD backpressure patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0022-avoid-reflink-rehash-and-nbd-spin.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		"rememberVerifiedReflinkDigest",
+		"openPublishedReflinkBase",
+		"TestRememberedReflinkDigestRejectsSameSizeTamper",
+		"TestReflinkDigestCacheIsProcessLocalAndColdOpenStillVerifies",
+		"slotReleased chan struct{}",
+		"TestSaturatedPoolWaitsForReleaseSignalWithoutPolling",
+		"TestSaturatedPoolBackpressureHonorsCancelAndClose",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("reflink/NBD backpressure patch is missing contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.reflink_nbd_backpressure_patch_sha256",
+		"artifact.orchestrator.reflink_digest_cache=process-local-exact-inode-fingerprint-cold-rehash",
+		"artifact.orchestrator.nbd_saturation=release-signaled-backpressure-all-kernel-slots-usable",
+		"the reflink/NBD backpressure patch requires the UFFD rootfs-order patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing reflink/NBD backpressure contract %q", required)
 		}
 	}
 }
@@ -1552,6 +1722,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		patchDigest,
 		"dax-baseline-a",
 		"template-a:11111111-1111-1111-1111-111111111111",
+		patchDigest, patchDigest, patchDigest, patchDigest, patchDigest, patchDigest,
 		patchDigest,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
@@ -1586,6 +1757,13 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.template.cache_identity=template-id-and-build-id",
 		"artifact.orchestrator.direct_rootfs_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.rootfs_provider=nbd-default-direct-diagnostic-reflink-explicit-opt-in",
+		"artifact.orchestrator.rootfs_clone_lifecycle_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.rootfs_clone_lifecycle=provider-owned-runtime-clones-borrowed-template-builds",
+		"artifact.orchestrator.uffd_rootfs_order_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.uffd_listener_lifecycle=armed-after-rootfs-overlay-ready",
+		"artifact.orchestrator.reflink_nbd_backpressure_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.reflink_digest_cache=process-local-exact-inode-fingerprint-cold-rehash",
+		"artifact.orchestrator.nbd_saturation=release-signaled-backpressure-all-kernel-slots-usable",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -1755,9 +1933,13 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go":      "DirIndex: r.buildContext.Rootfs.Ext4DirIndex\n",
 		"packages/orchestrator/pkg/template/build/phases/base/hash.go":        "ext4-dir-index:v1\n",
 		"packages/orchestrator/pkg/template/build/phases/optimize/builder.go": "WithPrefetch(&metadata.Prefetch\ncontinuing without prefetch\n",
-		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewRuntimeProvider\nexclusive CPU placement requires sandbox cgroup creation\n",
-		"packages/orchestrator/pkg/sandbox/rootfs/provider.go":                "case \"nbd\":\ncase \"direct\":\ncase \"reflink\":\nos.O_EXCL\n",
-		"packages/orchestrator/pkg/sandbox/rootfs/reflink.go":                 "unix.IoctlFileClone\nunix.RENAME_NOREPLACE\nreflink base is missing the filesystem immutable flag\n",
+		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewRuntimeProvider\nexclusive CPU placement requires sandbox cgroup creation\nserveMemoryAfterOverlayReady(ctx, overlayPromise\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/provider.go":                "case \"nbd\":\ncase \"direct\":\ncase \"reflink\":\nos.O_EXCL\nnewOwnedDirectProvider\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/reflink.go":                 "unix.IoctlFileClone\nunix.RENAME_NOREPLACE\nreflink base is missing the filesystem immutable flag\nrememberVerifiedReflinkDigest\nopenPublishedReflinkBase\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go":            "TestRememberedReflinkDigestRejectsSameSizeTamper\nTestReflinkDigestCacheIsProcessLocalAndColdOpenStillVerifies\nTestRememberedReflinkDigestSkipsSecondImageRead\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/direct.go":                  "newOwnedDirectProvider\nremoveOwnedPath\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/direct_lifecycle_test.go":   "TestBorrowedDirectProviderExportPreservesTemplateRootfs\nTestOwnedDirectRuntimeCloseRemovesOnlyPrivateClone\nTestOwnedDirectProviderExportTimeoutPreservesClone\n",
+		"packages/orchestrator/pkg/sandbox/resume_resource_order_test.go":     "TestServeMemoryAfterOverlayReadyDoesNotArmListenerDuringSlowOverlay\nTestServeMemoryAfterOverlayReadyPreservesCancellation\n",
 		"packages/orchestrator/pkg/sandbox/cgroup/manager.go":                 "cpuset.cpus.partition\ncpuset.cpus.exclusive.effective\n",
 		"packages/shared/pkg/featureflags/flags.go":                           "NewStringFlag(\"resume-prefetch-source\", \"init\")\n",
 		"packages/shared/pkg/storage/sandbox.go":                              "env:\"SANDBOX_CACHE_DIR,expand\"\nfmt.Sprintf(\"rootfs-%s-%s.cow\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/sandbox\"\nenvDefault:\"${ORCHESTRATOR_BASE_PATH}/template\"\n",
@@ -1771,6 +1953,8 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/sandbox/map.go":                            "func (m *Map) WaitLifecycle(ctx context.Context\n",
 		"packages/orchestrator/pkg/sandbox/nbd/path_direct.go":                "WithConnectionsPerDevice\n",
 		"packages/orchestrator/pkg/sandbox/nbd/path_direct_lifecycle_test.go": "TestDirectPathMountConnectRetryFullyCleansPreviousAttempt\nTestDirectPathMountCloseIsSerializedAndIdempotent\nTestDirectPathMountFailsClosedWithoutDevicePool\n",
+		"packages/orchestrator/pkg/sandbox/nbd/pool.go":                       "slotReleased chan struct{}\nd.allSlotsReserved()\n",
+		"packages/orchestrator/pkg/sandbox/nbd/pool_backpressure_test.go":     "TestSaturatedPoolWaitsForReleaseSignalWithoutPolling\nTestSaturatedPoolBackpressureHonorsCancelAndClose\n",
 		"packages/orchestrator/pkg/sandbox/fc/cpu_affinity.go":                "no NUMA node has %d distinct physical cores\nanother Firecracker process holds the exclusive CPU lease\nFirecracker vCPU thread %d was not present after VM start\nstabilizeExclusiveCPUPlacement\nFirecracker is outside the qualified exclusive CPU cgroup\nvalidateEffectiveSandboxCPUSet(cgroupPath, placement.reservedCPUs, expectedMems)\nreturn fmt.Errorf(\"Firecracker sandbox %s drifted\", check.name)\n",
 		"packages/orchestrator/pkg/sandbox/fc/process.go":                     "monitorExclusiveCPUPlacement\nreconcile exclusive Firecracker CPU topology\n",
 		"packages/orchestrator/pkg/server/main.go":                            "resolveStartingSandboxesLimit\n",

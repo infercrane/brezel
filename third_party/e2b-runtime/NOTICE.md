@@ -46,5 +46,19 @@ The fifteenth patch validates and parameterizes the local base-template name
 and reports the exact template-and-build reference emitted by each completed
 build. This lets operators keep benchmark variants separate and bind Brezel
 environment revisions to an immutable build instead of a moving alias.
+The twentieth patch makes direct and reflink runtime rootfs clones explicitly
+provider-owned while template-build rootfs paths remain caller-owned. Normal
+close and confirmed export handoff remove only the private runtime clone;
+unconfirmed export timeouts retain it for visible startup reclamation instead
+of risking deletion while another operation may still use it. The twenty-first
+patch waits for rootfs-overlay readiness before arming the UFFD listener, so a
+slow first-use clone cannot consume the listener's absolute accept deadline
+before Firecracker is able to connect.
+The twenty-second patch reuses a published reflink base's verified digest only
+within the publishing process and only while its exact device, inode, size, and
+change-time fingerprint remains unchanged; a cold process or fingerprint drift
+forces a full rehash. It also replaces all-slot NBD polling with
+release-signaled, cancellation-aware backpressure while keeping every kernel
+slot usable.
 
 Upstream source: <https://github.com/e2b-dev/runtime>

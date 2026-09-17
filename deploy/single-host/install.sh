@@ -29,6 +29,9 @@ ENGINE_DIRECT_ROOTFS_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0016-opt-i
 ENGINE_RESUME_CLEANUP_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0017-bound-resume-failure-cleanup.patch"
 ENGINE_NBD_PROVIDER_SCOPE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0018-scope-nbd-pool-to-nbd-runtime.patch"
 ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0019-reject-rootfs-cache-mount-shadowing.patch"
+ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0020-own-runtime-rootfs-clone-lifecycle.patch"
+ENGINE_UFFD_ROOTFS_ORDER_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0021-gate-uffd-listener-on-rootfs-readiness.patch"
+ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH="$REPO_DIR/third_party/e2b-runtime/patches/0022-avoid-reflink-rehash-and-nbd-spin.patch"
 ENGINE_CAPABILITY_PROBE="$SCRIPT_DIR/engine-capabilities.sh"
 CAPACITY_PROBE="$SCRIPT_DIR/capacity-contract.sh"
 ENGINE_CAPACITY_PROBE="$SCRIPT_DIR/engine-capacity-contract.sh"
@@ -415,9 +418,12 @@ ENGINE_DIRECT_ROOTFS_PATCH_SHA256=$(read_lock orchestrator_direct_rootfs_patch_s
 ENGINE_RESUME_CLEANUP_PATCH_SHA256=$(read_lock orchestrator_resume_cleanup_patch_sha256)
 ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256=$(read_lock orchestrator_nbd_provider_scope_patch_sha256)
 ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256=$(read_lock orchestrator_rootfs_mount_boundary_patch_sha256)
+ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH_SHA256=$(read_lock orchestrator_rootfs_clone_lifecycle_patch_sha256)
+ENGINE_UFFD_ROOTFS_ORDER_PATCH_SHA256=$(read_lock orchestrator_uffd_rootfs_order_patch_sha256)
+ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH_SHA256=$(read_lock orchestrator_reflink_nbd_backpressure_patch_sha256)
 ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256=$(read_lock envd_process_tag_patch_sha256)
 ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256=$(read_lock envd_process_replay_patch_sha256)
-if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256" ] || [ -z "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" ] || [ -z "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" ] || [ -z "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" ] || [ -z "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
+if [ -z "$ENGINE_REPOSITORY" ] || [ -z "$ENGINE_COMMIT" ] || [ -z "$ENGINE_PATCH_SHA256" ] || [ -z "$ENGINE_BUILD_PATCH_SHA256" ] || [ -z "$ENGINE_ORCHESTRATOR_PATCH_SHA256" ] || [ -z "$ENGINE_CACHE_PATCH_SHA256" ] || [ -z "$ENGINE_NFS_DURABILITY_PATCH_SHA256" ] || [ -z "$ENGINE_START_ADMISSION_PATCH_SHA256" ] || [ -z "$ENGINE_LOCAL_CAPACITY_PATCH_SHA256" ] || [ -z "$ENGINE_CPU_TOPOLOGY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_READ_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_MULTIQUEUE_PATCH_SHA256" ] || [ -z "$ENGINE_CPUSET_QUALIFICATION_PATCH_SHA256" ] || [ -z "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" ] || [ -z "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" ] || [ -z "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" ] || [ -z "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" ] || [ -z "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256" ] || [ -z "$ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH_SHA256" ] || [ -z "$ENGINE_UFFD_ROOTFS_ORDER_PATCH_SHA256" ] || [ -z "$ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ] || [ -z "$ENGINE_ENVD_PROCESS_REPLAY_PATCH_SHA256" ]; then
   echo "invalid engine.lock" >&2
   exit 1
 fi
@@ -590,6 +596,18 @@ if [ "$(sha256sum "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH" | awk '{print $1}')" != 
   echo "engine rootfs mount-boundary patch verification failed" >&2
   exit 1
 fi
+if [ "$(sha256sum "$ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH" | awk '{print $1}')" != "$ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH_SHA256" ]; then
+  echo "engine rootfs clone-lifecycle patch verification failed" >&2
+  exit 1
+fi
+if [ "$(sha256sum "$ENGINE_UFFD_ROOTFS_ORDER_PATCH" | awk '{print $1}')" != "$ENGINE_UFFD_ROOTFS_ORDER_PATCH_SHA256" ]; then
+  echo "engine UFFD rootfs-order patch verification failed" >&2
+  exit 1
+fi
+if [ "$(sha256sum "$ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH" | awk '{print $1}')" != "$ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH_SHA256" ]; then
+  echo "engine reflink/NBD backpressure patch verification failed" >&2
+  exit 1
+fi
 if [ "$(sha256sum "$ENGINE_ENVD_PROCESS_TAG_PATCH" | awk '{print $1}')" != "$ENGINE_ENVD_PROCESS_TAG_PATCH_SHA256" ]; then
   echo "engine envd process-tag patch verification failed" >&2
   exit 1
@@ -728,6 +746,9 @@ patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_DIRECT_RO
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_RESUME_CLEANUP_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_NBD_PROVIDER_SCOPE_PATCH"
 patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH"
+patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH"
+patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_UFFD_ROOTFS_ORDER_PATCH"
+patch --batch --forward --fuzz=0 -d "$ENGINE_BUILD_DIR" -p1 < "$ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH"
 "$ENGINE_CAPABILITY_PROBE" source "$ENGINE_BUILD_DIR"
 
 # The upstream base-template service executes a JavaScript helper embedded in
@@ -901,7 +922,8 @@ export BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE
   "$ENGINE_EXT4_DIR_INDEX_PATCH_SHA256" "$ENGINE_BASE_TEMPLATE_IDENTITY_PATCH_SHA256" \
   "$BREZEL_ENGINE_BASE_TEMPLATE_NAME" "$BREZEL_ENGINE_BASE_TEMPLATE_REFERENCE" \
   "$ENGINE_DIRECT_ROOTFS_PATCH_SHA256" "$ENGINE_RESUME_CLEANUP_PATCH_SHA256" "$ENGINE_NBD_PROVIDER_SCOPE_PATCH_SHA256" \
-  "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256"
+  "$ENGINE_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256" "$ENGINE_ROOTFS_CLONE_LIFECYCLE_PATCH_SHA256" \
+  "$ENGINE_UFFD_ROOTFS_ORDER_PATCH_SHA256" "$ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH_SHA256"
 
 docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRIDE" \
   exec -T ready sh -c 'cat /run/e2b/team-api-key' > "$SECRETS_DIR/engine.token"

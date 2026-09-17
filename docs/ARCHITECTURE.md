@@ -267,6 +267,17 @@ boundary: acknowledged writes must survive the profile's declared crash model,
 even when that requires a slower write path. Users choose durability by writing
 important state below `/workspace`; Brezel must not make every temporary build
 file pay that cost or silently weaken the workspace contract to win a benchmark.
+Direct and reflink runtime rootfs clones are owned by their provider and are
+removed only after normal close or a confirmed export handoff. Template-build
+rootfs paths remain caller-owned through export, and an unconfirmed handoff
+retains the private clone for startup reclamation rather than deleting a path
+that may still be in use. Resume arms the lazy-memory UFFD listener only after
+the rootfs overlay is ready, keeping slow first-use materialization outside the
+listener's absolute accept deadline. A freshly published reflink base reuses
+the digest computed during its private immutable copy only for the exact
+device, inode, size, change-time, and digest fingerprint; restart or fingerprint
+drift forces a full rehash. A saturated NBD pool sleeps on a release notification
+rather than polling, without reserving a sentinel slot.
 
 The current single-host profile persists a creation or deletion intent before
 calling the pinned engine. A workspace must be `ready` before attachment. The

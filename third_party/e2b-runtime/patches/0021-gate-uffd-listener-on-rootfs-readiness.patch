@@ -1,0 +1,164 @@
+diff --git a/packages/orchestrator/pkg/sandbox/sandbox.go b/packages/orchestrator/pkg/sandbox/sandbox.go
+index 768e6e0b2d565830316f0de168cf004a4319c3c1..a00e03996bcdf4e3c354e8a94d9e3245a06a92b6 100644
+--- a/packages/orchestrator/pkg/sandbox/sandbox.go
++++ b/packages/orchestrator/pkg/sandbox/sandbox.go
+@@ -1428,16 +1428,18 @@ func (f *Factory) ResumeSandbox(
+ 
+ 	// Memory initialization
+ 	memoryPromise := utils.NewPromise(func() (struct{}, error) {
+-		fcUffd, err := uffdPromise.Wait(ctx)
+-		if err != nil {
+-			return struct{}{}, err
+-		}
++		err := serveMemoryAfterOverlayReady(ctx, overlayPromise, func() error {
++			fcUffd, err := uffdPromise.Wait(ctx)
++			if err != nil {
++				return err
++			}
+ 
+-		err = serveMemory(
+-			execCtx,
+-			cleanup,
+-			fcUffd,
+-		)
++			return serveMemory(
++				execCtx,
++				cleanup,
++				fcUffd,
++			)
++		})
+ 		if err != nil {
+ 			return struct{}{}, fmt.Errorf("failed to serve memory: %w", err)
+ 		}
+@@ -4125,6 +4127,23 @@ func serveMemory(
+ 	})
+ 
+ 	return nil
++}
++
++// serveMemoryAfterOverlayReady keeps the UFFD listener's absolute accept
++// deadline from covering rootfs preparation. A first-use direct/reflink
++// overlay may spend much longer than that materializing its immutable base.
++// Starting UFFD before the overlay is ready makes the listener expire while
++// no Firecracker process can connect to it yet.
++func serveMemoryAfterOverlayReady(
++	ctx context.Context,
++	overlay *utils.Promise[rootfs.Provider],
++	serve func() error,
++) error {
++	if _, err := overlay.Wait(ctx); err != nil {
++		return fmt.Errorf("failed waiting for rootfs overlay before serving memory: %w", err)
++	}
++
++	return serve()
+ }
+ 
+ func (s *Sandbox) WaitForEnvd(
+diff --git a/packages/orchestrator/pkg/sandbox/resume_resource_order_test.go b/packages/orchestrator/pkg/sandbox/resume_resource_order_test.go
+new file mode 100644
+index 0000000..d3fee4c
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/resume_resource_order_test.go
+@@ -0,0 +1,102 @@
++//go:build linux
++
++package sandbox
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++
++	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/rootfs"
++	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
++)
++
++func TestServeMemoryAfterOverlayReadyDoesNotArmListenerDuringSlowOverlay(t *testing.T) {
++	t.Parallel()
++
++	overlayStarted := make(chan struct{})
++	releaseOverlay := make(chan struct{})
++	overlay := utils.NewPromise(func() (rootfs.Provider, error) {
++		close(overlayStarted)
++		<-releaseOverlay
++
++		return nil, nil
++	})
++
++	serveStarted := make(chan struct{})
++	done := make(chan error, 1)
++	go func() {
++		done <- serveMemoryAfterOverlayReady(t.Context(), overlay, func() error {
++			close(serveStarted)
++
++			return nil
++		})
++	}()
++
++	<-overlayStarted
++	// Model an overlay materialization that lasts longer than the listener's
++	// accept window. The important contract is that serving has not started,
++	// so no absolute UFFD deadline is armed during this wait.
++	select {
++	case <-serveStarted:
++		t.Fatal("memory serving started before the rootfs overlay was ready")
++	case <-time.After(50 * time.Millisecond):
++	}
++
++	close(releaseOverlay)
++	require.Eventually(t, func() bool {
++		select {
++		case <-serveStarted:
++			return true
++		default:
++			return false
++		}
++	}, time.Second, time.Millisecond)
++	require.NoError(t, <-done)
++}
++
++func TestServeMemoryAfterOverlayReadyPreservesCancellation(t *testing.T) {
++	t.Parallel()
++
++	releaseOverlay := make(chan struct{})
++	overlay := utils.NewPromise(func() (rootfs.Provider, error) {
++		<-releaseOverlay
++
++		return nil, nil
++	})
++	t.Cleanup(func() { close(releaseOverlay) })
++
++	serveCalled := false
++	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
++	defer cancel()
++
++	err := serveMemoryAfterOverlayReady(ctx, overlay, func() error {
++		serveCalled = true
++
++		return nil
++	})
++	require.ErrorIs(t, err, context.DeadlineExceeded)
++	require.ErrorContains(t, err, "failed waiting for rootfs overlay before serving memory")
++	require.False(t, serveCalled)
++}
++
++func TestServeMemoryAfterOverlayReadyPropagatesOverlayFailure(t *testing.T) {
++	t.Parallel()
++
++	want := errors.New("materialization failed")
++	overlay := utils.NewPromise(func() (rootfs.Provider, error) {
++		return nil, want
++	})
++
++	serveCalled := false
++	err := serveMemoryAfterOverlayReady(t.Context(), overlay, func() error {
++		serveCalled = true
++
++		return nil
++	})
++	require.ErrorIs(t, err, want)
++	require.False(t, serveCalled)
++}

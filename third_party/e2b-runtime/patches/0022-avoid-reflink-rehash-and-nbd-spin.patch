@@ -1,0 +1,423 @@
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink.go b/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
+index 4618bcd..127317b 100644
+--- a/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
++++ b/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
+@@ -309,38 +309,51 @@ func validateReflinkDigest(fd int, stat unix.Stat_t, digest, identity string) er
+ 	return nil
+ }
+ 
+-func openVerifiedReflinkBase(rootfd int, expected reflinkManifest) (int, unix.Stat_t, error) {
++func rememberVerifiedReflinkDigest(stat unix.Stat_t, digest, identity string) {
++	fingerprint := reflinkFingerprint{
++		device: stat.Dev, inode: stat.Ino, size: stat.Size,
++		changeSec: stat.Ctim.Sec, changeNSec: stat.Ctim.Nsec, digest: digest,
++	}
++	reflinkDigestCache.Lock()
++	reflinkDigestCache.entries[identity] = fingerprint
++	reflinkDigestCache.Unlock()
++}
++
++// openPublishedReflinkBase validates the namespace, manifest, ownership,
++// shape, permissions, link count, and immutable inode flag without reading the
++// entire image. A cold process must follow this with validateReflinkDigest.
++func openPublishedReflinkBase(rootfd int, expected reflinkManifest) (int, unix.Stat_t, reflinkManifest, error) {
+ 	directoryName := "base-" + expected.Identity
+ 	dirfd, err := openReflinkBeneath(rootfd, directoryName, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+ 	if err != nil {
+-		return -1, unix.Stat_t{}, err
++		return -1, unix.Stat_t{}, reflinkManifest{}, err
+ 	}
+ 	defer unix.Close(dirfd)
+ 	var dirStat unix.Stat_t
+ 	if err := unix.Fstat(dirfd, &dirStat); err != nil {
+-		return -1, unix.Stat_t{}, err
++		return -1, unix.Stat_t{}, reflinkManifest{}, err
+ 	}
+ 	if dirStat.Mode&unix.S_IFMT != unix.S_IFDIR || dirStat.Uid != uint32(os.Geteuid()) || dirStat.Mode&0o077 != 0 {
+-		return -1, unix.Stat_t{}, errors.New("reflink base directory is not private and owned")
++		return -1, unix.Stat_t{}, reflinkManifest{}, errors.New("reflink base directory is not private and owned")
+ 	}
+ 	manifestBytes, err := readSmallFileAt(dirfd, reflinkManifestName)
+ 	if err != nil {
+-		return -1, unix.Stat_t{}, err
++		return -1, unix.Stat_t{}, reflinkManifest{}, err
+ 	}
+ 	var manifest reflinkManifest
+ 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+-		return -1, unix.Stat_t{}, fmt.Errorf("decoding reflink base manifest: %w", err)
++		return -1, unix.Stat_t{}, reflinkManifest{}, fmt.Errorf("decoding reflink base manifest: %w", err)
+ 	}
+ 	if err := validateReflinkManifest(manifest, expected); err != nil {
+-		return -1, unix.Stat_t{}, err
++		return -1, unix.Stat_t{}, reflinkManifest{}, err
+ 	}
+ 	fd, err := openReflinkBeneath(dirfd, reflinkBaseImageName, unix.O_RDONLY, 0)
+ 	if err != nil {
+-		return -1, unix.Stat_t{}, err
++		return -1, unix.Stat_t{}, reflinkManifest{}, err
+ 	}
+-	fail := func(err error) (int, unix.Stat_t, error) {
++	fail := func(err error) (int, unix.Stat_t, reflinkManifest, error) {
+ 		_ = unix.Close(fd)
+-		return -1, unix.Stat_t{}, err
++		return -1, unix.Stat_t{}, reflinkManifest{}, err
+ 	}
+ 	var stat unix.Stat_t
+ 	if err := unix.Fstat(fd, &stat); err != nil {
+@@ -356,6 +369,18 @@ func openVerifiedReflinkBase(rootfd int, expected reflinkManifest) (int, unix.St
+ 	if flags&reflinkImmutableFlag == 0 {
+ 		return fail(errors.New("reflink base is missing the filesystem immutable flag"))
+ 	}
++	return fd, stat, manifest, nil
++}
++
++func openVerifiedReflinkBase(rootfd int, expected reflinkManifest) (int, unix.Stat_t, error) {
++	fd, stat, manifest, err := openPublishedReflinkBase(rootfd, expected)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	fail := func(err error) (int, unix.Stat_t, error) {
++		_ = unix.Close(fd)
++		return -1, unix.Stat_t{}, err
++	}
+ 	if err := validateReflinkDigest(fd, stat, manifest.SHA256, expected.Identity); err != nil {
+ 		return fail(err)
+ 	}
+@@ -501,7 +526,22 @@ func materializeReflinkBase(ctx context.Context, rootfd int, rootfs block.Readon
+ 	if err := unix.Fsync(rootfd); err != nil {
+ 		return -1, unix.Stat_t{}, err
+ 	}
+-	return openVerifiedReflinkBase(rootfd, expected)
++
++	// This process computed the digest while copying the immutable source. Once
++	// the directory is durably published, reopen it through the same fail-closed
++	// namespace and inode validation used on cache hits. Only then remember the
++	// exact inode fingerprint. A restarted process has no such entry and still
++	// performs complete digest verification before using the cache.
++	fd, stat, manifest, err := openPublishedReflinkBase(rootfd, expected)
++	if err != nil {
++		return -1, unix.Stat_t{}, err
++	}
++	if manifest.SHA256 != expected.SHA256 {
++		_ = unix.Close(fd)
++		return -1, unix.Stat_t{}, errors.New("published reflink base digest does not match the completed copy")
++	}
++	rememberVerifiedReflinkDigest(stat, manifest.SHA256, expected.Identity)
++	return fd, stat, nil
+ }
+ 
+ func cloneReflinkBase(ctx context.Context, basefd int, baseStat unix.Stat_t, cachePath string) (resultErr error) {
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go b/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
+index 756b7bd..d058534 100644
+--- a/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
++++ b/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
+@@ -4,7 +4,10 @@ package rootfs
+ 
+ import (
+ 	"context"
++	"crypto/sha256"
++	"encoding/hex"
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
++	"time"
+ 
+@@ -11,6 +14,7 @@ import (
+ 	"github.com/google/uuid"
+ 	"github.com/stretchr/testify/assert"
+ 	"github.com/stretchr/testify/require"
++	"golang.org/x/sys/unix"
+ 
+ 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
+ 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
+@@ -70,3 +74,123 @@ func TestReflinkProviderFailsClosedWithoutExplicitCache(t *testing.T) {
+ 	_, statErr := os.Stat(target)
+ 	assert.ErrorIs(t, statErr, os.ErrNotExist)
+ }
++
++func resetReflinkDigestCache() {
++	reflinkDigestCache.Lock()
++	defer reflinkDigestCache.Unlock()
++	reflinkDigestCache.entries = make(map[string]reflinkFingerprint)
++}
++
++func digestBytes(contents []byte) string {
++	digest := sha256.Sum256(contents)
++	return hex.EncodeToString(digest[:])
++}
++
++func TestRememberedReflinkDigestRequiresExactPublishedInodeFingerprint(t *testing.T) {
++	resetReflinkDigestCache()
++	t.Cleanup(resetReflinkDigestCache)
++
++	contents := []byte("verified immutable contents")
++	path := filepath.Join(t.TempDir(), "rootfs.raw")
++	require.NoError(t, os.WriteFile(path, contents, 0o600))
++	file, err := os.OpenFile(path, os.O_RDWR, 0)
++	require.NoError(t, err)
++	defer file.Close()
++
++	var before unix.Stat_t
++	require.NoError(t, unix.Fstat(int(file.Fd()), &before))
++	digest := digestBytes(contents)
++	rememberVerifiedReflinkDigest(before, digest, "identity")
++	require.NoError(t, validateReflinkDigest(int(file.Fd()), before, digest, "identity"))
++
++	_, err = file.WriteAt([]byte("tampered beyond original contents"), int64(len(contents)))
++	require.NoError(t, err)
++	require.NoError(t, file.Sync())
++	var after unix.Stat_t
++	require.NoError(t, unix.Fstat(int(file.Fd()), &after))
++	require.NotEqual(t, before.Size, after.Size, "tamper must invalidate the cached inode fingerprint")
++	require.ErrorContains(t, validateReflinkDigest(int(file.Fd()), after, digest, "identity"), "digest does not match")
++}
++
++func TestRememberedReflinkDigestRejectsSameSizeTamper(t *testing.T) {
++	resetReflinkDigestCache()
++	t.Cleanup(resetReflinkDigestCache)
++
++	contents := []byte("verified-image-a")
++	tampered := []byte("tampered-image-a")
++	require.Len(t, tampered, len(contents))
++	path := filepath.Join(t.TempDir(), "rootfs.raw")
++	require.NoError(t, os.WriteFile(path, contents, 0o600))
++	file, err := os.OpenFile(path, os.O_RDWR, 0)
++	require.NoError(t, err)
++	defer file.Close()
++
++	var before unix.Stat_t
++	require.NoError(t, unix.Fstat(int(file.Fd()), &before))
++	digest := digestBytes(contents)
++	rememberVerifiedReflinkDigest(before, digest, "identity")
++	require.NoError(t, validateReflinkDigest(int(file.Fd()), before, digest, "identity"))
++
++	// Avoid depending on one filesystem timestamp tick while still proving that
++	// size alone cannot preserve the process-local verification shortcut.
++	time.Sleep(time.Millisecond)
++	_, err = file.WriteAt(tampered, 0)
++	require.NoError(t, err)
++	require.NoError(t, file.Sync())
++	var after unix.Stat_t
++	require.NoError(t, unix.Fstat(int(file.Fd()), &after))
++	require.Equal(t, before.Size, after.Size)
++	require.NotEqual(t, before.Ctim, after.Ctim, "same-size tamper must change the inode fingerprint")
++	require.ErrorContains(t, validateReflinkDigest(int(file.Fd()), after, digest, "identity"), "digest does not match")
++}
++
++func TestReflinkDigestCacheIsProcessLocalAndColdOpenStillVerifies(t *testing.T) {
++	resetReflinkDigestCache()
++	t.Cleanup(resetReflinkDigestCache)
++
++	contents := []byte("cold verification survives restart")
++	path := filepath.Join(t.TempDir(), "rootfs.raw")
++	require.NoError(t, os.WriteFile(path, contents, 0o600))
++	file, err := os.Open(path)
++	require.NoError(t, err)
++	defer file.Close()
++
++	var stat unix.Stat_t
++	require.NoError(t, unix.Fstat(int(file.Fd()), &stat))
++	digest := digestBytes(contents)
++	require.NoError(t, validateReflinkDigest(int(file.Fd()), stat, digest, "identity"))
++
++	resetReflinkDigestCache() // model a fresh orchestrator process
++	require.ErrorContains(
++		t,
++		validateReflinkDigest(int(file.Fd()), stat, digestBytes([]byte("different")), "identity"),
++		"digest does not match",
++	)
++}
++
++func TestRememberedReflinkDigestSkipsSecondImageRead(t *testing.T) {
++	resetReflinkDigestCache()
++	t.Cleanup(resetReflinkDigestCache)
++
++	contents := []byte("read exactly once during publication")
++	path := filepath.Join(t.TempDir(), "rootfs.raw")
++	require.NoError(t, os.WriteFile(path, contents, 0o600))
++
++	pathFD, err := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
++	require.NoError(t, err)
++	defer unix.Close(pathFD)
++	var stat unix.Stat_t
++	require.NoError(t, unix.Fstat(pathFD, &stat))
++	digest := digestBytes(contents)
++
++	// O_PATH supports inode validation but cannot be read. Success therefore
++	// proves the exact remembered fingerprint avoids a second image scan.
++	rememberVerifiedReflinkDigest(stat, digest, "identity")
++	require.NoError(t, validateReflinkDigest(pathFD, stat, digest, "identity"))
++
++	// A process restart discards the optimization. The same non-readable fd
++	// must take the cold verification path and fail rather than trusting state
++	// that no longer exists.
++	resetReflinkDigestCache()
++	require.Error(t, validateReflinkDigest(pathFD, stat, digest, "identity"))
++}
+diff --git a/packages/orchestrator/pkg/sandbox/nbd/pool.go b/packages/orchestrator/pkg/sandbox/nbd/pool.go
+index a5ded0f..208976f 100644
+--- a/packages/orchestrator/pkg/sandbox/nbd/pool.go
++++ b/packages/orchestrator/pkg/sandbox/nbd/pool.go
+@@ -78,6 +78,10 @@ type (
+ type DevicePool struct {
+ 	done     chan struct{}
+ 	doneOnce sync.Once
++	// slotReleased wakes Populate when every kernel slot is reserved by this
++	// pool. A single buffered edge is sufficient: after waking, Populate scans
++	// all newly free slots before it can wait again.
++	slotReleased chan struct{}
+ 
+ 	// We use the bitset to speedup the free device lookup.
+ 	usedSlots *bitset.BitSet
+@@ -101,9 +105,10 @@ func NewDevicePool(maxSlotsReady int) (*DevicePool, error) {
+ 	}
+ 
+ 	pool := &DevicePool{
+-		done:      make(chan struct{}),
+-		usedSlots: bitset.New(maxDevices),
+-		slots:     make(chan DeviceSlot, int(math.Min(float64(maxSlotsReady), float64(maxDevices)))),
++		done:         make(chan struct{}),
++		slotReleased: make(chan struct{}, 1),
++		usedSlots:    bitset.New(maxDevices),
++		slots:        make(chan DeviceSlot, int(math.Min(float64(maxSlotsReady), float64(maxDevices)))),
+ 	}
+ 
+ 	return pool, nil
+@@ -178,6 +183,17 @@ func (d *DevicePool) Populate(ctx context.Context) {
+ 
+ 		device, err := d.getFreeDeviceSlot()
+ 		if err != nil {
++			// A completely reserved pool is healthy backpressure, not a failure.
++			// Wait for ReleaseDevice instead of polling and logging forever when
++			// maxSlotsReady equals the kernel's nbds_max.
++			var noFreeSlots NoFreeSlotsError
++			if errors.As(err, &noFreeSlots) && d.allSlotsReserved() {
++				if !d.waitForSlotRelease(ctx) {
++					return
++				}
++
++				continue
++			}
+ 			if failedCount%100 == 0 {
+ 				logger.L().Warn(ctx, "[nbd pool]: failed to create network",
+ 					zap.Error(err),
+@@ -261,6 +277,35 @@ func (d *DevicePool) getMaybeEmptySlot(start DeviceSlot) (DeviceSlot, func(), bo
+ 	}, true
+ }
+ 
++func (d *DevicePool) allSlotsReserved() bool {
++	d.mu.Lock()
++	defer d.mu.Unlock()
++
++	return d.usedSlots.Count() == d.usedSlots.Len()
++}
++
++func (d *DevicePool) notifySlotReleased() {
++	if d.slotReleased == nil {
++		return
++	}
++
++	select {
++	case d.slotReleased <- struct{}{}:
++	default:
++	}
++}
++
++func (d *DevicePool) waitForSlotRelease(ctx context.Context) bool {
++	select {
++	case <-ctx.Done():
++		return false
++	case <-d.done:
++		return false
++	case <-d.slotReleased:
++		return true
++	}
++}
++
+ // Get a free device slot.
+ func (d *DevicePool) getFreeDeviceSlot() (*DeviceSlot, error) {
+ 	start := uint32(0)
+@@ -323,6 +368,7 @@ func (d *DevicePool) release(ctx context.Context, idx DeviceSlot) error {
+ 	d.mu.Lock()
+ 	d.usedSlots.Clear(uint(idx))
+ 	d.mu.Unlock()
++	d.notifySlotReleased()
+ 
+ 	released.Add(ctx, 1)
+ 
+diff --git a/packages/orchestrator/pkg/sandbox/nbd/pool_backpressure_test.go b/packages/orchestrator/pkg/sandbox/nbd/pool_backpressure_test.go
+new file mode 100644
+index 0000000..8c20b33
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/nbd/pool_backpressure_test.go
+@@ -0,0 +1,70 @@
++//go:build linux
++
++package nbd
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/bits-and-blooms/bitset"
++	"github.com/stretchr/testify/require"
++)
++
++func saturatedTestPool(slots uint) *DevicePool {
++	used := bitset.New(slots)
++	used.SetAll()
++	return &DevicePool{
++		done:         make(chan struct{}),
++		slotReleased: make(chan struct{}, 1),
++		usedSlots:    used,
++		slots:        make(chan DeviceSlot, slots),
++	}
++}
++
++func TestSaturatedPoolWaitsForReleaseSignalWithoutPolling(t *testing.T) {
++	pool := saturatedTestPool(128)
++	require.True(t, pool.allSlotsReserved())
++
++	done := make(chan bool, 1)
++	go func() { done <- pool.waitForSlotRelease(t.Context()) }()
++
++	select {
++	case released := <-done:
++		t.Fatalf("saturated pool returned without capacity: released=%v", released)
++	case <-time.After(20 * time.Millisecond):
++	}
++
++	pool.mu.Lock()
++	pool.usedSlots.Clear(127)
++	pool.mu.Unlock()
++	pool.notifySlotReleased()
++	require.True(t, <-done)
++	require.False(t, pool.allSlotsReserved())
++}
++
++func TestSaturatedPoolBackpressureHonorsCancelAndClose(t *testing.T) {
++	t.Run("cancel", func(t *testing.T) {
++		pool := saturatedTestPool(128)
++		ctx, cancel := context.WithCancel(t.Context())
++		cancel()
++		require.False(t, pool.waitForSlotRelease(ctx))
++	})
++
++	t.Run("close", func(t *testing.T) {
++		pool := saturatedTestPool(128)
++		close(pool.done)
++		require.False(t, pool.waitForSlotRelease(t.Context()))
++	})
++}
++
++func TestReleaseNotificationsCoalesceWithoutBlocking(t *testing.T) {
++	pool := saturatedTestPool(128)
++
++	for i := 0; i < 128; i++ {
++		pool.notifySlotReleased()
++	}
++	require.Len(t, pool.slotReleased, 1)
++	require.True(t, pool.waitForSlotRelease(t.Context()))
++	require.Empty(t, pool.slotReleased)
++}

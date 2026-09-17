@@ -1,0 +1,301 @@
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/direct.go b/packages/orchestrator/pkg/sandbox/rootfs/direct.go
+index a9851b6..bb2036a 100644
+--- a/packages/orchestrator/pkg/sandbox/rootfs/direct.go
++++ b/packages/orchestrator/pkg/sandbox/rootfs/direct.go
+@@ -8,6 +8,7 @@ import (
+ 	"fmt"
+ 	"io"
+ 	"os"
++	"sync"
+ 	"sync/atomic"
+ 
+ 	"github.com/edsrzf/mmap-go"
+@@ -25,16 +26,31 @@ type DirectProvider struct {
+ 
+ 	path      string
+ 	blockSize int64
++	ownsPath  bool
+ 
+ 	// TODO: Remove when the snapshot flow is improved
+ 	finishedOperations chan struct{}
++	finishedOnce       sync.Once
+ 	// TODO: Remove when the snapshot flow is improved
+-	closed atomic.Bool
++	closed     atomic.Bool
++	removeOnce sync.Once
++	removeErr  error
+ 
+ 	mmap *mmap.MMap
+ }
+ 
+ func NewDirectProvider(ctx context.Context, rootfs block.ReadonlyDevice, path string) (Provider, error) {
++	return newDirectProvider(ctx, rootfs, path, false)
++}
++
++// newOwnedDirectProvider is reserved for paths materialized exclusively for
++// one runtime sandbox. Public NewDirectProvider paths are caller-owned because
++// template builds pass their export source through that constructor.
++func newOwnedDirectProvider(ctx context.Context, rootfs block.ReadonlyDevice, path string) (Provider, error) {
++	return newDirectProvider(ctx, rootfs, path, true)
++}
++
++func newDirectProvider(ctx context.Context, rootfs block.ReadonlyDevice, path string, ownsPath bool) (Provider, error) {
+ 	blockSize := rootfs.BlockSize()
+ 
+ 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+@@ -58,6 +74,7 @@ func NewDirectProvider(ctx context.Context, rootfs block.ReadonlyDevice, path st
+ 
+ 		path:      path,
+ 		blockSize: blockSize,
++		ownsPath:  ownsPath,
+ 
+ 		finishedOperations: make(chan struct{}, 1),
+ 
+@@ -73,7 +90,7 @@ func (o *DirectProvider) ExportDiff(
+ 	ctx context.Context,
+ 	out *os.File,
+ 	stopSandbox func(context.Context) error,
+-) (*header.DiffMetadata, error) {
++) (_ *header.DiffMetadata, resultErr error) {
+ 	ctx, childSpan := tracer.Start(ctx, "direct-provider-export")
+ 	defer childSpan.End()
+ 
+@@ -81,11 +98,15 @@ func (o *DirectProvider) ExportDiff(
+ 		return nil, errors.New("direct provider close is already in progress")
+ 	}
+ 
++	released := false
+ 	defer func() {
+ 		err := o.mmap.Unmap()
+ 		if err != nil {
+ 			logger.L().Error(ctx, "error unmapping mmap", zap.Error(err))
+ 		}
++		if released {
++			resultErr = errors.Join(resultErr, o.removeOwnedPath())
++		}
+ 	}()
+ 
+ 	// the error is already logged in go routine in SandboxCreate handler
+@@ -98,6 +119,7 @@ func (o *DirectProvider) ExportDiff(
+ 
+ 	select {
+ 	case <-o.finishedOperations:
++		released = true
+ 	case <-ctx.Done():
+ 		return nil, errors.New("timeout waiting for overlay device to be released")
+ 	}
+@@ -130,13 +152,27 @@ func (o *DirectProvider) FoldSealed(_ context.Context) (*block.Cache, error) {
+ }
+ 
+ func (o *DirectProvider) Close(ctx context.Context) error {
+-	o.finishedOperations <- struct{}{}
++	o.finishedOnce.Do(func() { close(o.finishedOperations) })
+ 
+ 	if !o.closed.CompareAndSwap(false, true) {
+ 		return nil
+ 	}
+ 
+-	return errors.Join(o.sync(ctx), o.mmap.Unmap())
++	return errors.Join(o.sync(ctx), o.mmap.Unmap(), o.removeOwnedPath())
++}
++
++func (o *DirectProvider) removeOwnedPath() error {
++	if !o.ownsPath {
++		return nil
++	}
++
++	o.removeOnce.Do(func() {
++		if err := os.Remove(o.path); err != nil && !errors.Is(err, os.ErrNotExist) {
++			o.removeErr = fmt.Errorf("removing owned direct rootfs: %w", err)
++		}
++	})
++
++	return o.removeErr
+ }
+ 
+ func (o *DirectProvider) Path() (string, error) {
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/direct_lifecycle_test.go b/packages/orchestrator/pkg/sandbox/rootfs/direct_lifecycle_test.go
+new file mode 100644
+index 0000000..84650c9
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/rootfs/direct_lifecycle_test.go
+@@ -0,0 +1,155 @@
++//go:build linux
++
++package rootfs
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func newDirectTarget(t *testing.T, contents []byte) string {
++	t.Helper()
++
++	path := filepath.Join(t.TempDir(), "rootfs.cow")
++	require.NoError(t, os.WriteFile(path, contents, 0o600))
++
++	return path
++}
++
++func newDiffOutput(t *testing.T) *os.File {
++	t.Helper()
++
++	out, err := os.Create(filepath.Join(t.TempDir(), "rootfs.diff"))
++	require.NoError(t, err)
++	t.Cleanup(func() { require.NoError(t, out.Close()) })
++
++	return out
++}
++
++func TestBorrowedDirectProviderClosePreservesTemplateRootfs(t *testing.T) {
++	t.Parallel()
++
++	contents := make([]byte, 8192)
++	copy(contents, []byte("template-rootfs"))
++	rootfs := newTestLocalRootfs(t, contents)
++	target := newDirectTarget(t, contents)
++
++	provider, err := NewDirectProvider(t.Context(), rootfs, target)
++	require.NoError(t, err)
++	require.NoError(t, provider.Close(t.Context()))
++	require.NoError(t, provider.Close(t.Context()), "Close must remain idempotent")
++
++	got, err := os.ReadFile(target)
++	require.NoError(t, err)
++	assert.Equal(t, contents, got)
++}
++
++func TestBorrowedDirectProviderExportPreservesTemplateRootfs(t *testing.T) {
++	t.Parallel()
++
++	contents := make([]byte, 8192)
++	copy(contents, []byte("template-export"))
++	rootfs := newTestLocalRootfs(t, contents)
++	target := newDirectTarget(t, contents)
++	provider, err := NewDirectProvider(t.Context(), rootfs, target)
++	require.NoError(t, err)
++
++	_, err = provider.ExportDiff(t.Context(), newDiffOutput(t), provider.Close)
++	require.NoError(t, err)
++
++	got, err := os.ReadFile(target)
++	require.NoError(t, err)
++	assert.Equal(t, contents, got)
++}
++
++func TestOwnedDirectRuntimeCloseRemovesOnlyPrivateClone(t *testing.T) {
++	t.Parallel()
++
++	contents := make([]byte, 8192)
++	copy(contents, []byte("runtime-rootfs"))
++	rootfs := newTestLocalRootfs(t, contents)
++	target := filepath.Join(t.TempDir(), "rootfs.cow")
++
++	provider, err := NewRuntimeProvider(
++		t.Context(),
++		"direct",
++		rootfs,
++		target,
++		"",
++		nil,
++		nil,
++		1,
++	)
++	require.NoError(t, err)
++	require.NoError(t, provider.Close(t.Context()))
++	require.NoError(t, provider.Close(t.Context()), "Close must remain idempotent")
++
++	_, err = os.Stat(target)
++	assert.ErrorIs(t, err, os.ErrNotExist)
++	sourceBytes := make([]byte, len(contents))
++	_, err = rootfs.ReadAt(t.Context(), sourceBytes, 0)
++	require.NoError(t, err)
++	assert.Equal(t, contents, sourceBytes)
++}
++
++func TestOwnedDirectProviderCloseDuringExportDoesNotRemoveClone(t *testing.T) {
++	t.Parallel()
++
++	contents := make([]byte, 8192)
++	rootfs := newTestLocalRootfs(t, contents)
++	target := newDirectTarget(t, contents)
++	provider, err := newOwnedDirectProvider(t.Context(), rootfs, target)
++	require.NoError(t, err)
++	direct := provider.(*DirectProvider)
++
++	// ExportDiff wins this same compare-and-swap before invoking its stop hook.
++	// Close must only signal release in that state; deleting here would race the
++	// exporter's subsequent open of the path.
++	direct.closed.Store(true)
++	require.NoError(t, direct.Close(t.Context()))
++	_, err = os.Stat(target)
++	require.NoError(t, err)
++
++	// Finish the synthetic lifecycle so the test does not retain the mapping.
++	direct.closed.Store(false)
++	require.NoError(t, direct.Close(t.Context()))
++}
++
++func TestOwnedDirectProviderExportRemovesCloneAfterExport(t *testing.T) {
++	t.Parallel()
++
++	contents := make([]byte, 8192)
++	copy(contents, []byte("owned-export"))
++	rootfs := newTestLocalRootfs(t, contents)
++	target := newDirectTarget(t, contents)
++	provider, err := newOwnedDirectProvider(t.Context(), rootfs, target)
++	require.NoError(t, err)
++
++	_, err = provider.ExportDiff(t.Context(), newDiffOutput(t), provider.Close)
++	require.NoError(t, err)
++	_, err = os.Stat(target)
++	assert.ErrorIs(t, err, os.ErrNotExist)
++}
++
++func TestOwnedDirectProviderExportTimeoutPreservesClone(t *testing.T) {
++	t.Parallel()
++
++	contents := make([]byte, 8192)
++	rootfs := newTestLocalRootfs(t, contents)
++	target := newDirectTarget(t, contents)
++	provider, err := newOwnedDirectProvider(t.Context(), rootfs, target)
++	require.NoError(t, err)
++
++	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
++	defer cancel()
++	_, err = provider.ExportDiff(ctx, newDiffOutput(t), func(context.Context) error { return nil })
++	require.ErrorContains(t, err, "timeout waiting for overlay device to be released")
++	_, err = os.Stat(target)
++	require.NoError(t, err, "an unconfirmed release must fail safe by retaining the clone")
++}
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/provider.go b/packages/orchestrator/pkg/sandbox/rootfs/provider.go
+--- a/packages/orchestrator/pkg/sandbox/rootfs/provider.go
++++ b/packages/orchestrator/pkg/sandbox/rootfs/provider.go
+@@ -154,7 +154,7 @@ func newMaterializedDirectProvider(
+ 	}
+ 	closed = true
+ 
+-	provider, err := NewDirectProvider(ctx, rootfs, cachePath)
++	provider, err := newOwnedDirectProvider(ctx, rootfs, cachePath)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("opening materialized direct rootfs: %w", err)
+ 	}
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink.go b/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
+--- a/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
++++ b/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
+@@ -638,7 +638,7 @@ func newMaterializedReflinkProvider(
+ 			}
+ 		}
+ 	}()
+-	provider, err := NewDirectProvider(ctx, rootfs, cachePath)
++	provider, err := newOwnedDirectProvider(ctx, rootfs, cachePath)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("opening reflink rootfs: %w", err)
+ 	}
