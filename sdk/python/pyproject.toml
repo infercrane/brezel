@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brezel-sdk"
+version = "0.0.0"
+description = "Python client for a self-hosted Brezel runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "InferCrane" }]
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brezel"]

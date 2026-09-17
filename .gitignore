@@ -3,6 +3,9 @@
 bin/
 dist/
 coverage/
+node_modules/
+__pycache__/
+*.py[cod]
 *.log
 /brezeld
 brezel-state/

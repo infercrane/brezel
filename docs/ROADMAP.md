@@ -30,6 +30,9 @@ Delivered and qualified across revisions
   executions across ten waves, with all 1,000 deletions confirmed
 - a separately sized 8-vCPU/16-GiB profile completing three of three pinned
   ComputeSDK DAX rehearsals with confirmed cleanup
+- source-tree Python and TypeScript SDKs for the supported sandbox lifecycle,
+  command, file, and preview path, with protected-token and fail-closed stream
+  contract tests
 
 Remaining before a broader operational label:
 
@@ -56,7 +59,8 @@ Make the simple interface useful for real coding and research agents.
 
 - arbitrary OCI environment builds with signed manifests
 - PTY and SSH transport
-- Python and TypeScript SDKs
+- publish Python and TypeScript packages; add caller-controlled cancellation
+  and resumable stream attachment
 - full-state checkpoints and fork after state semantics qualify
 - batch jobs and bounded agent rollouts
 - endpoint-bound secret leases and streaming response scrubbing

@@ -37,6 +37,7 @@ hostile shared-multitenant, or public-production system.
 | Recovery | Durable resource-lifecycle idempotency, lifecycle events, cleanup intent, expiration reconciliation |
 | Evidence | Ed25519-signed DSSE lifecycle receipt; no customer content by default |
 | Distribution | Pinned source, patches, images, VM artifacts, installer, conformance, benchmark harness |
+| SDKs | Source-tree Python and TypeScript clients for create, list, run, files, preview, pause, resume, and delete; protected token-file loading and fail-closed command streams; registry publishing and live-host qualification remain pending |
 | Node relay | The single-host package defaults command, file, and preview traffic to separate mTLS control and data listeners with route lifecycle CAS, one-operation capabilities, replay defense, generation fencing, reconciliation, and in-flight leases; the integrated path completed named-host Linux/KVM qualification at revision `67410ab5b928a335a79701d67eaf859df890da9c` |
 
 Release code has no fake backend and no container isolation fallback. The test
@@ -48,7 +49,7 @@ and engine credentials are read from protected files.
 - arbitrary OCI environment builds
 - interactive PTY, SSH, desktop, or WebSocket transport
 - public full-state checkpoint and fork operations
-- Python and TypeScript SDKs
+- published Python and TypeScript packages, caller-controlled cancellation, and resumable SDK stream attachment
 - node enrollment, online certificate and signing-key rotation, durable node-operation receipts, and service-unit upgrade or rollback packaging
 - node-local snapshot prefetch and multi-class capacity scheduling
 - OIDC, organizations, RBAC, approvals, or dynamic quota administration

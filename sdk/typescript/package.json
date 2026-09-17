@@ -1,0 +1,25 @@
+{
+  "name": "@infercrane/brezel",
+  "version": "0.0.0-development",
+  "description": "TypeScript client for a self-hosted Brezel runtime",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/index.js"
+  },
+  "license": "Apache-2.0"
+}

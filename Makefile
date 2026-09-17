@@ -20,7 +20,7 @@ fmt-check:
 	if [ -n "$$unformatted" ]; then printf 'gofmt required:\n%s\n' "$$unformatted" >&2; exit 1; fi
 
 shell-syntax:
-	@find deploy benchmarks -type f -name '*.sh' -exec sh -c 'for file do case "$$(head -n 1 "$$file")" in *bash*) bash -n "$$file" ;; *) sh -n "$$file" ;; esac || exit 1; done' sh {} +
+	@find deploy benchmarks examples -type f -name '*.sh' -exec sh -c 'for file do case "$$(head -n 1 "$$file")" in *bash*) bash -n "$$file" ;; *) sh -n "$$file" ;; esac || exit 1; done' sh {} +
 
 verify-engine-patches:
 	./deploy/single-host/verify-engine-patch-chain.sh
@@ -29,6 +29,9 @@ test:
 	go test ./...
 
 test-integrations:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s sdk/python/tests -v
+	node --check sdk/typescript/src/index.js
+	node --test sdk/typescript/test/*.test.mjs
 	node --test benchmarks/computesdk/*.test.mjs
 	node --check benchmarks/computesdk/dax-bottleneck-model.mjs
 	node --check benchmarks/computesdk/adapter.mjs
