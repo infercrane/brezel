@@ -146,16 +146,14 @@ gates for those capabilities.
 
 ## How it works
 
-```text
-CLI / HTTP client
-       │
-       ▼
-Brezel API ───── policy · lifecycle · durable state · receipts
-       │
-       ▼ mTLS + signed, single-operation capability
-node relay ───── pinned Firecracker engine ───── isolated guest
-       │                                           │
-       └──────────── durable workspace ────────────┘
+```mermaid
+flowchart LR
+    client["CLI / HTTP"] --> api["Brezel API<br/>policy · lifecycle · state"]
+    api -->|"mTLS + one-operation capability"| node["node relay"]
+    api -->|"lifecycle"| engine["pinned Firecracker engine"]
+    node --> guest["isolated guest"]
+    engine --> guest
+    guest --- workspace[("durable workspace")]
 ```
 
 Brezel owns the public contract, lifecycle, policy, data paths, packaging,
@@ -163,6 +161,16 @@ qualification, and evidence. The initial engine distribution uses pinned,
 locally patched Apache-2.0 E2B Runtime components. Brezel does not use E2B
 Cloud and does not require an E2B API key. The dependency and replacement
 boundary are documented in [ADR 0002](docs/decisions/0002-runtime-substrate.md).
+The full [current architecture](docs/ARCHITECTURE.md#current-single-host-architecture)
+separates the lifecycle and guest-data paths and marks every trust boundary.
+
+## Go live without overstating the product
+
+The repository is suitable for an open-source developer preview and a private
+evaluation by one trusted organization. It is not suitable for a public shared
+sandbox API. Before publishing or exposing an installation, follow the exact
+[go-live gates](docs/GO-LIVE.md), qualify the final commit on its deployment
+host, and keep the [status boundary](docs/STATUS.md) visible.
 
 ## Verify and benchmark
 
@@ -196,6 +204,7 @@ result. Named-host qualification results and their limitations are retained in
 - [Threat model](docs/THREAT_MODEL.md)
 - [Artifact supply chain](docs/ARTIFACT-SUPPLY-CHAIN.md)
 - [Benchmark methodology](docs/BENCHMARKING.md)
+- [Go-live checklist](docs/GO-LIVE.md)
 - [Roadmap](docs/ROADMAP.md)
 
 ## Contributing and security

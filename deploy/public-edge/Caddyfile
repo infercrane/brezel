@@ -8,6 +8,38 @@
 		method GET
 		path /readyz
 	}
+	@service_metadata {
+		method GET
+		path /v1/capabilities /v1/receipt-public-key
+	}
+	@operation {
+		method GET
+		path_regexp operation ^/v1/operations/[^/]+$
+	}
+	@environment_collection {
+		method POST
+		path /v1/environments
+	}
+	@environment_member {
+		method GET
+		path_regexp environment ^/v1/environments/[^/]+$
+	}
+	@connector_collection {
+		method POST
+		path /v1/connectors
+	}
+	@connector_member {
+		method GET
+		path_regexp connector ^/v1/connectors/[^/]+$
+	}
+	@workspace_collection {
+		method GET POST
+		path /v1/workspaces
+	}
+	@workspace_member {
+		method GET DELETE
+		path_regexp workspace ^/v1/workspaces/[^/]+$
+	}
 	@sandbox_collection {
 		method GET POST
 		path /v1/sandboxes
@@ -20,6 +52,10 @@
 		method POST
 		path_regexp command ^/v1/sandboxes/[^/]+/commands$
 	}
+	@sandbox_action {
+		method POST
+		path_regexp action ^/v1/sandboxes/[^/]+:(pause|resume)$
+	}
 	@sandbox_file {
 		method GET PUT
 		path_regexp file ^/v1/sandboxes/[^/]+/files$
@@ -28,12 +64,56 @@
 		method POST
 		path_regexp lease ^/v1/sandboxes/[^/]+/ports/[0-9]+/leases$
 	}
+	@sandbox_checkpoint {
+		method POST
+		path_regexp sandbox_checkpoint ^/v1/sandboxes/[^/]+/checkpoints$
+	}
+	@sandbox_evidence {
+		method GET
+		path_regexp sandbox_evidence ^/v1/sandboxes/[^/]+/(events|receipt)$
+	}
+	@checkpoint_member {
+		method DELETE
+		path_regexp checkpoint ^/v1/checkpoints/[^/]+$
+	}
+	@connector_renew {
+		method POST
+		path /connector/v1/leases/renew
+	}
+	@connector_proxy {
+		method GET HEAD POST PUT PATCH DELETE OPTIONS
+		path /connector/v1/proxy/*
+	}
 	@preview {
 		method GET HEAD POST PUT PATCH DELETE OPTIONS
 		path /p/*
 	}
 
 	handle @readiness {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @service_metadata {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @operation {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @environment_collection {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @environment_member {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @connector_collection {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @connector_member {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @workspace_collection {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @workspace_member {
 		reverse_proxy 127.0.0.1:8080
 	}
 	handle @sandbox_collection {
@@ -49,10 +129,28 @@
 			flush_interval -1
 		}
 	}
+	handle @sandbox_action {
+		reverse_proxy 127.0.0.1:8080
+	}
 	handle @sandbox_file {
 		reverse_proxy 127.0.0.1:8080
 	}
 	handle @sandbox_lease {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @sandbox_checkpoint {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @sandbox_evidence {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @checkpoint_member {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @connector_renew {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @connector_proxy {
 		reverse_proxy 127.0.0.1:8080
 	}
 	handle @preview {

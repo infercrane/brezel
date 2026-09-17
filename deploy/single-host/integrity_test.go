@@ -1217,8 +1217,25 @@ func TestPublicEdgeIsNarrowAndDoesNotLogCapabilityURLs(t *testing.T) {
 	}
 	configuration := string(caddy)
 	for _, required := range []string{
+		`handle @service_metadata`,
+		`handle @operation`,
+		`handle @environment_collection`,
+		`handle @environment_member`,
+		`handle @connector_collection`,
+		`handle @connector_member`,
+		`handle @workspace_collection`,
+		`handle @workspace_member`,
 		`handle @sandbox_collection`,
+		`handle @sandbox_member`,
 		`handle @sandbox_command`,
+		`handle @sandbox_action`,
+		`handle @sandbox_file`,
+		`handle @sandbox_lease`,
+		`handle @sandbox_checkpoint`,
+		`handle @sandbox_evidence`,
+		`handle @checkpoint_member`,
+		`handle @connector_renew`,
+		`handle @connector_proxy`,
 		`handle @preview`,
 		`handle {`,
 		`respond 404`,
@@ -1230,6 +1247,9 @@ func TestPublicEdgeIsNarrowAndDoesNotLogCapabilityURLs(t *testing.T) {
 	}
 	if strings.Contains(configuration, "log {") || strings.Contains(configuration, "access_log") {
 		t.Fatal("public edge must not log preview capabilities or file paths from request URLs")
+	}
+	if strings.Contains(configuration, "path /metrics") || strings.Contains(configuration, "path /healthz") {
+		t.Fatal("public edge must not expose internal liveness or metrics endpoints")
 	}
 
 	compose, err := os.ReadFile(filepath.Join("..", "public-edge", "compose.yaml"))

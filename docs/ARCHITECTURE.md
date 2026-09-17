@@ -19,11 +19,78 @@
 7. **Measure before claiming.** Startup, resume, density, durability, and
    isolation claims must name a tested release and environment.
 
+## Current single-host architecture
+
+This is the architecture shipped by the self-hosted private-tenant developer
+preview. Every component below runs on one dedicated Ubuntu 24.04 x86-64 host.
+The optional public edge is the only process intended to bind a public
+interface; the API, node relay, and engine bind loopback addresses.
+
+```mermaid
+flowchart TB
+    caller["CLI or HTTP client"]
+
+    subgraph host["Dedicated single-tenant KVM host"]
+        edge["Optional Caddy edge<br/>TLS and narrow route allowlist"]
+
+        subgraph product["Brezel-owned boundary"]
+            api["brezeld<br/>auth · quotas · lifecycle · reconciliation"]
+            ledger[("SQLite WAL<br/>resources · operations · events")]
+            receipts[("Ed25519 receipt key<br/>signed lifecycle receipts")]
+            node["brezel-node<br/>mTLS control :8444 · data :8443"]
+            routes[("Generation ledger<br/>opaque route → private engine ID")]
+        end
+
+        subgraph substrate["Pinned Firecracker engine boundary"]
+            engine["Engine API :3000<br/>create · pause · resume · delete"]
+            orchestrator["Node-local orchestrator :5007<br/>guest transport · network · snapshots"]
+            vm["Firecracker microVM<br/>envd guest agent + workload"]
+        end
+
+        workspaces[("Host-local durable workspaces")]
+        artifacts[("Pinned templates · rootfs · snapshots")]
+        secrets[("Protected host files<br/>tokens · TLS · signing keys")]
+    end
+
+    caller -->|"HTTPS when exposed"| edge
+    caller -.->|"loopback for local use"| api
+    edge --> api
+    api --> ledger
+    receipts --> api
+    secrets --> api
+    secrets --> node
+    api -->|"lifecycle authority"| engine
+    api -->|"mTLS + signed one-operation capability"| node
+    api -->|"mTLS route state"| node
+    node --> routes
+    node -->|"private guest operation"| orchestrator
+    engine --> orchestrator
+    orchestrator --> vm
+    artifacts --> orchestrator
+    vm --- workspaces
+```
+
+There are two request paths:
+
+- **Lifecycle path:** `brezeld` authenticates the project, records intent in
+  SQLite, asks the engine to create, pause, resume, or delete a microVM, and
+  reconciles the observed result. It never reports an unknown backend outcome
+  as success.
+- **Data path:** after the same admission checks, `brezeld` signs a capability
+  for one command, file, or preview operation. `brezel-node` validates the
+  mTLS peer, capability, route generation, request digest, limits, and replay
+  state before resolving the private engine identity and reaching the guest.
+
+The workspace is the explicit persistence boundary. The microVM writable root
+is optimized for execution and remains host-local; a workspace can survive
+sandbox replacement on that host. Neither is a backup or a host-loss boundary.
+The public edge deliberately excludes metrics and internal node/engine routes.
+See [Go live](GO-LIVE.md) for the supported exposure model.
+
 ## Target fleet architecture
 
 The diagram and fleet services in this section are a design target, not the
-current release. The implemented private single-host topology is described
-under [State and data stores](#state-and-data-stores) and bounded by
+current release. The implemented topology is shown above and bounded by
 [Status](STATUS.md).
 
 ```text
