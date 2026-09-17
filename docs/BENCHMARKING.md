@@ -313,9 +313,14 @@ The decisive signals are:
 * Block/root filesystem: NBD bytes and weighted I/O time, blocked tasks, or I/O
   `some`/`full` PSI rise while vCPU progress drops. Major faults, reclaim, swap,
   or allocation stalls identify memory pressure masquerading as storage delay.
-* Provider: command-minus-guest, marker-observation-minus-guest, or stream-tail
-  time remains large while CPU, PSI, NBD, and page-fault evidence is quiet.
-  Create and destroy remain separate from the scored command boundary.
+* Command boundary: `marker-observation-minus-guest` isolates receipt of the
+  strict total marker. The legacy `command-minus-guest` and `stream-tail`
+  fields are not provider-only evidence for this pinned script: it emits
+  `BENCH_PHASE total` before rendering its summary and before its `EXIT` trap
+  synchronously removes the roughly 3 GB benchmark root. New reports expose
+  the latter value as `postTotalGuestAndProviderMs`. Use command-path terminal
+  diagnostics to separate provider completion from that guest work. Create and
+  destroy remain separate from the scored command boundary.
 * Host contention: steal, cgroup throttling, wide or migrating vCPU placement,
   or collection time that is not negligible compared with 250 ms.
 
@@ -708,7 +713,7 @@ cover:
 - `public_handler`: handler acceptance through the first flushed event, the
   terminal event, and the point at which the handler is ready to return;
 - `relay_client`: API-side route lookup and the node response stream through
-  its decoded EOF;
+  its confirmed terminal event, without waiting for redundant transport EOF;
 - `relay_server`: admitted relay handler work through backend completion and
   the point at which the relay handler is ready to return; and
 - `guest_backend`: credential resolution and the envd command stream through

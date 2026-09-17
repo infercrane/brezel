@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createPhaseObserver,
+  diagnosticCommandTiming,
   pairedABIdentity,
   preflightDaxEnvironment,
   structuredLines,
@@ -47,6 +48,21 @@ test("phase observer timestamps split strict markers once", () => {
     { phase: "prepare", guestDurationMs: 10, observedAt: "2026-09-16T00:00:00Z", elapsedMs: 100 },
     { phase: "install", guestDurationMs: 6, observedAt: "2026-09-16T00:00:01Z", elapsedMs: 200 },
   ]);
+});
+
+test("diagnostic command timing does not misattribute pinned post-total cleanup to the provider", () => {
+  assert.deepEqual(diagnosticCommandTiming(5_100, 1_000, { elapsedMs: 1_020 }), {
+    commandMinusGuestMs: 4_100,
+    markerObservationMinusGuestMs: 20,
+    streamTailMs: 4_080,
+    postTotalGuestAndProviderMs: 4_080,
+  });
+  assert.deepEqual(diagnosticCommandTiming(5_100, 1_000), {
+    commandMinusGuestMs: 4_100,
+    markerObservationMinusGuestMs: null,
+    streamTailMs: null,
+    postTotalGuestAndProviderMs: null,
+  });
 });
 
 test("structuredLines retains exact phase, cache, metadata and disk evidence", () => {

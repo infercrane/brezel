@@ -16,7 +16,7 @@ function sample(second, values = {}) {
 }
 
 test("buildHostPhaseReport aligns phase markers and distinguishes CPU/block evidence", () => {
-  const dax = { suite: "computesdk-dax-rehearsal", guest: { cpus: 8 }, provenance: { sourceRevision: "a".repeat(40) }, startedAt: "2026-09-16T00:00:00Z", finishedAt: "2026-09-16T00:00:04Z", attempts: [{ iteration: 1, buildStartedAt: "2026-09-16T00:00:00Z", providerOverhead: { commandMinusGuestMs: 4 }, phaseEvents: [{ phase: "prepare", guestDurationMs: 1900, observedAt: "2026-09-16T00:00:02Z" }, { phase: "total", guestDurationMs: 3900, observedAt: "2026-09-16T00:00:04Z" }] }] };
+  const dax = { suite: "computesdk-dax-rehearsal", guest: { cpus: 8 }, provenance: { sourceRevision: "a".repeat(40) }, startedAt: "2026-09-16T00:00:00Z", finishedAt: "2026-09-16T00:00:04Z", attempts: [{ iteration: 1, buildStartedAt: "2026-09-16T00:00:00Z", providerOverhead: { commandMinusGuestMs: 4, markerObservationMinusGuestMs: 1, streamTailMs: 3 }, phaseEvents: [{ phase: "prepare", guestDurationMs: 1900, observedAt: "2026-09-16T00:00:02Z" }, { phase: "total", guestDurationMs: 3900, observedAt: "2026-09-16T00:00:04Z" }] }] };
   const manifest = { kind: "brezel_host_telemetry", truncated: false, interval_ns: 1_000_000_000, sample_count: 5, started_at: "2026-09-16T00:00:00Z", finished_at: "2026-09-16T00:00:04Z" };
   const report = buildHostPhaseReport(dax, manifest, [0, 1, 2, 3, 4].map((value) => sample(value)));
   const prepare = report.attempts[0].phases.prepare;
@@ -25,6 +25,14 @@ test("buildHostPhaseReport aligns phase markers and distinguishes CPU/block evid
   assert.equal(prepare.firecracker.averageVCPUCores, 0.2);
   assert.deepEqual(prepare.firecracker.placement["fc_vcpu 0"].allowedCPUs, ["4-11"]);
   assert.equal(report.leaderboardComparable, false);
+  assert.deepEqual(report.attempts[0].commandBoundaryTiming, {
+    commandMinusGuestMs: 4,
+    markerObservationMinusGuestMs: 1,
+    postTotalGuestAndProviderMs: 3,
+  });
+  assert.equal(report.attempts[0].providerOverhead.streamTailMs, 3, "legacy raw timing remains available");
+  assert.equal("providerBound" in report.interpretation, false);
+  assert.match(report.interpretation.postTotalBoundary, /EXIT-trap workspace removal.+not provider-only/);
 });
 
 test("buildHostPhaseReport rejects missing phase observations", () => {

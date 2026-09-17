@@ -125,6 +125,21 @@ export function summarizeAttempts(attempts) {
   };
 }
 
+// The pinned script records BENCH_PHASE total before rendering its summary and
+// before its EXIT trap synchronously removes BENCH_ROOT. The time after that
+// marker therefore combines guest-side post-total work with provider command
+// completion. Keep the original field names for report compatibility, but
+// publish the combined boundary under an attribution-safe name as well.
+export function diagnosticCommandTiming(commandMs, guestTotalMs, totalEvent) {
+  const postTotalGuestAndProviderMs = totalEvent ? commandMs - totalEvent.elapsedMs : null;
+  return {
+    commandMinusGuestMs: commandMs - guestTotalMs,
+    markerObservationMinusGuestMs: totalEvent ? totalEvent.elapsedMs - guestTotalMs : null,
+    streamTailMs: postTotalGuestAndProviderMs,
+    postTotalGuestAndProviderMs,
+  };
+}
+
 export function validateDaxEnvironment(environment, expectedRevision) {
   if (!environment || typeof environment !== "object" || Array.isArray(environment)) {
     throw new Error("DAX environment preflight received an invalid environment resource");
@@ -241,11 +256,7 @@ export async function run() {
       if (phaseObserver) {
         attempt.phaseEvents = phaseObserver.finish();
         const totalEvent = attempt.phaseEvents.find((event) => event.phase === "total");
-        attempt.providerOverhead = {
-          commandMinusGuestMs: attempt.totalMs - attempt.result.phases.total,
-          markerObservationMinusGuestMs: totalEvent ? totalEvent.elapsedMs - attempt.result.phases.total : null,
-          streamTailMs: totalEvent ? attempt.totalMs - totalEvent.elapsedMs : null,
-        };
+        attempt.providerOverhead = diagnosticCommandTiming(attempt.totalMs, attempt.result.phases.total, totalEvent);
       }
       attempt.stderrTail = result.stderr.trim().split("\n").slice(-40).join("\n");
       if (result.exitCode !== 0 || attempt.result.executionFailures.length !== 0 || !transcriptValid(attempt.result, guest)) {
@@ -298,7 +309,16 @@ export async function run() {
       scoredBoundary: "runCommand request through complete command result",
       upstreamPhaseOrder: DAX_PHASES,
       cleanupBoundary: "destroy confirmation followed by empty-project inventory",
-      ...(capturePhaseEvents ? { phaseTelemetry: "opt-in provider receipt timestamps for strict BENCH_PHASE markers" } : {}),
+      ...(capturePhaseEvents ? {
+        phaseTelemetry: "opt-in provider receipt timestamps for strict BENCH_PHASE markers",
+        postTotalTiming: {
+          field: "attempts[].providerOverhead.postTotalGuestAndProviderMs",
+          legacyAlias: "attempts[].providerOverhead.streamTailMs",
+          attribution: "combined guest post-total work and provider command completion",
+          pinnedScriptBoundary: "BENCH_PHASE total precedes render_table and the EXIT-trap removal of BENCH_ROOT",
+          providerOnly: false,
+        },
+      } : {}),
     },
     guest,
     requested: iterations,

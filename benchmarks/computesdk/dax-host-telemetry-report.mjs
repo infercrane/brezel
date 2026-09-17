@@ -183,7 +183,21 @@ export function buildHostPhaseReport(dax, manifest, samples) {
       phases[event.phase].guestDurationMs = event.guestDurationMs;
       startAt = event.observedAt;
     }
-    return { iteration: attempt.iteration, providerOverhead: attempt.providerOverhead, phases };
+    const legacyTiming = attempt.providerOverhead ?? {};
+    const commandBoundaryTiming = {
+      commandMinusGuestMs: legacyTiming.commandMinusGuestMs ?? null,
+      markerObservationMinusGuestMs: legacyTiming.markerObservationMinusGuestMs ?? null,
+      postTotalGuestAndProviderMs: legacyTiming.postTotalGuestAndProviderMs ?? legacyTiming.streamTailMs ?? null,
+    };
+    return {
+      iteration: attempt.iteration,
+      // Preserve the raw diagnostic object so older reports and consumers keep
+      // their original numbers. New analysis must use commandBoundaryTiming,
+      // whose name reflects the pinned script's post-total guest cleanup.
+      providerOverhead: attempt.providerOverhead,
+      commandBoundaryTiming,
+      phases,
+    };
   });
   return {
     schemaVersion: 1,
@@ -195,7 +209,7 @@ export function buildHostPhaseReport(dax, manifest, samples) {
     interpretation: {
       cpuBound: "high Firecracker task CPU ticks with CPU PSI/runnable pressure, low I/O PSI and low NBD weighted time",
       blockBound: "high NBD weighted I/O time, blocked tasks or I/O PSI while Firecracker CPU progress falls",
-      providerBound: "large command-minus-guest or stream-tail time without matching host CPU/block pressure",
+      postTotalBoundary: "post-total guest-and-provider time includes the pinned script's render_table and EXIT-trap workspace removal; it is not provider-only evidence",
       placementFault: "vCPU threads share processors, migrate heavily, or have wider CPU/memory-node masks than the declared guest placement",
     },
     attempts,
