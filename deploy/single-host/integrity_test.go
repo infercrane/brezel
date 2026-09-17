@@ -2060,7 +2060,9 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		"TestNewRuntimeDevicePoolOnlySuppressesReflinkWithoutTemplateManager",
 		"NETWORK_VERSION=1",
 		"TEMPLATE_STORAGE_URL=file:///var/lib/e2b/storage/templates",
-		"/orchestrator/sandbox/rootfs-",
+		`process_environment_value "$orchestrator_pid" SANDBOX_CACHE_DIR`,
+		`resolve_sandbox_cache_directory false`,
+		`"$sandbox_cache_directory"/rootfs-`,
 		"/orchestrator/template/",
 		"/var/run/netns/ns-",
 		"no usable memory prefetch mapping was produced",
@@ -2083,6 +2085,66 @@ func TestInstallerAndQualificationFailClosedOnEngineFastPaths(t *testing.T) {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("engine capability probe is missing %q", required)
 		}
+	}
+}
+
+func TestEngineCapabilityProbeResolvesLiveSandboxCacheDirectory(t *testing.T) {
+	probeData, err := os.ReadFile("engine-capabilities.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := string(probeData)
+	checkLive := strings.Index(probe, "\ncheck_live() {")
+	if checkLive < 0 {
+		t.Fatal("engine capability probe has no check_live boundary")
+	}
+	harness := probe[:checkLive] + `
+resolve_sandbox_cache_directory "$1" "${2:-}"
+`
+
+	tests := []struct {
+		name    string
+		present string
+		value   string
+		want    string
+	}{
+		{
+			name:    "explicit reflink cache",
+			present: "true",
+			value:   "/brezel-rootfs/sandbox",
+			want:    "/brezel-rootfs/sandbox\n",
+		},
+		{
+			name:    "absent setting uses packaged default",
+			present: "false",
+			want:    "/orchestrator/sandbox\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := exec.Command("sh", "-c", harness, "engine-capabilities-test", test.present, test.value)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("sandbox cache resolver failed: %v: %s", err, output)
+			}
+			if string(output) != test.want {
+				t.Fatalf("sandbox cache resolver output = %q, want %q", output, test.want)
+			}
+		})
+	}
+
+	command := exec.Command("sh", "-c", harness, "engine-capabilities-test", "true", "relative/cache")
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("sandbox cache resolver accepted a relative path: %s", output)
+	} else if !strings.Contains(string(output), "SANDBOX_CACHE_DIR is not absolute") {
+		t.Fatalf("sandbox cache resolver returned the wrong failure: %s", output)
+	}
+
+	command = exec.Command("sh", "-c", harness, "engine-capabilities-test", "true", "")
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("sandbox cache resolver treated an explicitly empty setting as absent: %s", output)
+	} else if !strings.Contains(string(output), "SANDBOX_CACHE_DIR setting is empty") {
+		t.Fatalf("sandbox cache resolver returned the wrong empty-setting failure: %s", output)
 	}
 }
 

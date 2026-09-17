@@ -349,14 +349,72 @@ has_nonempty_prefetch() {
   tr -d '[:space:]' < "$metadata" | grep -Eq '"prefetch":\{.*"memory":\{.*"indices":\[[0-9]'
 }
 
+resolve_sandbox_cache_directory() {
+  setting_present=$1
+  configured_value=${2:-}
+
+  case "$setting_present" in
+    true)
+      [ -n "$configured_value" ] || fail "the live SANDBOX_CACHE_DIR setting is empty"
+      sandbox_cache_directory=$configured_value
+      ;;
+    false)
+      sandbox_cache_directory=/orchestrator/sandbox
+      ;;
+    *) fail "the SANDBOX_CACHE_DIR presence marker is invalid" ;;
+  esac
+
+  case "$sandbox_cache_directory" in
+    /*) ;;
+    *) fail "the live SANDBOX_CACHE_DIR is not absolute" ;;
+  esac
+  case "$sandbox_cache_directory" in
+    /|*/|*//*|*/./*|*/../*|*/.|*/..)
+      fail "the live SANDBOX_CACHE_DIR is not a clean path below root"
+      ;;
+  esac
+
+  printf '%s\n' "$sandbox_cache_directory"
+}
+
 check_live() {
   sandbox_id=${1:-}
   case "$sandbox_id" in
     ""|*[!A-Za-z0-9._-]*) fail "live mode requires a validated engine sandbox ID" ;;
   esac
 
+  orchestrator_pid=
+  uffd_fd_observed=false
+  for process in /proc/[0-9]*; do
+    [ -r "$process/comm" ] || continue
+    [ "$(tr -d '\r\n' < "$process/comm")" = "orchestrator" ] || continue
+    for descriptor in "$process"/fd/*; do
+      [ -e "$descriptor" ] || [ -L "$descriptor" ] || continue
+      if [ "$(readlink "$descriptor" 2>/dev/null || true)" = "anon_inode:[userfaultfd]" ]; then
+        orchestrator_pid=${process#/proc/}
+        uffd_fd_observed=true
+        break
+      fi
+    done
+    [ "$uffd_fd_observed" = true ] && break
+  done
+  [ -n "$orchestrator_pid" ] || fail "the host orchestrator process is not running with a live userfaultfd descriptor"
+
+  if tr '\000' '\n' < "/proc/$orchestrator_pid/environ" | grep -q '^SANDBOX_CACHE_DIR='; then
+    sandbox_cache_directory=$(resolve_sandbox_cache_directory true \
+      "$(process_environment_value "$orchestrator_pid" SANDBOX_CACHE_DIR)")
+  else
+    sandbox_cache_directory=$(resolve_sandbox_cache_directory false)
+  fi
+  [ -d "$sandbox_cache_directory" ] && [ ! -L "$sandbox_cache_directory" ] || \
+    fail "the live SANDBOX_CACHE_DIR is not a real directory"
+  canonical_sandbox_cache_directory=$(readlink -f -- "$sandbox_cache_directory") || \
+    fail "the live SANDBOX_CACHE_DIR cannot be resolved"
+  [ "$canonical_sandbox_cache_directory" = "$sandbox_cache_directory" ] || \
+    fail "the live SANDBOX_CACHE_DIR contains a symlink or is not canonical"
+
   cow_path=
-  for candidate in /orchestrator/sandbox/rootfs-"$sandbox_id"-*.cow; do
+  for candidate in "$sandbox_cache_directory"/rootfs-"$sandbox_id"-*.cow; do
     if [ -f "$candidate" ] && [ -s "$candidate" ]; then
       cow_path=$candidate
       break
@@ -372,24 +430,6 @@ check_live() {
     fi
   done
   [ -n "$uffd_socket" ] || fail "no UFFD socket is active for $sandbox_id"
-
-  orchestrator_pid=
-  uffd_fd_observed=false
-  for process in /proc/[0-9]*; do
-    [ -r "$process/comm" ] || continue
-    [ "$(tr -d '\r\n' < "$process/comm")" = "orchestrator" ] || continue
-    orchestrator_pid=${process#/proc/}
-    for descriptor in "$process"/fd/*; do
-      [ -e "$descriptor" ] || [ -L "$descriptor" ] || continue
-      if [ "$(readlink "$descriptor" 2>/dev/null || true)" = "anon_inode:[userfaultfd]" ]; then
-        uffd_fd_observed=true
-        break
-      fi
-    done
-    [ "$uffd_fd_observed" = true ] && break
-  done
-  [ -n "$orchestrator_pid" ] || fail "the host orchestrator process is not running"
-  [ "$uffd_fd_observed" = true ] || fail "the orchestrator has no live userfaultfd descriptor"
   expected_starting_limit=${3:-}
   case "$expected_starting_limit" in
     ""|*[!0-9]*) fail "the expected local starting-sandbox limit must be a positive integer" ;;
