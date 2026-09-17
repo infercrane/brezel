@@ -1,0 +1,208 @@
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink.go b/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
+--- a/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
++++ b/packages/orchestrator/pkg/sandbox/rootfs/reflink.go
+@@ -3,6 +3,7 @@
+ package rootfs
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"crypto/rand"
+ 	"crypto/sha256"
+@@ -404,6 +405,61 @@ func cleanupReflinkBuild(rootfd int, name string) {
+ 	_ = unix.Fsync(rootfd)
+ }
+ 
++// materializeSparseReflinkContents copies the complete logical source and
++// computes its digest, but leaves an all-zero chunk as a hole in the new file.
++// basefd must refer to a newly created, empty file: skipping a write is safe
++// only because Ftruncate extends such a file with zero-filled sparse ranges.
++func materializeSparseReflinkContents(
++	ctx context.Context,
++	basefd int,
++	rootfs block.ReadonlyDevice,
++	expected reflinkManifest,
++) (string, error) {
++	var destinationStat unix.Stat_t
++	if err := unix.Fstat(basefd, &destinationStat); err != nil {
++		return "", err
++	}
++	if destinationStat.Mode&unix.S_IFMT != unix.S_IFREG || destinationStat.Size != 0 {
++		return "", errors.New("sparse reflink destination must be an empty regular file")
++	}
++	if err := unix.Ftruncate(basefd, expected.DiskSize); err != nil {
++		return "", err
++	}
++	chunkSize := directMaterializeChunkBytes
++	if expected.BlockSize > chunkSize {
++		chunkSize = expected.BlockSize
++	} else {
++		chunkSize -= chunkSize % expected.BlockSize
++	}
++	buffer := make([]byte, chunkSize)
++	zeroes := make([]byte, chunkSize)
++	hash := sha256.New()
++	for offset := int64(0); offset < expected.DiskSize; offset += chunkSize {
++		if err := ctx.Err(); err != nil {
++			return "", err
++		}
++		length := min(chunkSize, expected.DiskSize-offset)
++		count, err := rootfs.ReadAt(ctx, buffer[:length], offset)
++		if err != nil {
++			return "", fmt.Errorf("reading reflink base at offset %d: %w", offset, err)
++		}
++		if int64(count) != length {
++			return "", io.ErrUnexpectedEOF
++		}
++		_, _ = hash.Write(buffer[:length])
++		if bytes.Equal(buffer[:length], zeroes[:length]) {
++			continue
++		}
++		if err := writeAllAt(basefd, buffer[:length], offset); err != nil {
++			return "", err
++		}
++	}
++	if err := unix.Fsync(basefd); err != nil {
++		return "", err
++	}
++	return hex.EncodeToString(hash.Sum(nil)), nil
++}
++
+ func materializeReflinkBase(ctx context.Context, rootfd int, rootfs block.ReadonlyDevice, expected reflinkManifest) (int, unix.Stat_t, error) {
+ 	if fd, stat, err := openVerifiedReflinkBase(rootfd, expected); err == nil {
+ 		return fd, stat, nil
+@@ -446,35 +502,8 @@ func materializeReflinkBase(ctx context.Context, rootfd int, rootfs block.Readon
+ 			_ = unix.Close(basefd)
+ 		}
+ 	}()
+-	if err := unix.Ftruncate(basefd, expected.DiskSize); err != nil {
+-		return -1, unix.Stat_t{}, err
+-	}
+-	chunkSize := directMaterializeChunkBytes
+-	if expected.BlockSize > chunkSize {
+-		chunkSize = expected.BlockSize
+-	} else {
+-		chunkSize -= chunkSize % expected.BlockSize
+-	}
+-	buffer := make([]byte, chunkSize)
+-	hash := sha256.New()
+-	for offset := int64(0); offset < expected.DiskSize; offset += chunkSize {
+-		if err := ctx.Err(); err != nil {
+-			return -1, unix.Stat_t{}, err
+-		}
+-		length := min(chunkSize, expected.DiskSize-offset)
+-		count, err := rootfs.ReadAt(ctx, buffer[:length], offset)
+-		if err != nil {
+-			return -1, unix.Stat_t{}, fmt.Errorf("reading reflink base at offset %d: %w", offset, err)
+-		}
+-		if int64(count) != length {
+-			return -1, unix.Stat_t{}, io.ErrUnexpectedEOF
+-		}
+-		if err := writeAllAt(basefd, buffer[:length], offset); err != nil {
+-			return -1, unix.Stat_t{}, err
+-		}
+-		_, _ = hash.Write(buffer[:length])
+-	}
+-	if err := unix.Fsync(basefd); err != nil {
++	digest, err := materializeSparseReflinkContents(ctx, basefd, rootfs, expected)
++	if err != nil {
+ 		return -1, unix.Stat_t{}, err
+ 	}
+ 	if err := unix.Fchmod(basefd, 0o400); err != nil {
+@@ -487,7 +516,7 @@ func materializeReflinkBase(ctx context.Context, rootfd int, rootfs block.Readon
+ 	if err := unix.IoctlSetPointerInt(basefd, unix.FS_IOC_SETFLAGS, flags|reflinkImmutableFlag); err != nil {
+ 		return -1, unix.Stat_t{}, fmt.Errorf("making reflink base immutable: %w", err)
+ 	}
+-	expected.SHA256 = hex.EncodeToString(hash.Sum(nil))
++	expected.SHA256 = digest
+ 	manifestBytes, err := json.Marshal(expected)
+ 	if err != nil {
+ 		return -1, unix.Stat_t{}, err
+diff --git a/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go b/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
+--- a/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
++++ b/packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go
+@@ -194,3 +194,84 @@ func TestRememberedReflinkDigestSkipsSecondImageRead(t *testing.T) {
+ 	resetReflinkDigestCache()
+ 	require.Error(t, validateReflinkDigest(pathFD, stat, digest, "identity"))
+ }
++
++func materializeSparseTestFile(t *testing.T, contents []byte) (*os.File, string) {
++	t.Helper()
++	source := newTestLocalRootfs(t, contents)
++	path := filepath.Join(t.TempDir(), "rootfs.raw")
++	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
++	require.NoError(t, err)
++	t.Cleanup(func() { require.NoError(t, file.Close()) })
++	digest, err := materializeSparseReflinkContents(
++		context.Background(),
++		int(file.Fd()),
++		source,
++		reflinkManifest{DiskSize: int64(len(contents)), BlockSize: 4096},
++	)
++	require.NoError(t, err)
++	return file, digest
++}
++
++func TestSparseReflinkMaterializationPreservesLogicalBytesAndDigest(t *testing.T) {
++	contents := make([]byte, directMaterializeChunkBytes*3+4096)
++	copy(contents, []byte("first allocated range"))
++	copy(contents[directMaterializeChunkBytes*2+123:], []byte("second allocated range"))
++	file, digest := materializeSparseTestFile(t, contents)
++
++	actual := make([]byte, len(contents))
++	count, err := file.ReadAt(actual, 0)
++	require.NoError(t, err)
++	require.Equal(t, len(contents), count)
++	require.Equal(t, contents, actual)
++	require.Equal(t, digestBytes(contents), digest)
++
++	var stat unix.Stat_t
++	require.NoError(t, unix.Fstat(int(file.Fd()), &stat))
++	require.Equal(t, int64(len(contents)), stat.Size)
++	allocated := stat.Blocks * 512
++	if allocated >= stat.Size {
++		t.Skipf("filesystem does not preserve observable holes: allocated=%d logical=%d", allocated, stat.Size)
++	}
++	require.Less(t, allocated, stat.Size)
++}
++
++func TestSparseReflinkMaterializationRejectsNonemptyDestination(t *testing.T) {
++	source := newTestLocalRootfs(t, make([]byte, 4096))
++	path := filepath.Join(t.TempDir(), "rootfs.raw")
++	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
++	require.NoError(t, err)
++	defer file.Close()
++	_, err = file.Write([]byte("existing"))
++	require.NoError(t, err)
++
++	_, err = materializeSparseReflinkContents(
++		context.Background(),
++		int(file.Fd()),
++		source,
++		reflinkManifest{DiskSize: 4096, BlockSize: 4096},
++	)
++	require.ErrorContains(t, err, "must be an empty regular file")
++}
++
++func TestSparseReflinkMaterializationColdVerificationRejectsTamper(t *testing.T) {
++	resetReflinkDigestCache()
++	t.Cleanup(resetReflinkDigestCache)
++
++	contents := make([]byte, directMaterializeChunkBytes*2)
++	copy(contents[directMaterializeChunkBytes:], []byte("allocated tail"))
++	file, digest := materializeSparseTestFile(t, contents)
++	var stat unix.Stat_t
++	require.NoError(t, unix.Fstat(int(file.Fd()), &stat))
++	require.NoError(t, validateReflinkDigest(int(file.Fd()), stat, digest, "sparse-identity"))
++
++	resetReflinkDigestCache() // force the complete cold verification fallback
++	_, err := file.WriteAt([]byte("tampered"), 0)
++	require.NoError(t, err)
++	require.NoError(t, file.Sync())
++	require.NoError(t, unix.Fstat(int(file.Fd()), &stat))
++	require.ErrorContains(
++		t,
++		validateReflinkDigest(int(file.Fd()), stat, digest, "sparse-identity"),
++		"digest does not match",
++	)
++}

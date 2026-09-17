@@ -162,6 +162,7 @@ write_manifest() {
   orchestrator_rootfs_clone_lifecycle_patch_sha256=${27:-}
   orchestrator_uffd_rootfs_order_patch_sha256=${28:-}
   orchestrator_reflink_nbd_backpressure_patch_sha256=${29:-}
+  orchestrator_reflink_sparse_materialization_patch_sha256=${30:-}
   verify_host_artifacts "$artifact_lock" "$host_root" "$orchestrator_override_sha256" "$envd_override_sha256"
   if [ -n "$orchestrator_patch_sha256" ]; then
     require_sha256 "$orchestrator_patch_sha256" "orchestrator patch SHA-256"
@@ -236,6 +237,10 @@ write_manifest() {
   if [ -n "$orchestrator_reflink_nbd_backpressure_patch_sha256" ]; then
     [ -n "$orchestrator_uffd_rootfs_order_patch_sha256" ] || fail "the reflink/NBD backpressure patch requires the UFFD rootfs-order patch identity"
     require_sha256 "$orchestrator_reflink_nbd_backpressure_patch_sha256" "orchestrator reflink/NBD backpressure patch SHA-256"
+  fi
+  if [ -n "$orchestrator_reflink_sparse_materialization_patch_sha256" ]; then
+    [ -n "$orchestrator_reflink_nbd_backpressure_patch_sha256" ] || fail "the reflink sparse-materialization patch requires the reflink/NBD backpressure patch identity"
+    require_sha256 "$orchestrator_reflink_sparse_materialization_patch_sha256" "orchestrator reflink sparse-materialization patch SHA-256"
   fi
   if [ -n "$envd_override_sha256" ]; then
     [ -n "$envd_process_tag_patch_sha256" ] || fail "the envd override requires the process-tag patch identity"
@@ -357,6 +362,10 @@ write_manifest() {
       printf 'artifact.orchestrator.reflink_digest_cache=process-local-exact-inode-fingerprint-cold-rehash\n'
       printf 'artifact.orchestrator.nbd_saturation=release-signaled-backpressure-all-kernel-slots-usable\n'
     fi
+    if [ -n "$orchestrator_reflink_sparse_materialization_patch_sha256" ]; then
+      printf 'artifact.orchestrator.reflink_sparse_materialization_patch_sha256=%s\n' "$orchestrator_reflink_sparse_materialization_patch_sha256"
+      printf 'artifact.orchestrator.reflink_base_materialization=logical-byte-and-sha-identical-zero-chunks-sparse\n'
+    fi
     if [ -n "$envd_process_tag_patch_sha256" ]; then
       printf 'artifact.envd.process_tag_patch_sha256=%s\n' "$envd_process_tag_patch_sha256"
       printf 'artifact.envd.live_tag_resolution=complete-map-scan\n'
@@ -372,7 +381,7 @@ write_manifest() {
 }
 
 usage() {
-  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ORCHESTRATOR_CPU_TOPOLOGY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_READ_PATCH_SHA256 ORCHESTRATOR_NBD_MULTIQUEUE_PATCH_SHA256 ORCHESTRATOR_CPUSET_QUALIFICATION_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256 ENVD_PROCESS_REPLAY_PATCH_SHA256 ORCHESTRATOR_EXT4_DIR_INDEX_PATCH_SHA256 BASE_TEMPLATE_IDENTITY_PATCH_SHA256 BASE_TEMPLATE_NAME BASE_TEMPLATE_REFERENCE ORCHESTRATOR_DIRECT_ROOTFS_PATCH_SHA256 ORCHESTRATOR_RESUME_CLEANUP_PATCH_SHA256 ORCHESTRATOR_NBD_PROVIDER_SCOPE_PATCH_SHA256 ORCHESTRATOR_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_CLONE_LIFECYCLE_PATCH_SHA256 ORCHESTRATOR_UFFD_ROOTFS_ORDER_PATCH_SHA256 ORCHESTRATOR_REFLINK_NBD_BACKPRESSURE_PATCH_SHA256]" >&2
+  echo "usage: $0 source SOURCE_ROOT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK | image-lock IMAGE_LOCK | images IMAGE_LOCK pull|preloaded | host ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 [ENVD_SHA256]] | manifest OUTPUT ENGINE_LOCK IMAGE_LOCK ARTIFACT_LOCK HOST_ROOT [ORCHESTRATOR_SHA256 ORCHESTRATOR_PATCH_SHA256 ORCHESTRATOR_CACHE_PATCH_SHA256 ORCHESTRATOR_NFS_DURABILITY_PATCH_SHA256 ENGINE_START_ADMISSION_PATCH_SHA256 ENGINE_LOCAL_CAPACITY_PATCH_SHA256 ORCHESTRATOR_CPU_TOPOLOGY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_READ_PATCH_SHA256 ORCHESTRATOR_NBD_MULTIQUEUE_PATCH_SHA256 ORCHESTRATOR_CPUSET_QUALIFICATION_PATCH_SHA256 ENVD_SHA256 ENVD_PROCESS_TAG_PATCH_SHA256 ENVD_PROCESS_REPLAY_PATCH_SHA256 ORCHESTRATOR_EXT4_DIR_INDEX_PATCH_SHA256 BASE_TEMPLATE_IDENTITY_PATCH_SHA256 BASE_TEMPLATE_NAME BASE_TEMPLATE_REFERENCE ORCHESTRATOR_DIRECT_ROOTFS_PATCH_SHA256 ORCHESTRATOR_RESUME_CLEANUP_PATCH_SHA256 ORCHESTRATOR_NBD_PROVIDER_SCOPE_PATCH_SHA256 ORCHESTRATOR_ROOTFS_MOUNT_BOUNDARY_PATCH_SHA256 ORCHESTRATOR_ROOTFS_CLONE_LIFECYCLE_PATCH_SHA256 ORCHESTRATOR_UFFD_ROOTFS_ORDER_PATCH_SHA256 ORCHESTRATOR_REFLINK_NBD_BACKPRESSURE_PATCH_SHA256 ORCHESTRATOR_REFLINK_SPARSE_MATERIALIZATION_PATCH_SHA256]" >&2
   exit 2
 }
 
@@ -395,8 +404,8 @@ case "$command" in
     verify_host_artifacts "$2" "$3" "${4:-}" "${5:-}"
     ;;
   manifest)
-    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 13 ] || [ "$#" -eq 19 ] || [ "$#" -eq 20 ] || [ "$#" -eq 23 ] || [ "$#" -eq 24 ] || [ "$#" -eq 25 ] || [ "$#" -eq 26 ] || [ "$#" -eq 27 ] || [ "$#" -eq 28 ] || [ "$#" -eq 29 ] || [ "$#" -eq 30 ]; } || usage
-    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}" "${15:-}" "${16:-}" "${17:-}" "${18:-}" "${19:-}" "${20:-}" "${21:-}" "${22:-}" "${23:-}" "${24:-}" "${25:-}" "${26:-}" "${27:-}" "${28:-}" "${29:-}" "${30:-}"
+    { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || [ "$#" -eq 11 ] || [ "$#" -eq 12 ] || [ "$#" -eq 13 ] || [ "$#" -eq 19 ] || [ "$#" -eq 20 ] || [ "$#" -eq 23 ] || [ "$#" -eq 24 ] || [ "$#" -eq 25 ] || [ "$#" -eq 26 ] || [ "$#" -eq 27 ] || [ "$#" -eq 28 ] || [ "$#" -eq 29 ] || [ "$#" -eq 30 ] || [ "$#" -eq 31 ]; } || usage
+    write_manifest "$2" "$3" "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-}" "${11:-}" "${12:-}" "${13:-}" "${14:-}" "${15:-}" "${16:-}" "${17:-}" "${18:-}" "${19:-}" "${20:-}" "${21:-}" "${22:-}" "${23:-}" "${24:-}" "${25:-}" "${26:-}" "${27:-}" "${28:-}" "${29:-}" "${30:-}" "${31:-}"
     ;;
   *) usage ;;
 esac

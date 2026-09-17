@@ -30,28 +30,29 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		t.Fatalf("engine.lock commit %q differs from audited adapter revision %q", values["commit"], e2b.AuditedRevision)
 	}
 	patches := map[string]string{
-		"api_patch_sha256":                                   "0001-harden-volume-secrets-and-cleanup.patch",
-		"api_build_patch_sha256":                             "0002-pin-api-build-images.patch",
-		"orchestrator_lifecycle_patch_sha256":                "0003-acknowledge-delete-after-sandbox-teardown.patch",
-		"orchestrator_cache_patch_sha256":                    "0004-bound-snapshot-diff-cache.patch",
-		"orchestrator_nfs_durability_patch_sha256":           "0005-make-nfs-writes-crash-durable.patch",
-		"engine_start_admission_patch_sha256":                "0006-bound-start-admission-retries.patch",
-		"engine_local_capacity_patch_sha256":                 "0007-scale-local-resource-pools-and-template-shape.patch",
-		"envd_process_tag_patch_sha256":                      "0008-fix-envd-process-tag-resolution.patch",
-		"envd_process_replay_patch_sha256":                   "0009-add-bounded-process-output-replay.patch",
-		"orchestrator_cpu_topology_patch_sha256":             "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
-		"orchestrator_rootfs_read_patch_sha256":              "0011-reduce-rootfs-read-amplification.patch",
-		"orchestrator_nbd_multiqueue_patch_sha256":           "0012-harden-nbd-multiqueue-lifecycle.patch",
-		"orchestrator_cpuset_qualification_patch_sha256":     "0013-qualify-cpuset-exclusive-cpu-topology.patch",
-		"orchestrator_ext4_dir_index_patch_sha256":           "0014-opt-in-ext4-dir-index.patch",
-		"base_template_identity_patch_sha256":                "0015-parameterize-base-template-identity.patch",
-		"orchestrator_direct_rootfs_patch_sha256":            "0016-opt-in-direct-rootfs-provider.patch",
-		"orchestrator_resume_cleanup_patch_sha256":           "0017-bound-resume-failure-cleanup.patch",
-		"orchestrator_nbd_provider_scope_patch_sha256":       "0018-scope-nbd-pool-to-nbd-runtime.patch",
-		"orchestrator_rootfs_mount_boundary_patch_sha256":    "0019-reject-rootfs-cache-mount-shadowing.patch",
-		"orchestrator_rootfs_clone_lifecycle_patch_sha256":   "0020-own-runtime-rootfs-clone-lifecycle.patch",
-		"orchestrator_uffd_rootfs_order_patch_sha256":        "0021-gate-uffd-listener-on-rootfs-readiness.patch",
-		"orchestrator_reflink_nbd_backpressure_patch_sha256": "0022-avoid-reflink-rehash-and-nbd-spin.patch",
+		"api_patch_sha256":                                         "0001-harden-volume-secrets-and-cleanup.patch",
+		"api_build_patch_sha256":                                   "0002-pin-api-build-images.patch",
+		"orchestrator_lifecycle_patch_sha256":                      "0003-acknowledge-delete-after-sandbox-teardown.patch",
+		"orchestrator_cache_patch_sha256":                          "0004-bound-snapshot-diff-cache.patch",
+		"orchestrator_nfs_durability_patch_sha256":                 "0005-make-nfs-writes-crash-durable.patch",
+		"engine_start_admission_patch_sha256":                      "0006-bound-start-admission-retries.patch",
+		"engine_local_capacity_patch_sha256":                       "0007-scale-local-resource-pools-and-template-shape.patch",
+		"envd_process_tag_patch_sha256":                            "0008-fix-envd-process-tag-resolution.patch",
+		"envd_process_replay_patch_sha256":                         "0009-add-bounded-process-output-replay.patch",
+		"orchestrator_cpu_topology_patch_sha256":                   "0010-disable-smt-and-pin-exclusive-cpu-topology.patch",
+		"orchestrator_rootfs_read_patch_sha256":                    "0011-reduce-rootfs-read-amplification.patch",
+		"orchestrator_nbd_multiqueue_patch_sha256":                 "0012-harden-nbd-multiqueue-lifecycle.patch",
+		"orchestrator_cpuset_qualification_patch_sha256":           "0013-qualify-cpuset-exclusive-cpu-topology.patch",
+		"orchestrator_ext4_dir_index_patch_sha256":                 "0014-opt-in-ext4-dir-index.patch",
+		"base_template_identity_patch_sha256":                      "0015-parameterize-base-template-identity.patch",
+		"orchestrator_direct_rootfs_patch_sha256":                  "0016-opt-in-direct-rootfs-provider.patch",
+		"orchestrator_resume_cleanup_patch_sha256":                 "0017-bound-resume-failure-cleanup.patch",
+		"orchestrator_nbd_provider_scope_patch_sha256":             "0018-scope-nbd-pool-to-nbd-runtime.patch",
+		"orchestrator_rootfs_mount_boundary_patch_sha256":          "0019-reject-rootfs-cache-mount-shadowing.patch",
+		"orchestrator_rootfs_clone_lifecycle_patch_sha256":         "0020-own-runtime-rootfs-clone-lifecycle.patch",
+		"orchestrator_uffd_rootfs_order_patch_sha256":              "0021-gate-uffd-listener-on-rootfs-readiness.patch",
+		"orchestrator_reflink_nbd_backpressure_patch_sha256":       "0022-avoid-reflink-rehash-and-nbd-spin.patch",
+		"orchestrator_reflink_sparse_materialization_patch_sha256": "0023-preserve-reflink-base-sparsity.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -76,6 +77,36 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		if got := hex.EncodeToString(digest[:]); got != values[lockKey] {
 			t.Fatalf("%s digest = %s, lock = %s", name, got, values[lockKey])
 		}
+	}
+}
+
+func TestCIVerifiesFullEnginePatchChainWithGNUPatch(t *testing.T) {
+	probeData, err := os.ReadFile("verify-engine-patch-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := string(probeData)
+	for _, required := range []string{
+		`PATCH_BIN=${BREZEL_GNU_PATCH:-patch}`,
+		`grep -Fq 'GNU patch'`,
+		`git -C "$upstream_git" fetch --quiet --depth=1 --no-tags "$repository" "$commit"`,
+		`-name '[0-9][0-9][0-9][0-9]-*.patch'`,
+		`--batch --forward --fuzz=0 --no-backup-if-mismatch`,
+		`grep -Eq 'with fuzz'`,
+		`-name '*.rej'`,
+	} {
+		if !strings.Contains(probe, required) {
+			t.Fatalf("GNU patch-chain probe is missing %q", required)
+		}
+	}
+
+	workflowData, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(workflowData)
+	if !strings.Contains(workflow, "./deploy/single-host/verify-engine-patch-chain.sh") {
+		t.Fatal("CI does not execute the GNU engine patch-chain probe")
 	}
 }
 
@@ -520,6 +551,76 @@ func TestInstallerPinsReflinkNBDBackpressurePatch(t *testing.T) {
 	} {
 		if !strings.Contains(supplyChain, required) {
 			t.Fatalf("artifact manifest is missing reflink/NBD backpressure contract %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsSparseReflinkMaterializationPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0023-preserve-reflink-base-sparsity.patch",
+		"orchestrator_reflink_sparse_materialization_patch_sha256",
+		"engine reflink sparse-materialization patch verification failed",
+		`-p1 < "$ENGINE_REFLINK_SPARSE_MATERIALIZATION_PATCH"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing reflink sparse-materialization integrity binding %q", required)
+		}
+	}
+	backpressureApply := strings.Index(installer, `-p1 < "$ENGINE_REFLINK_NBD_BACKPRESSURE_PATCH"`)
+	sparseApply := strings.Index(installer, `-p1 < "$ENGINE_REFLINK_SPARSE_MATERIALIZATION_PATCH"`)
+	if backpressureApply < 0 || sparseApply <= backpressureApply {
+		t.Fatal("reflink sparse-materialization patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0023-preserve-reflink-base-sparsity.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		"materializeSparseReflinkContents",
+		"sparse reflink destination must be an empty regular file",
+		"bytes.Equal(buffer[:length], zeroes[:length])",
+		"TestSparseReflinkMaterializationPreservesLogicalBytesAndDigest",
+		"TestSparseReflinkMaterializationRejectsNonemptyDestination",
+		"TestSparseReflinkMaterializationColdVerificationRejectsTamper",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("reflink sparse-materialization patch is missing contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.reflink_sparse_materialization_patch_sha256",
+		"artifact.orchestrator.reflink_base_materialization=logical-byte-and-sha-identical-zero-chunks-sparse",
+		"the reflink sparse-materialization patch requires the reflink/NBD backpressure patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing reflink sparse-materialization contract %q", required)
+		}
+	}
+
+	capabilityData, err := os.ReadFile("engine-capabilities.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"sparse immutable reflink base materialization",
+		"zero-chunk reflink write suppression",
+		`"reflink_base_materialization":"logical-byte-and-sha-identical-zero-chunks-sparse"`,
+	} {
+		if !strings.Contains(string(capabilityData), required) {
+			t.Fatalf("engine capability probe is missing reflink sparse-materialization contract %q", required)
 		}
 	}
 }
@@ -1723,7 +1824,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"dax-baseline-a",
 		"template-a:11111111-1111-1111-1111-111111111111",
 		patchDigest, patchDigest, patchDigest, patchDigest, patchDigest, patchDigest,
-		patchDigest,
+		patchDigest, patchDigest,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("distribution manifest rejected source-built envd: %v: %s", err, output)
@@ -1764,6 +1865,8 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.orchestrator.reflink_nbd_backpressure_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.reflink_digest_cache=process-local-exact-inode-fingerprint-cold-rehash",
 		"artifact.orchestrator.nbd_saturation=release-signaled-backpressure-all-kernel-slots-usable",
+		"artifact.orchestrator.reflink_sparse_materialization_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.reflink_base_materialization=logical-byte-and-sha-identical-zero-chunks-sparse",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -1935,8 +2038,8 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/template/build/phases/optimize/builder.go": "WithPrefetch(&metadata.Prefetch\ncontinuing without prefetch\n",
 		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewRuntimeProvider\nexclusive CPU placement requires sandbox cgroup creation\nserveMemoryAfterOverlayReady(ctx, overlayPromise\n",
 		"packages/orchestrator/pkg/sandbox/rootfs/provider.go":                "case \"nbd\":\ncase \"direct\":\ncase \"reflink\":\nos.O_EXCL\nnewOwnedDirectProvider\n",
-		"packages/orchestrator/pkg/sandbox/rootfs/reflink.go":                 "unix.IoctlFileClone\nunix.RENAME_NOREPLACE\nreflink base is missing the filesystem immutable flag\nrememberVerifiedReflinkDigest\nopenPublishedReflinkBase\n",
-		"packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go":            "TestRememberedReflinkDigestRejectsSameSizeTamper\nTestReflinkDigestCacheIsProcessLocalAndColdOpenStillVerifies\nTestRememberedReflinkDigestSkipsSecondImageRead\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/reflink.go":                 "unix.IoctlFileClone\nunix.RENAME_NOREPLACE\nreflink base is missing the filesystem immutable flag\nrememberVerifiedReflinkDigest\nopenPublishedReflinkBase\nmaterializeSparseReflinkContents\nbytes.Equal(buffer[:length], zeroes[:length])\n",
+		"packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go":            "TestRememberedReflinkDigestRejectsSameSizeTamper\nTestReflinkDigestCacheIsProcessLocalAndColdOpenStillVerifies\nTestRememberedReflinkDigestSkipsSecondImageRead\nTestSparseReflinkMaterializationPreservesLogicalBytesAndDigest\nTestSparseReflinkMaterializationColdVerificationRejectsTamper\n",
 		"packages/orchestrator/pkg/sandbox/rootfs/direct.go":                  "newOwnedDirectProvider\nremoveOwnedPath\n",
 		"packages/orchestrator/pkg/sandbox/rootfs/direct_lifecycle_test.go":   "TestBorrowedDirectProviderExportPreservesTemplateRootfs\nTestOwnedDirectRuntimeCloseRemovesOnlyPrivateClone\nTestOwnedDirectProviderExportTimeoutPreservesClone\n",
 		"packages/orchestrator/pkg/sandbox/resume_resource_order_test.go":     "TestServeMemoryAfterOverlayReadyDoesNotArmListenerDuringSlowOverlay\nTestServeMemoryAfterOverlayReadyPreservesCancellation\n",
