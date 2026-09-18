@@ -14,8 +14,11 @@ The supported evaluation profile is one organization on one dedicated Ubuntu
 on two separately administered machines, each operating as an independent
 single-host deployment. Revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`
 also qualified dedicated 100-way Burst and 8-vCPU/16-GiB DAX profiles on one
-named GCP KVM host. It must not be described as a cluster, highly available,
-hostile shared-multitenant, or public-production system.
+named GCP KVM host. Revision `5438d3bd9e4125d9cc320067d28bb8680be8f212`
+completed the 29-step destructive single-host qualification and a strict
+5-attempt DAX rehearsal on a dedicated Scaleway EM-B230E-NVME KVM host in
+`fr-par-2`. It must not be described as a cluster, highly available, hostile
+shared-multitenant, or public-production system.
 
 ## Implemented
 
@@ -118,6 +121,20 @@ script, and allowed internet access only for that disposable benchmark project.
 Both projects were empty before and after the runs. These are self-run
 rehearsals, not official ComputeSDK leaderboard entries.
 
+Revision `5438d3bd9e4125d9cc320067d28bb8680be8f212` then completed the
+destructive single-host workflow on a dedicated Scaleway EM-B230E-NVME host
+after RAID resynchronization had finished. The exact revision passed all 29
+qualification steps. Its retained strict DAX rehearsal used five fresh
+8-vCPU/16-GiB sandboxes and produced a 32.635 s median for the upstream guest
+workload and a 35.120 s p50 / 36.280 s p95 for the full provider command
+boundary. All five attempts succeeded, all five deletions were confirmed, and
+the dedicated project was empty before and after the run. The live public
+leaderboard showed a 35.56 s leading median when this evidence was collected;
+the comparison is directional because this remains a self-run rehearsal on a
+different host and runner, not an independent ComputeSDK result. Raw evidence
+is retained under
+`evidence/qualification-2026-09-18/scaleway-fr-par-2-5438d3b`.
+
 ## Next release gate
 
 The separate node process, default single-host byte path, row-scoped lifecycle
@@ -125,15 +142,15 @@ operations, bounded snapshot-diff cache, readiness gate, and three-start
 admission default completed the named-host workflow. Candidate profiles now
 exist for DAX and 100 simultaneous command-ready sandboxes, together with
 strict workload and cleanup rehearsals. Burst passed on the named GCP KVM host
-at revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`. The historical DAX
-report is now nonconformant because one nominally successful attempt contained
-a native dependency build failure. The next performance gate is a repeated,
-strict DAX run plus reducing Burst TTI and DAX's CPU-bound typecheck time
-without weakening the all-success requirement. A single-use warm-capacity candidate and a pinned
-Node 24 development image now exist in source, but neither changes the current
-published evidence until the same named-host conformance, cleanup, failure, and
-repeated benchmark gates pass. After that, run the independent provider
-harness.
+at revision `f9fbc0ede72636349b27f01db49343d8daa87c5c`. The historical GCP
+DAX report remains nonconformant because one nominally successful attempt
+contained a native dependency build failure. The strict Scaleway DAX run
+closes the repeated-workload correctness gate for that named host. The next
+performance gate is the independent ComputeSDK provider harness over the
+qualified HTTPS endpoint, followed by a separate 100-way Burst run on the same
+exact revision. A single-use warm-capacity candidate and a pinned Node 24
+development image exist in source; their claims remain limited to evidence
+from the profile that actually enabled them.
 Longer soak, disk-full, interrupted-upgrade, backup/restore, and rollback
 exercises remain required. Existing evidence qualifies independent single-host
 operation only; it does not establish multi-node scheduling, shared control,

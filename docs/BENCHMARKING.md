@@ -492,15 +492,15 @@ separate:
 
 #### Public reference and Brezel entry gate
 
-The public run dated 2026-09-11 is a useful reference, not a prediction of
-Brezel's result:
+The public leaderboard is a useful reference, not a prediction of Brezel's
+result. The following values were current when the named Scaleway evidence was
+collected on 2026-09-18:
 
 | Provider | Burst TTI p50 / p95 | DAX total | Publicly useful architecture signal |
 | --- | ---: | ---: | --- |
-| Isorun | 0.03 / 0.04 s | 33.97 s | Documents KVM sandboxes, cached OCI images, hibernate/resume, snapshots, and forks; scheduler and VMM internals are not public |
-| Miosa | 0.22 / 0.25 s | 42.30 s | Documents warm capacity as compatible compute kept ready; the isolation and storage hot paths are not public |
-| Blaxel | 0.63 / 0.67 s | 43.65 s | Documents bare-metal Firecracker, host-local boot artifacts, EROFS, memory-backed writable roots, custom scheduling, and prepared VPP networking |
-| E2B | 1.28 / 1.61 s | 80.07 s | A result for the hosted E2B service path, not an isolated measurement of the open-source runtime embedded by Brezel |
+| Isorun | not compared here | 35.56 s | Documents KVM sandboxes, cached OCI images, hibernate/resume, snapshots, and forks; scheduler and VMM internals are not public |
+| Blaxel | not compared here | 44.81 s | Documents bare-metal Firecracker, host-local boot artifacts, EROFS, memory-backed writable roots, custom scheduling, and prepared VPP networking |
+| E2B | not compared here | 79.35 s | A result for the hosted E2B service path, not an isolated measurement of the open-source runtime embedded by Brezel |
 
 Sources: [ComputeSDK Burst TTI](https://www.computesdk.com/benchmarks/sandboxes/burst-tti/),
 [ComputeSDK DAX](https://www.computesdk.com/benchmarks/sandboxes/dax/),
@@ -554,6 +554,18 @@ It nevertheless rules out API-language or controller serialization as the
 primary DAX target. CPU quality and writable-root I/O are the first-order work;
 the pinned Node 24 development image addresses preparation consistency but has
 not yet been qualified as a latency improvement.
+
+Revision `5438d3bd9e4125d9cc320067d28bb8680be8f212` later completed a strict
+five-attempt rehearsal on a dedicated Scaleway EM-B230E-NVME host in
+`fr-par-2`. Every attempt and cleanup succeeded. The retained medians were
+32.635 s for the upstream guest `total` and 35.120 s for Brezel's full
+`runCommand()` boundary. Phase medians were 1.974 s prepare, 0.197 s Bun
+download, 0.410 s Bun unpack, 3.764 s clone, 7.571 s install, and 17.871 s
+typecheck. That self-run guest median is 8.2 percent below the public 35.56 s
+leader at the time of collection, but it is not an official rank: the
+providers used different hosts and runners, and only ComputeSDK can produce an
+independent leaderboard entry. The checksummed report is under
+`evidence/qualification-2026-09-18/scaleway-fr-par-2-5438d3b`.
 
 The entry gate is therefore:
 

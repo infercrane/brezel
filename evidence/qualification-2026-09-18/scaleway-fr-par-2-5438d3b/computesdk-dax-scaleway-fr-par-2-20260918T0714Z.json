@@ -1,0 +1,516 @@
+{
+  "schemaVersion": 2,
+  "suite": "computesdk-dax-rehearsal",
+  "upstream": {
+    "commit": "273927519c0ac6558d3e545eed9d59eb56a47ec7",
+    "scriptSha256": "58f4640ac170b366f87e8466a9ac1e9f50383faa59553246e4664c77af34d550"
+  },
+  "region": "scaleway-fr-par-2",
+  "startedAt": "2026-09-18T07:13:40.484Z",
+  "finishedAt": "2026-09-18T07:16:50.573Z",
+  "provenance": {
+    "sourceRevision": "5438d3bd9e4125d9cc320067d28bb8680be8f212",
+    "environmentRevision": "envr_9830e105167d5161682df50b",
+    "endpoint": "http://127.0.0.1:8080",
+    "runner": {
+      "node": "v24.14.1",
+      "platform": "linux",
+      "arch": "x64"
+    },
+    "allowInternet": true,
+    "measuredState": "fresh sandbox after one disclosed shape preflight"
+  },
+  "methodology": {
+    "iterations": 5,
+    "concurrency": 1,
+    "sandboxState": "fresh sandbox per iteration",
+    "scoredBoundary": "runCommand request through complete command result",
+    "upstreamPhaseOrder": [
+      "prepare",
+      "cache_clear",
+      "bun_download",
+      "bun_unpack",
+      "clone",
+      "install",
+      "typecheck",
+      "total"
+    ],
+    "cleanupBoundary": "destroy confirmation followed by empty-project inventory"
+  },
+  "guest": {
+    "cpus": 8,
+    "memory_kib": 16392004,
+    "free_root_kib": 17478328,
+    "uid": 1001,
+    "architecture": "x86_64"
+  },
+  "requested": 5,
+  "succeeded": 5,
+  "cleanupConfirmed": 5,
+  "projectEmptyBefore": true,
+  "projectEmptyAfter": true,
+  "cleanupConformant": true,
+  "summary": {
+    "p50Ms": 35119.705879,
+    "p95Ms": 36279.69229199999,
+    "p99Ms": 36279.69229199999,
+    "phaseMs": {
+      "prepare": {
+        "samples": 5,
+        "minMs": 1954,
+        "p50Ms": 1974,
+        "p95Ms": 1980,
+        "p99Ms": 1980,
+        "maxMs": 1980
+      },
+      "cache_clear": {
+        "samples": 5,
+        "minMs": 25,
+        "p50Ms": 26,
+        "p95Ms": 26,
+        "p99Ms": 26,
+        "maxMs": 26
+      },
+      "bun_download": {
+        "samples": 5,
+        "minMs": 166,
+        "p50Ms": 197,
+        "p95Ms": 373,
+        "p99Ms": 373,
+        "maxMs": 373
+      },
+      "bun_unpack": {
+        "samples": 5,
+        "minMs": 410,
+        "p50Ms": 410,
+        "p95Ms": 412,
+        "p99Ms": 412,
+        "maxMs": 412
+      },
+      "clone": {
+        "samples": 5,
+        "minMs": 3631,
+        "p50Ms": 3764,
+        "p95Ms": 4006,
+        "p99Ms": 4006,
+        "maxMs": 4006
+      },
+      "install": {
+        "samples": 5,
+        "minMs": 7525,
+        "p50Ms": 7571,
+        "p95Ms": 8135,
+        "p99Ms": 8135,
+        "maxMs": 8135
+      },
+      "typecheck": {
+        "samples": 5,
+        "minMs": 17819,
+        "p50Ms": 17871,
+        "p95Ms": 18310,
+        "p99Ms": 18310,
+        "maxMs": 18310
+      },
+      "total": {
+        "samples": 5,
+        "minMs": 32310,
+        "p50Ms": 32635,
+        "p95Ms": 33769,
+        "p99Ms": 33769,
+        "maxMs": 33769
+      }
+    }
+  },
+  "attempts": [
+    {
+      "iteration": 1,
+      "startedAt": "2026-09-18T07:13:40.846Z",
+      "cleanup": "confirmed",
+      "createMs": 69.44301100000001,
+      "buildStartedAt": "2026-09-18T07:13:40.916Z",
+      "totalMs": 34952.810786999995,
+      "buildFinishedAt": "2026-09-18T07:14:15.869Z",
+      "exitCode": 0,
+      "result": {
+        "phases": {
+          "prepare": 1964,
+          "cache_clear": 26,
+          "bun_download": 166,
+          "bun_unpack": 411,
+          "clone": 3764,
+          "install": 7525,
+          "typecheck": 17931,
+          "total": 32505
+        },
+        "metadata": {
+          "commit": "08fb47373509ba64b13441061314eeacf4264f51",
+          "architecture": "x86_64",
+          "kernel": "Linux 6.1.177+",
+          "logical_cpus": "8",
+          "cpu_model": "AMD EPYC",
+          "memory_kib": "16392004",
+          "bun_version": "1.3.14",
+          "node_version": "v24.14.1"
+        },
+        "disk": {
+          "after_clone": 350002176,
+          "after_install": 3086670000,
+          "after_typecheck": 3089860000
+        },
+        "cache": {
+          "guest_page_cache": "dropped",
+          "workspace": "fresh",
+          "bun": "empty",
+          "turbo": "empty"
+        },
+        "failures": [],
+        "errors": [],
+        "completedCommit": "08fb47373509ba64b13441061314eeacf4264f51",
+        "markerSequence": [
+          "phase:prepare",
+          "cache:guest_page_cache",
+          "cache:workspace",
+          "cache:bun",
+          "cache:turbo",
+          "phase:cache_clear",
+          "meta:commit",
+          "meta:architecture",
+          "meta:kernel",
+          "meta:logical_cpus",
+          "meta:cpu_model",
+          "meta:memory_kib",
+          "phase:bun_download",
+          "phase:bun_unpack",
+          "meta:bun_version",
+          "meta:node_version",
+          "phase:clone",
+          "disk:after_clone",
+          "phase:install",
+          "disk:after_install",
+          "phase:typecheck",
+          "disk:after_typecheck",
+          "done",
+          "phase:total"
+        ],
+        "transcriptErrors": [],
+        "parseIssues": [],
+        "executionFailures": []
+      },
+      "stderrTail": "debconf: delaying package configuration, since apt-utils is not installed\nResolving dependencies\nResolved, downloaded and extracted [537]\nSaved lockfile\n\n$ bun run --cwd packages/core fix-node-pty\n$ bun run script/fix-node-pty.ts\n$ husky\n$ bun turbo typecheck",
+      "destroyMs": 3051.2837020000006,
+      "finishedAt": "2026-09-18T07:14:18.921Z"
+    },
+    {
+      "iteration": 2,
+      "startedAt": "2026-09-18T07:14:18.921Z",
+      "cleanup": "confirmed",
+      "createMs": 76.94726000000082,
+      "buildStartedAt": "2026-09-18T07:14:18.998Z",
+      "totalMs": 34814.975339,
+      "buildFinishedAt": "2026-09-18T07:14:53.813Z",
+      "exitCode": 0,
+      "result": {
+        "phases": {
+          "prepare": 1974,
+          "cache_clear": 26,
+          "bun_download": 183,
+          "bun_unpack": 412,
+          "clone": 3631,
+          "install": 7570,
+          "typecheck": 17819,
+          "total": 32310
+        },
+        "metadata": {
+          "commit": "08fb47373509ba64b13441061314eeacf4264f51",
+          "architecture": "x86_64",
+          "kernel": "Linux 6.1.177+",
+          "logical_cpus": "8",
+          "cpu_model": "AMD EPYC",
+          "memory_kib": "16392004",
+          "bun_version": "1.3.14",
+          "node_version": "v24.14.1"
+        },
+        "disk": {
+          "after_clone": 350002176,
+          "after_install": 3079300000,
+          "after_typecheck": 3082490000
+        },
+        "cache": {
+          "guest_page_cache": "dropped",
+          "workspace": "fresh",
+          "bun": "empty",
+          "turbo": "empty"
+        },
+        "failures": [],
+        "errors": [],
+        "completedCommit": "08fb47373509ba64b13441061314eeacf4264f51",
+        "markerSequence": [
+          "phase:prepare",
+          "cache:guest_page_cache",
+          "cache:workspace",
+          "cache:bun",
+          "cache:turbo",
+          "phase:cache_clear",
+          "meta:commit",
+          "meta:architecture",
+          "meta:kernel",
+          "meta:logical_cpus",
+          "meta:cpu_model",
+          "meta:memory_kib",
+          "phase:bun_download",
+          "phase:bun_unpack",
+          "meta:bun_version",
+          "meta:node_version",
+          "phase:clone",
+          "disk:after_clone",
+          "phase:install",
+          "disk:after_install",
+          "phase:typecheck",
+          "disk:after_typecheck",
+          "done",
+          "phase:total"
+        ],
+        "transcriptErrors": [],
+        "parseIssues": [],
+        "executionFailures": []
+      },
+      "stderrTail": "debconf: delaying package configuration, since apt-utils is not installed\nResolving dependencies\nResolved, downloaded and extracted [537]\nSaved lockfile\n\n$ bun run --cwd packages/core fix-node-pty\n$ bun run script/fix-node-pty.ts\n$ husky\n$ bun turbo typecheck",
+      "destroyMs": 2732.103157999998,
+      "finishedAt": "2026-09-18T07:14:56.545Z"
+    },
+    {
+      "iteration": 3,
+      "startedAt": "2026-09-18T07:14:56.545Z",
+      "cleanup": "confirmed",
+      "createMs": 78.73326799999631,
+      "buildStartedAt": "2026-09-18T07:14:56.624Z",
+      "totalMs": 35347.369204999995,
+      "buildFinishedAt": "2026-09-18T07:15:31.971Z",
+      "exitCode": 0,
+      "result": {
+        "phases": {
+          "prepare": 1974,
+          "cache_clear": 26,
+          "bun_download": 373,
+          "bun_unpack": 410,
+          "clone": 3950,
+          "install": 7571,
+          "typecheck": 17823,
+          "total": 32825
+        },
+        "metadata": {
+          "commit": "08fb47373509ba64b13441061314eeacf4264f51",
+          "architecture": "x86_64",
+          "kernel": "Linux 6.1.177+",
+          "logical_cpus": "8",
+          "cpu_model": "AMD EPYC",
+          "memory_kib": "16392004",
+          "bun_version": "1.3.14",
+          "node_version": "v24.14.1"
+        },
+        "disk": {
+          "after_clone": 350002176,
+          "after_install": 3086670000,
+          "after_typecheck": 3089860000
+        },
+        "cache": {
+          "guest_page_cache": "dropped",
+          "workspace": "fresh",
+          "bun": "empty",
+          "turbo": "empty"
+        },
+        "failures": [],
+        "errors": [],
+        "completedCommit": "08fb47373509ba64b13441061314eeacf4264f51",
+        "markerSequence": [
+          "phase:prepare",
+          "cache:guest_page_cache",
+          "cache:workspace",
+          "cache:bun",
+          "cache:turbo",
+          "phase:cache_clear",
+          "meta:commit",
+          "meta:architecture",
+          "meta:kernel",
+          "meta:logical_cpus",
+          "meta:cpu_model",
+          "meta:memory_kib",
+          "phase:bun_download",
+          "phase:bun_unpack",
+          "meta:bun_version",
+          "meta:node_version",
+          "phase:clone",
+          "disk:after_clone",
+          "phase:install",
+          "disk:after_install",
+          "phase:typecheck",
+          "disk:after_typecheck",
+          "done",
+          "phase:total"
+        ],
+        "transcriptErrors": [],
+        "parseIssues": [],
+        "executionFailures": []
+      },
+      "stderrTail": "debconf: delaying package configuration, since apt-utils is not installed\nResolving dependencies\nResolved, downloaded and extracted [537]\nSaved lockfile\n\n$ bun run --cwd packages/core fix-node-pty\n$ bun run script/fix-node-pty.ts\n$ husky\n$ bun turbo typecheck",
+      "destroyMs": 1381.1067269999912,
+      "finishedAt": "2026-09-18T07:15:33.352Z"
+    },
+    {
+      "iteration": 4,
+      "startedAt": "2026-09-18T07:15:33.352Z",
+      "cleanup": "confirmed",
+      "createMs": 68.39770100000896,
+      "buildStartedAt": "2026-09-18T07:15:33.421Z",
+      "totalMs": 35119.705879,
+      "buildFinishedAt": "2026-09-18T07:16:08.540Z",
+      "exitCode": 0,
+      "result": {
+        "phases": {
+          "prepare": 1954,
+          "cache_clear": 25,
+          "bun_download": 197,
+          "bun_unpack": 410,
+          "clone": 3737,
+          "install": 7749,
+          "typecheck": 17871,
+          "total": 32635
+        },
+        "metadata": {
+          "commit": "08fb47373509ba64b13441061314eeacf4264f51",
+          "architecture": "x86_64",
+          "kernel": "Linux 6.1.177+",
+          "logical_cpus": "8",
+          "cpu_model": "AMD EPYC",
+          "memory_kib": "16392004",
+          "bun_version": "1.3.14",
+          "node_version": "v24.14.1"
+        },
+        "disk": {
+          "after_clone": 350002176,
+          "after_install": 3086670000,
+          "after_typecheck": 3089860000
+        },
+        "cache": {
+          "guest_page_cache": "dropped",
+          "workspace": "fresh",
+          "bun": "empty",
+          "turbo": "empty"
+        },
+        "failures": [],
+        "errors": [],
+        "completedCommit": "08fb47373509ba64b13441061314eeacf4264f51",
+        "markerSequence": [
+          "phase:prepare",
+          "cache:guest_page_cache",
+          "cache:workspace",
+          "cache:bun",
+          "cache:turbo",
+          "phase:cache_clear",
+          "meta:commit",
+          "meta:architecture",
+          "meta:kernel",
+          "meta:logical_cpus",
+          "meta:cpu_model",
+          "meta:memory_kib",
+          "phase:bun_download",
+          "phase:bun_unpack",
+          "meta:bun_version",
+          "meta:node_version",
+          "phase:clone",
+          "disk:after_clone",
+          "phase:install",
+          "disk:after_install",
+          "phase:typecheck",
+          "disk:after_typecheck",
+          "done",
+          "phase:total"
+        ],
+        "transcriptErrors": [],
+        "parseIssues": [],
+        "executionFailures": []
+      },
+      "stderrTail": "debconf: delaying package configuration, since apt-utils is not installed\nResolving dependencies\nResolved, downloaded and extracted [537]\nSaved lockfile\n\n$ bun run --cwd packages/core fix-node-pty\n$ bun run script/fix-node-pty.ts\n$ husky\n$ bun turbo typecheck",
+      "destroyMs": 2742.158819000004,
+      "finishedAt": "2026-09-18T07:16:11.283Z"
+    },
+    {
+      "iteration": 5,
+      "startedAt": "2026-09-18T07:16:11.283Z",
+      "cleanup": "confirmed",
+      "createMs": 68.88611399999354,
+      "buildStartedAt": "2026-09-18T07:16:11.352Z",
+      "totalMs": 36279.69229199999,
+      "buildFinishedAt": "2026-09-18T07:16:47.631Z",
+      "exitCode": 0,
+      "result": {
+        "phases": {
+          "prepare": 1980,
+          "cache_clear": 25,
+          "bun_download": 202,
+          "bun_unpack": 410,
+          "clone": 4006,
+          "install": 8135,
+          "typecheck": 18310,
+          "total": 33769
+        },
+        "metadata": {
+          "commit": "08fb47373509ba64b13441061314eeacf4264f51",
+          "architecture": "x86_64",
+          "kernel": "Linux 6.1.177+",
+          "logical_cpus": "8",
+          "cpu_model": "AMD EPYC",
+          "memory_kib": "16392004",
+          "bun_version": "1.3.14",
+          "node_version": "v24.14.1"
+        },
+        "disk": {
+          "after_clone": 350002176,
+          "after_install": 3086670000,
+          "after_typecheck": 3089860000
+        },
+        "cache": {
+          "guest_page_cache": "dropped",
+          "workspace": "fresh",
+          "bun": "empty",
+          "turbo": "empty"
+        },
+        "failures": [],
+        "errors": [],
+        "completedCommit": "08fb47373509ba64b13441061314eeacf4264f51",
+        "markerSequence": [
+          "phase:prepare",
+          "cache:guest_page_cache",
+          "cache:workspace",
+          "cache:bun",
+          "cache:turbo",
+          "phase:cache_clear",
+          "meta:commit",
+          "meta:architecture",
+          "meta:kernel",
+          "meta:logical_cpus",
+          "meta:cpu_model",
+          "meta:memory_kib",
+          "phase:bun_download",
+          "phase:bun_unpack",
+          "meta:bun_version",
+          "meta:node_version",
+          "phase:clone",
+          "disk:after_clone",
+          "phase:install",
+          "disk:after_install",
+          "phase:typecheck",
+          "disk:after_typecheck",
+          "done",
+          "phase:total"
+        ],
+        "transcriptErrors": [],
+        "parseIssues": [],
+        "executionFailures": []
+      },
+      "stderrTail": "debconf: delaying package configuration, since apt-utils is not installed\nResolving dependencies\nResolved, downloaded and extracted [537]\nSaved lockfile\n\n$ bun run --cwd packages/core fix-node-pty\n$ bun run script/fix-node-pty.ts\n$ husky\n$ bun turbo typecheck",
+      "destroyMs": 2939.7086459999846,
+      "finishedAt": "2026-09-18T07:16:50.571Z"
+    }
+  ]
+}
