@@ -211,6 +211,10 @@ func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
 	patch := string(patchData)
 	for _, required := range []string{
 		"BASE_TEMPLATE_NAME",
+		"BASE_TEMPLATE_SWAP_MB",
+		"BASE_TEMPLATE_SWAP_MB cannot exceed BASE_TEMPLATE_MEMORY_MB",
+		"/var/lib/brezel/swapfile",
+		"swapon",
 		`/^[a-z0-9][a-z0-9_-]{0,63}$/`,
 		"name: templateName",
 	} {
@@ -226,6 +230,7 @@ func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
 	override := string(overrideData)
 	for _, required := range []string{
 		"BASE_TEMPLATE_NAME: ${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}",
+		"BASE_TEMPLATE_SWAP_MB: ${BREZEL_GUEST_SWAP_MIB:-0}",
 		"BREZEL_ENGINE_BASE_TEMPLATE_NAME: ${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}",
 	} {
 		if !strings.Contains(override, required) {
@@ -1201,6 +1206,7 @@ func TestQualificationCapacityPreflightPrecedesAnyCreate(t *testing.T) {
 	for _, required := range []string{
 		`BREZEL_GUEST_VCPUS=${BREZEL_GUEST_VCPUS:-2}`,
 		`BREZEL_GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}`,
+		`BREZEL_GUEST_SWAP_MIB=${BREZEL_GUEST_SWAP_MIB:-0}`,
 		`BREZEL_GUEST_MIN_FREE_DISK_MIB=${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}`,
 		`BREZEL_GUEST_MAX_FREE_DISK_MIB=${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}`,
 	} {
@@ -2407,6 +2413,7 @@ func TestInstallerPinsAndValidatesLocalCapacityPatch(t *testing.T) {
 		"NBD_POOL_SIZE: ${BREZEL_ENGINE_NBD_POOL_SIZE:",
 		"BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}",
 		"BASE_TEMPLATE_NAME: ${BREZEL_ENGINE_BASE_TEMPLATE_NAME:-base}",
+		"BASE_TEMPLATE_SWAP_MB: ${BREZEL_GUEST_SWAP_MIB:-0}",
 		"BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}",
 		"BASE_TEMPLATE_SOURCE_IMAGE: ${BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE:",
 		`FORCE_REBUILD: "1"`,

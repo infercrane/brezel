@@ -20,6 +20,7 @@ ENGINE_NETWORK_NEW_SLOTS=${BREZEL_ENGINE_NETWORK_NEW_SLOTS:-32}
 ENGINE_NETWORK_REUSED_SLOTS=${BREZEL_ENGINE_NETWORK_REUSED_SLOTS:-100}
 ENGINE_NBD_POOL_SIZE=${BREZEL_ENGINE_NBD_POOL_SIZE:-64}
 ENGINE_NBD_CONNECTIONS_PER_DEVICE=${BREZEL_ENGINE_NBD_CONNECTIONS_PER_DEVICE:-1}
+BREZEL_GUEST_SWAP_MIB=${BREZEL_GUEST_SWAP_MIB:-0}
 
 if [ ! -s "$TOKEN_FILE" ]; then
   echo "runtime service token is missing; run install.sh first" >&2
@@ -312,6 +313,15 @@ run_engine_fast_path_qualification() {
     return 1
   fi
   cli exec "$ACTIVE_SANDBOX_ID" /bin/true >/dev/null
+  expected_swap_mib=$BREZEL_GUEST_SWAP_MIB
+  if [ "$expected_swap_mib" -gt 0 ]; then
+    if ! cli exec "$ACTIVE_SANDBOX_ID" /bin/sh -c \
+      'actual=$(awk '\''NR > 1 { kib += $3 } END { print int(kib / 1024) }'\'' /proc/swaps); [ "$actual" -ge "$1" ]' \
+      brezel-swap-qualification "$expected_swap_mib" >/dev/null; then
+      echo "engine fast-path qualification did not observe the configured ${expected_swap_mib} MiB guest swap reserve" >&2
+      return 1
+    fi
+  fi
   engine_sandbox_id=$(resolve_engine_sandbox_id "$ACTIVE_SANDBOX_ID")
   min_network_slots=$MIN_READY_NETWORK_SLOTS
   max_starting_sandboxes=$ENGINE_MAX_STARTING_SANDBOXES
