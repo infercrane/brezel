@@ -40,7 +40,7 @@ shared-multitenant, or public-production system.
 | Recovery | Durable resource-lifecycle idempotency, lifecycle events, cleanup intent, expiration reconciliation |
 | Evidence | Ed25519-signed DSSE lifecycle receipt; no customer content by default |
 | Distribution | Pinned source, patches, images, VM artifacts, installer, conformance, benchmark harness |
-| SDKs | Published `brezel-sdk` Python and `@infercrane/brezel` TypeScript clients for create, list, run, files, preview, pause, resume, and delete; protected token-file loading and fail-closed command streams; live-host SDK qualification remains pending |
+| SDKs | `brezel-sdk` 0.1.1 is published on PyPI and `@infercrane/brezel` 0.1.1 is published on npm with OIDC provenance. Both clients cover create, list, run, files, preview, pause, resume, and delete with protected token-file loading and fail-closed command streams. Clean registry installs of both 0.1.1 clients passed create, command, and confirmed cleanup against the qualified Scaleway HTTPS endpoint. |
 | Node relay | The single-host package defaults command, file, and preview traffic to separate mTLS control and data listeners with route lifecycle CAS, one-operation capabilities, replay defense, generation fencing, reconciliation, and in-flight leases; the integrated path completed named-host Linux/KVM qualification at revision `67410ab5b928a335a79701d67eaf859df890da9c` |
 
 Release code has no fake backend and no container isolation fallback. The test
