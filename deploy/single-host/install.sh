@@ -514,7 +514,12 @@ check_ufw_guest_network() {
   fi
   case "$ufw_status" in
     *"Status: active"*) ;;
-    *) return ;;
+    *)
+      echo "UFW is installed but inactive; the embedded engine has guest-service listeners that must not be reachable from an untrusted network." >&2
+      echo "Enable a default-deny host firewall and the scoped Firecracker guest rules below, then rerun the installer." >&2
+      echo "Set BREZEL_SKIP_UFW_PREFLIGHT=true only after enforcing equivalent nftables or cloud-firewall rules." >&2
+      exit 1
+      ;;
   esac
 
   guest_rule_count=$(printf '%s\n' "$ufw_status" | grep -F '10.11.0.0/24' | grep -Ec 'ALLOW (IN|FWD)' || true)

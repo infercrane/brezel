@@ -76,6 +76,15 @@ under Docker Compose restart policies. The product API listens only on
 engine, node data listener, and node control listener are reachable; it does
 not prove the host has completed qualification.
 
+On hosts where UFW is installed, the installer requires it to be active. The
+pinned engine exposes host-network guest-service listeners that Firecracker
+guests must reach, so a default-deny host firewall must keep those listeners
+off untrusted interfaces while allowing only the scoped `10.11.0.0/24` guest
+rules printed by the installer. Operators using equivalent nftables or cloud
+firewall enforcement must opt out explicitly with
+`BREZEL_SKIP_UFW_PREFLIGHT=true`; the override is an operator attestation, not
+a safe default.
+
 ## Expose one private-tenant installation
 
 Prefer a private network, VPN, or SSH tunnel. If a public HTTPS endpoint is

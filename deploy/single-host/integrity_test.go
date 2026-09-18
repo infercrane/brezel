@@ -2900,9 +2900,11 @@ func TestInstallerDetectsUFWGuestNetworkBoundary(t *testing.T) {
 	installer := string(data)
 	for _, required := range []string{
 		"check_ufw_guest_network",
+		"UFW is installed but inactive",
 		"10.11.0.0/24",
 		"5010:5018",
 		"ufw route allow out",
+		"equivalent nftables or cloud-firewall rules",
 		"BREZEL_SKIP_UFW_PREFLIGHT=true",
 	} {
 		if !strings.Contains(installer, required) {
