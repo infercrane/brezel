@@ -1,0 +1,136 @@
+diff --git a/packages/orchestrator/pkg/sandbox/reboot.go b/packages/orchestrator/pkg/sandbox/reboot.go
+index 5921a43..5767887 100644
+--- a/packages/orchestrator/pkg/sandbox/reboot.go
++++ b/packages/orchestrator/pkg/sandbox/reboot.go
+@@ -238,6 +238,11 @@ func (f *Factory) RebootSandbox(
+ 
+ 		return nil, errors.Join(fmt.Errorf("wait for envd after reboot: %w", err), closeErr)
+ 	}
++	if err := sbx.ensureGuestSwap(ctx); err != nil {
++		closeErr := sbx.Close(context.WithoutCancel(ctx))
++
++		return nil, errors.Join(fmt.Errorf("restore guest swap after reboot: %w", err), closeErr)
++	}
+ 
+ 	// deferMarkRunning: the caller promotes the sandbox to live itself after a
+ 	// post-resume step (the resume-time envd live-upgrade's post-/init), so it is
+diff --git a/packages/orchestrator/pkg/sandbox/reclaim.go b/packages/orchestrator/pkg/sandbox/reclaim.go
+index a5d3018..f221581 100644
+--- a/packages/orchestrator/pkg/sandbox/reclaim.go
++++ b/packages/orchestrator/pkg/sandbox/reclaim.go
+@@ -320,6 +320,46 @@ func (s *Sandbox) runGuestShellCommand(ctx context.Context, timeout time.Duratio
+ 	return exitCode, nil
+ }
+ 
++const guestSwapActivationTimeout = 3 * time.Second
++
++const guestSwapActivationScript = `
++swapfile=/var/lib/brezel/swapfile
++if [ ! -e "$swapfile" ]; then
++	exit 0
++fi
++if [ ! -f "$swapfile" ] || [ ! -x /sbin/swapon ]; then
++	exit 1
++fi
++if ! awk -v file="$swapfile" 'NR > 1 && $1 == file { found=1 } END { exit !found }' /proc/swaps; then
++	/sbin/swapon "$swapfile"
++fi
++awk -v file="$swapfile" 'NR > 1 && $1 == file { found=1 } END { exit !found }' /proc/swaps
++`
++
++type guestSwapCommandRunner func(context.Context, time.Duration, string) (int32, error)
++
++// ensureGuestSwap activates the optional Brezel-owned swap reserve after a
++// snapshot resume or guest reboot. Firecracker restores guest memory before it
++// attaches the writable root block device, so the kernel's restored swap table
++// cannot safely retain the file-backed block-device registration. The swapfile
++// is prepared and validated while the immutable template is built; each fresh
++// kernel must register it again before the sandbox is marked routable.
++func (s *Sandbox) ensureGuestSwap(ctx context.Context) error {
++	return ensureGuestSwapWithRunner(ctx, s.runGuestShellCommand)
++}
++
++func ensureGuestSwapWithRunner(ctx context.Context, run guestSwapCommandRunner) error {
++	exitCode, err := run(ctx, guestSwapActivationTimeout, guestSwapActivationScript)
++	if err != nil {
++		return fmt.Errorf("activate guest swap reserve: %w", err)
++	}
++	if exitCode != 0 {
++		return fmt.Errorf("activate guest swap reserve: command exited with code %d", exitCode)
++	}
++
++	return nil
++}
++
+ // fsthawViaExecTimeout bounds the rollback thaw run through the exec API. Kept
+ // short: the thaw runs only on the pause-failure path, and one that blocks (e.g.
+ // the exec path touches the frozen rootfs) must not hang the cleanup — a bounded
+diff --git a/packages/orchestrator/pkg/sandbox/sandbox.go b/packages/orchestrator/pkg/sandbox/sandbox.go
+index a00e039..d24df22 100644
+--- a/packages/orchestrator/pkg/sandbox/sandbox.go
++++ b/packages/orchestrator/pkg/sandbox/sandbox.go
+@@ -1750,6 +1750,9 @@ func (f *Factory) ResumeSandbox(
+ 		if err != nil {
+ 			return nil, fmt.Errorf("failed to wait for sandbox start: %w", err)
+ 		}
++		if err := sbx.ensureGuestSwap(ctx); err != nil {
++			return nil, fmt.Errorf("failed to restore sandbox guest swap: %w", err)
++		}
+ 	}
+ 
+ 	// A throwaway (e.g. the pause-resume prefetch harvest) is never promoted to a
+diff --git a/packages/orchestrator/pkg/sandbox/guest_swap_test.go b/packages/orchestrator/pkg/sandbox/guest_swap_test.go
+new file mode 100644
+index 0000000..25ef3c4
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/guest_swap_test.go
+@@ -0,0 +1,49 @@
++//go:build linux
++
++package sandbox
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestEnsureGuestSwapWithRunner(t *testing.T) {
++	t.Parallel()
++
++	var gotTimeout time.Duration
++	var gotScript string
++	err := ensureGuestSwapWithRunner(t.Context(), func(_ context.Context, timeout time.Duration, script string) (int32, error) {
++		gotTimeout = timeout
++		gotScript = script
++
++		return 0, nil
++	})
++	require.NoError(t, err)
++	require.Equal(t, guestSwapActivationTimeout, gotTimeout)
++	require.Contains(t, gotScript, "swapfile=/var/lib/brezel/swapfile")
++	require.Contains(t, gotScript, `/sbin/swapon "$swapfile"`)
++	require.Contains(t, gotScript, "/proc/swaps")
++}
++
++func TestEnsureGuestSwapWithRunnerFailsClosed(t *testing.T) {
++	t.Parallel()
++
++	t.Run("transport", func(t *testing.T) {
++		want := errors.New("envd unavailable")
++		err := ensureGuestSwapWithRunner(t.Context(), func(context.Context, time.Duration, string) (int32, error) {
++			return -1, want
++		})
++		require.ErrorIs(t, err, want)
++	})
++
++	t.Run("non-zero exit", func(t *testing.T) {
++		err := ensureGuestSwapWithRunner(t.Context(), func(context.Context, time.Duration, string) (int32, error) {
++			return 1, nil
++		})
++		require.EqualError(t, err, "activate guest swap reserve: command exited with code 1")
++	})
++}

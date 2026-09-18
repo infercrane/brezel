@@ -53,6 +53,7 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		"orchestrator_uffd_rootfs_order_patch_sha256":              "0021-gate-uffd-listener-on-rootfs-readiness.patch",
 		"orchestrator_reflink_nbd_backpressure_patch_sha256":       "0022-avoid-reflink-rehash-and-nbd-spin.patch",
 		"orchestrator_reflink_sparse_materialization_patch_sha256": "0023-preserve-reflink-base-sparsity.patch",
+		"orchestrator_guest_swap_patch_sha256":                     "0024-activate-guest-swap-after-resume.patch",
 	}
 	for lockKey, name := range patches {
 		patchPath := filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", name)
@@ -214,7 +215,7 @@ func TestInstallerPinsImmutableBaseTemplateIdentityPatch(t *testing.T) {
 		"BASE_TEMPLATE_SWAP_MB",
 		"BASE_TEMPLATE_SWAP_MB cannot exceed BASE_TEMPLATE_MEMORY_MB",
 		"/var/lib/brezel/swapfile",
-		"swapon",
+		"mkswap",
 		`/^[a-z0-9][a-z0-9_-]{0,63}$/`,
 		"name: templateName",
 	} {
@@ -632,6 +633,61 @@ func TestInstallerPinsSparseReflinkMaterializationPatch(t *testing.T) {
 	} {
 		if !strings.Contains(string(capabilityData), required) {
 			t.Fatalf("engine capability probe is missing reflink sparse-materialization contract %q", required)
+		}
+	}
+}
+
+func TestInstallerPinsGuestSwapActivationPatch(t *testing.T) {
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	for _, required := range []string{
+		"0024-activate-guest-swap-after-resume.patch",
+		"orchestrator_guest_swap_patch_sha256",
+		"engine guest-swap patch verification failed",
+		`-p1 < "$ENGINE_GUEST_SWAP_PATCH"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing guest-swap integrity binding %q", required)
+		}
+	}
+	sparseApply := strings.Index(installer, `-p1 < "$ENGINE_REFLINK_SPARSE_MATERIALIZATION_PATCH"`)
+	swapApply := strings.Index(installer, `-p1 < "$ENGINE_GUEST_SWAP_PATCH"`)
+	if sparseApply < 0 || swapApply <= sparseApply {
+		t.Fatal("guest-swap patch is not applied after its pinned predecessor")
+	}
+
+	patchData, err := os.ReadFile(filepath.Join("..", "..", "third_party", "e2b-runtime", "patches", "0024-activate-guest-swap-after-resume.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := string(patchData)
+	for _, required := range []string{
+		"swapfile=/var/lib/brezel/swapfile",
+		`/sbin/swapon "$swapfile"`,
+		"failed to restore sandbox guest swap",
+		"restore guest swap after reboot",
+		"TestEnsureGuestSwapWithRunnerFailsClosed",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("guest-swap patch is missing contract %q", required)
+		}
+	}
+
+	supplyChainData, err := os.ReadFile("artifact-supply-chain.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplyChain := string(supplyChainData)
+	for _, required := range []string{
+		"artifact.orchestrator.guest_swap_patch_sha256",
+		"artifact.orchestrator.guest_swap_activation=post-envd-before-live",
+		"the guest-swap patch requires the reflink sparse-materialization patch identity",
+	} {
+		if !strings.Contains(supplyChain, required) {
+			t.Fatalf("artifact manifest is missing guest-swap contract %q", required)
 		}
 	}
 }
@@ -1856,7 +1912,7 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"dax-baseline-a",
 		"template-a:11111111-1111-1111-1111-111111111111",
 		patchDigest, patchDigest, patchDigest, patchDigest, patchDigest, patchDigest,
-		patchDigest, patchDigest,
+		patchDigest, patchDigest, patchDigest,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("distribution manifest rejected source-built envd: %v: %s", err, output)
@@ -1900,6 +1956,8 @@ func TestDistributionManifestAttestsInstalledEnvdOverride(t *testing.T) {
 		"artifact.orchestrator.reflink_sparse_materialization_patch_sha256=" + patchDigest,
 		"artifact.orchestrator.reflink_base_materialization=logical-byte-and-sha-identical-zero-chunks-sparse",
 		"artifact.orchestrator.reflink_base_identity_domain=brezel-rootfs-sparse-materialization-v1",
+		"artifact.orchestrator.guest_swap_patch_sha256=" + patchDigest,
+		"artifact.orchestrator.guest_swap_activation=post-envd-before-live",
 	} {
 		if !strings.Contains(string(manifest), expected) {
 			t.Fatalf("distribution manifest omitted %q: %s", expected, manifest)
@@ -2069,7 +2127,10 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/template/build/core/rootfs/rootfs.go":      "DirIndex: r.buildContext.Rootfs.Ext4DirIndex\n",
 		"packages/orchestrator/pkg/template/build/phases/base/hash.go":        "ext4-dir-index:v1\n",
 		"packages/orchestrator/pkg/template/build/phases/optimize/builder.go": "WithPrefetch(&metadata.Prefetch\ncontinuing without prefetch\n",
-		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewRuntimeProvider\nexclusive CPU placement requires sandbox cgroup creation\nserveMemoryAfterOverlayReady(ctx, overlayPromise\n",
+		"packages/orchestrator/pkg/sandbox/sandbox.go":                        "prefetch.New(sbxLogger, memfile, fcUffd, initMapping\nrootfs.NewRuntimeProvider\nexclusive CPU placement requires sandbox cgroup creation\nserveMemoryAfterOverlayReady(ctx, overlayPromise\nfailed to restore sandbox guest swap\n",
+		"packages/orchestrator/pkg/sandbox/reclaim.go":                        "swapfile=/var/lib/brezel/swapfile\n/sbin/swapon \"$swapfile\"\n",
+		"packages/orchestrator/pkg/sandbox/reboot.go":                         "restore guest swap after reboot\n",
+		"packages/orchestrator/pkg/sandbox/guest_swap_test.go":                "TestEnsureGuestSwapWithRunnerFailsClosed\n",
 		"packages/orchestrator/pkg/sandbox/rootfs/provider.go":                "case \"nbd\":\ncase \"direct\":\ncase \"reflink\":\nos.O_EXCL\nnewOwnedDirectProvider\n",
 		"packages/orchestrator/pkg/sandbox/rootfs/reflink.go":                 "unix.IoctlFileClone\nunix.RENAME_NOREPLACE\nreflink base is missing the filesystem immutable flag\nrememberVerifiedReflinkDigest\nopenPublishedReflinkBase\nmaterializeSparseReflinkContents\nreflinkBaseIdentityDomain = \"brezel-rootfs-sparse-materialization-v1\"\nbytes.Equal(buffer[:length], zeroes[:length])\n",
 		"packages/orchestrator/pkg/sandbox/rootfs/reflink_test.go":            "TestRememberedReflinkDigestRejectsSameSizeTamper\nTestReflinkDigestCacheIsProcessLocalAndColdOpenStillVerifies\nTestRememberedReflinkDigestSkipsSecondImageRead\nTestSparseReflinkIdentityDoesNotReuseLegacyDenseBase\nTestSparseReflinkMaterializationPreservesLogicalBytesAndDigest\nTestSparseReflinkMaterializationColdVerificationRejectsTamper\n",
@@ -2101,7 +2162,7 @@ func TestPinnedEngineFastPathSourceContract(t *testing.T) {
 		"packages/orchestrator/pkg/nfsproxy/chroot/file.go":                   "syncing NFS write\nsyncing NFS truncate\n",
 		"packages/orchestrator/pkg/nfsproxy/chroot/fs.go":                     "syncDirectoryTree\nerrors.Join(syncPath(f.chroot, newParent), syncPath(f.chroot, oldParent))\n",
 		"embed/compose/compose.yaml":                                          "TEMPLATE_STORAGE_URL: file:///var/lib/e2b/storage/templates\nNBD_POOL_SIZE: \"64\"\nNETWORK_VERSION: \"1\"\n",
-		"embed/compose/scripts/node/build-base-template.mjs":                  "BASE_TEMPLATE_MIN_FREE_DISK_MB\nBASE_TEMPLATE_NAME\nname: templateName\nminFreeDiskMb\n",
+		"embed/compose/scripts/node/build-base-template.mjs":                  "BASE_TEMPLATE_MIN_FREE_DISK_MB\nBASE_TEMPLATE_SWAP_MB\nBASE_TEMPLATE_NAME\nname: templateName\nminFreeDiskMb\n",
 		"packages/envd/internal/services/process/service.go":                  "if value.Tag == nil || *value.Tag != tag {\n",
 		"packages/envd/internal/services/process/service_test.go":             "TestGetProcessByTagScansPastNonMatches\nrequire.Same(t, target, got)\n",
 		"packages/envd/internal/services/process/replay.go":                   "replayVersionHeader = \"E2b-Process-Replay-Version\"\nreturn replayRequest{}, fmt.Errorf(\"%s is required with %s\", journalIDHeader, afterSequenceHeader)\n",
