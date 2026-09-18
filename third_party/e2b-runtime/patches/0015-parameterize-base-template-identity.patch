@@ -1,10 +1,15 @@
 diff --git a/embed/compose/scripts/node/build-base-template.mjs b/embed/compose/scripts/node/build-base-template.mjs
-index f9cfc347f..4d30c0325 100644
+index ae2e52dff..af28384ea 100644
 --- a/embed/compose/scripts/node/build-base-template.mjs
 +++ b/embed/compose/scripts/node/build-base-template.mjs
-@@ -20,6 +20,11 @@ async function main() {
+@@ -19,7 +19,16 @@ async function main() {
+   const cpuCount = integer('BASE_TEMPLATE_CPU_COUNT', 2, 1, 32)
    const memoryMB = integer('BASE_TEMPLATE_MEMORY_MB', 512, 128, 262144)
    const minFreeDiskMb = integer('BASE_TEMPLATE_MIN_FREE_DISK_MB', 512, 0, 25600)
++  const swapMB = integer('BASE_TEMPLATE_SWAP_MB', 0, 0, 65536)
++  if (swapMB > memoryMB) {
++    throw new Error('BASE_TEMPLATE_SWAP_MB cannot exceed BASE_TEMPLATE_MEMORY_MB')
++  }
    const sourceImage = process.env.BASE_TEMPLATE_SOURCE_IMAGE ?? 'e2bdev/base'
 +  const templateName = process.env.BASE_TEMPLATE_NAME ?? 'base'
 +  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(templateName)) {
@@ -14,12 +19,12 @@ index f9cfc347f..4d30c0325 100644
  
    async function request(path, init = {}) {
      const res = await fetch(`${apiUrl}${path}`, {
-@@ -40,11 +45,11 @@ async function main() {
+@@ -40,11 +49,11 @@ async function main() {
      // post-build free-space target. Reuse is therefore safe only for the
      // upstream default shape; custom benchmark/production shapes are rebuilt
      // so a stale or nearly-full template cannot satisfy a larger contract.
 -    if (cpuCount !== 2 || memoryMB !== 512 || minFreeDiskMb !== 512 || sourceImage !== 'e2bdev/base') return false
-+    if (templateName !== 'base' || cpuCount !== 2 || memoryMB !== 512 || minFreeDiskMb !== 512 || sourceImage !== 'e2bdev/base') return false
++    if (templateName !== 'base' || cpuCount !== 2 || memoryMB !== 512 || minFreeDiskMb !== 512 || swapMB !== 0 || sourceImage !== 'e2bdev/base') return false
      const templates = await request('/templates')
      return templates.some(
        (t) =>
@@ -28,7 +33,7 @@ index f9cfc347f..4d30c0325 100644
          t.buildStatus === 'ready' &&
          Number(t.cpuCount) === cpuCount &&
          Number(t.memoryMB) === memoryMB,
-@@ -52,11 +57,11 @@ async function main() {
+@@ -52,11 +61,11 @@ async function main() {
    }
  
    if (process.env.FORCE_REBUILD !== '1' && (await defaultBaseIsReady())) {
@@ -38,11 +43,11 @@ index f9cfc347f..4d30c0325 100644
    }
  
 -  console.log(`build-base-template: building alias "base" from ${sourceImage} (${memoryMB} MiB, ${cpuCount} vCPU, at least ${minFreeDiskMb} MiB free disk)`)
-+  console.log(`build-base-template: building alias ${templateNameJSON} from ${sourceImage} (${memoryMB} MiB, ${cpuCount} vCPU, at least ${minFreeDiskMb} MiB free disk)`)
++  console.log(`build-base-template: building alias ${templateNameJSON} from ${sourceImage} (${memoryMB} MiB, ${cpuCount} vCPU, at least ${minFreeDiskMb} MiB free disk, ${swapMB} MiB swap)`)
    const started = Date.now()
    const RETRY_MS = 5_000
    const RETRY_TOTAL_MS = 120_000
-@@ -71,7 +76,7 @@ async function main() {
+@@ -71,7 +80,7 @@ async function main() {
        build = await request('/v3/templates', {
          method: 'POST',
          body: JSON.stringify({
@@ -51,3 +56,27 @@ index f9cfc347f..4d30c0325 100644
            cpuCount,
            memoryMB,
            minFreeDiskMb,
+@@ -85,9 +94,22 @@ async function main() {
+     }
+   }
+ 
++  const steps = []
++  if (swapMB > 0) {
++    const swapBytes = swapMB * 1024 * 1024
++    steps.push({
++      type: 'RUN',
++      force: true,
++      args: [
++        `set -eu; install -d -m 0700 /var/lib/brezel; swapfile=/var/lib/brezel/swapfile; rm -f "$swapfile"; fallocate -l ${swapBytes} "$swapfile"; chmod 0600 "$swapfile"; mkswap -f "$swapfile" >/dev/null; swapon "$swapfile"; grep -Fq "$swapfile" /proc/swaps; sync`,
++        'root',
++      ],
++    })
++  }
++
+   await request(`/v2/templates/${encodeURIComponent(build.templateID)}/builds/${encodeURIComponent(build.buildID)}`, {
+     method: 'POST',
+-    body: JSON.stringify({ fromImage: sourceImage, steps: [], force: process.env.FORCE_REBUILD === '1' }),
++    body: JSON.stringify({ fromImage: sourceImage, steps, force: process.env.FORCE_REBUILD === '1' }),
+   })
+ 
+   let logsOffset = 0

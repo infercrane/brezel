@@ -63,6 +63,7 @@ MODE=${1:-plan}
 MEMINFO=${BREZEL_TEST_MEMINFO_FILE:-/proc/meminfo}
 STORAGE_PATH=${BREZEL_CAPACITY_STORAGE_PATH:-/var/lib}
 GUEST_MEMORY_MIB=${BREZEL_GUEST_MEMORY_MIB:-512}
+GUEST_SWAP_MIB=${BREZEL_GUEST_SWAP_MIB:-0}
 GUEST_VCPUS=${BREZEL_GUEST_VCPUS:-2}
 GUEST_MIN_FREE_DISK_MIB=${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}
 GUEST_MAX_FREE_DISK_MIB=${BREZEL_GUEST_MAX_FREE_DISK_MIB:-25600}
@@ -93,11 +94,15 @@ WARM_POOL_MAX_CLAIM_TTL_SECONDS=${BREZEL_WARM_POOL_MAX_CLAIM_TTL_SECONDS:-3600}
 WARM_POOL_PRIME_CONCURRENCY=${BREZEL_WARM_POOL_PRIME_CONCURRENCY:-1}
 
 positive_integer "$GUEST_MEMORY_MIB" BREZEL_GUEST_MEMORY_MIB
+non_negative_integer "$GUEST_SWAP_MIB" BREZEL_GUEST_SWAP_MIB
 positive_integer "$GUEST_VCPUS" BREZEL_GUEST_VCPUS
 positive_integer "$GUEST_MIN_FREE_DISK_MIB" BREZEL_GUEST_MIN_FREE_DISK_MIB
 positive_integer "$GUEST_MAX_FREE_DISK_MIB" BREZEL_GUEST_MAX_FREE_DISK_MIB
 [ "$GUEST_VCPUS" -le 32 ] || fail "BREZEL_GUEST_VCPUS cannot exceed 32"
 [ "$GUEST_MEMORY_MIB" -le 262144 ] || fail "BREZEL_GUEST_MEMORY_MIB cannot exceed 262144"
+[ "$GUEST_SWAP_MIB" -le 65536 ] || fail "BREZEL_GUEST_SWAP_MIB cannot exceed 65536"
+[ "$GUEST_SWAP_MIB" -le "$GUEST_MEMORY_MIB" ] || \
+  fail "BREZEL_GUEST_SWAP_MIB cannot exceed BREZEL_GUEST_MEMORY_MIB"
 [ "$GUEST_MIN_FREE_DISK_MIB" -le "$GUEST_MAX_FREE_DISK_MIB" ] || \
   fail "the template free disk cannot exceed the project free-disk ceiling"
 positive_integer "$HUGEPAGES" BREZEL_ENGINE_HUGEPAGES
@@ -330,4 +335,4 @@ case "$MODE" in
 esac
 
 printf '%s\n' \
-  "{\"capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"guest_vcpus\":$GUEST_VCPUS,\"guest_memory_mib\":$GUEST_MEMORY_MIB,\"guest_min_free_disk_mib\":$GUEST_MIN_FREE_DISK_MIB,\"guest_max_free_disk_mib\":$GUEST_MAX_FREE_DISK_MIB,\"max_active_sandboxes\":$MAX_ACTIVE_TOTAL,\"warm_pool_size\":$WARM_POOL_SIZE,\"strict_warm_pool\":$WARM_POOL_STRICT,\"provisioned_capacity\":$provisioned_capacity,\"max_active_sandboxes_per_project\":$MAX_ACTIVE_PROJECT,\"max_starting_sandboxes\":$MAX_STARTING_SANDBOXES,\"network_new_slots\":$NETWORK_NEW_SLOTS,\"network_reused_slots\":$NETWORK_REUSED_SLOTS,\"nbd_pool_size\":$NBD_POOL_SIZE,\"nbd_connections_per_device\":$NBD_CONNECTIONS_PER_DEVICE,\"required_nbd_slots\":$required_nbd_slots,\"hugepages_2m\":$HUGEPAGES,\"required_hugepages_2m\":$required_hugepages,\"lifecycle_headroom_sandboxes\":$HEADROOM_SANDBOXES,\"system_memory_reserve_mib\":$MIN_SYSTEM_MEMORY_MIB,\"system_cpu_reserve\":$MIN_SYSTEM_CPUS,\"firecracker_smt\":$FIRECRACKER_SMT,\"exclusive_cpu_topology\":$EXCLUSIVE_CPU_TOPOLOGY,\"firecracker_cpuset_cpus\":\"$normalized_cpuset_cpus\",\"firecracker_cpuset_mems\":\"$normalized_cpuset_mems\",\"firecracker_vcpu_cpus\":\"$normalized_vcpu_cpus\",\"firecracker_vmm_cpus\":\"$normalized_vmm_cpus\",\"max_numa_physical_cores\":$max_numa_physical_cores,\"host_physical_cores\":$host_physical_cores,\"required_host_cpus\":$required_host_cpus,\"host_memory_mib\":$memory_total_mib,\"host_cpu_count\":$host_cpu_count,\"available_disk_mib\":$available_disk_mib,\"required_disk_mib\":$required_disk_mib}"
+  "{\"capacity_contract\":\"conformant\",\"mode\":\"$MODE\",\"guest_vcpus\":$GUEST_VCPUS,\"guest_memory_mib\":$GUEST_MEMORY_MIB,\"guest_swap_mib\":$GUEST_SWAP_MIB,\"guest_min_free_disk_mib\":$GUEST_MIN_FREE_DISK_MIB,\"guest_max_free_disk_mib\":$GUEST_MAX_FREE_DISK_MIB,\"max_active_sandboxes\":$MAX_ACTIVE_TOTAL,\"warm_pool_size\":$WARM_POOL_SIZE,\"strict_warm_pool\":$WARM_POOL_STRICT,\"provisioned_capacity\":$provisioned_capacity,\"max_active_sandboxes_per_project\":$MAX_ACTIVE_PROJECT,\"max_starting_sandboxes\":$MAX_STARTING_SANDBOXES,\"network_new_slots\":$NETWORK_NEW_SLOTS,\"network_reused_slots\":$NETWORK_REUSED_SLOTS,\"nbd_pool_size\":$NBD_POOL_SIZE,\"nbd_connections_per_device\":$NBD_CONNECTIONS_PER_DEVICE,\"required_nbd_slots\":$required_nbd_slots,\"hugepages_2m\":$HUGEPAGES,\"required_hugepages_2m\":$required_hugepages,\"lifecycle_headroom_sandboxes\":$HEADROOM_SANDBOXES,\"system_memory_reserve_mib\":$MIN_SYSTEM_MEMORY_MIB,\"system_cpu_reserve\":$MIN_SYSTEM_CPUS,\"firecracker_smt\":$FIRECRACKER_SMT,\"exclusive_cpu_topology\":$EXCLUSIVE_CPU_TOPOLOGY,\"firecracker_cpuset_cpus\":\"$normalized_cpuset_cpus\",\"firecracker_cpuset_mems\":\"$normalized_cpuset_mems\",\"firecracker_vcpu_cpus\":\"$normalized_vcpu_cpus\",\"firecracker_vmm_cpus\":\"$normalized_vmm_cpus\",\"max_numa_physical_cores\":$max_numa_physical_cores,\"host_physical_cores\":$host_physical_cores,\"required_host_cpus\":$required_host_cpus,\"host_memory_mib\":$memory_total_mib,\"host_cpu_count\":$host_cpu_count,\"available_disk_mib\":$available_disk_mib,\"required_disk_mib\":$required_disk_mib}"

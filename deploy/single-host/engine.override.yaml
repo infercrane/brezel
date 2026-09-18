@@ -271,6 +271,7 @@ services:
       BASE_TEMPLATE_SOURCE_IMAGE: ${BREZEL_ENGINE_BASE_TEMPLATE_SOURCE_IMAGE:?set the immutable base-template source image}
       BASE_TEMPLATE_CPU_COUNT: ${BREZEL_GUEST_VCPUS:-2}
       BASE_TEMPLATE_MEMORY_MB: ${BREZEL_GUEST_MEMORY_MIB:-512}
+      BASE_TEMPLATE_SWAP_MB: ${BREZEL_GUEST_SWAP_MIB:-0}
       BASE_TEMPLATE_MIN_FREE_DISK_MB: ${BREZEL_GUEST_MIN_FREE_DISK_MIB:-512}
       # The snapshot contains the Firecracker machine topology. Rebuild it on
       # every install so a prior SMT/topology ABI can never satisfy a new
