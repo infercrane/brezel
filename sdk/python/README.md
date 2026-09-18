@@ -24,6 +24,4 @@ The SDK intentionally accepts command argument arrays, not shell strings. It
 does not retry commands or file writes because their outcome can be
 indeterminate after a transport interruption.
 
-Requires Python 3.10 or newer. Until `0.1.0` is present on PyPI, install the
-same package from a reviewed Brezel source checkout with
-`pip install ./sdk/python`.
+Requires Python 3.10 or newer.

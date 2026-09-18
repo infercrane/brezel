@@ -10,6 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/infercrane/brezel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/infercrane/brezel/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://pypi.org/project/brezel-sdk/"><img alt="PyPI: brezel-sdk" src="https://img.shields.io/pypi/v/brezel-sdk?style=flat-square&logo=pypi&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@infercrane/brezel"><img alt="npm: @infercrane/brezel" src="https://img.shields.io/npm/v/%40infercrane%2Fbrezel?style=flat-square&logo=npm"></a>
   <a href="docs/GO-LIVE.md"><img alt="Deployment: self-hosted" src="https://img.shields.io/badge/deployment-self--hosted-33A67C?style=flat-square"></a>
   <a href="docs/ARCHITECTURE.md"><img alt="Engine: Firecracker" src="https://img.shields.io/badge/engine-Firecracker-6D8CFF?style=flat-square"></a>
   <a href="go.mod"><img alt="Go 1.26.6" src="https://img.shields.io/badge/Go-1.26.6-00ADD8?style=flat-square&logo=go&logoColor=white"></a>
@@ -67,8 +69,7 @@ creates real microVMs, exercises the public product path twice, checks failure
 boundaries, and verifies cleanup.
 
 Until the first signed binary release exists, build the runtime from a reviewed
-source revision. Python and TypeScript SDK packages have their own release path
-described below.
+source revision. The Python and TypeScript SDKs are published independently.
 
 ## A 60-second tour
 
@@ -163,16 +164,11 @@ remote plaintext endpoints, can read credentials from protected files, do not
 follow redirects, and never retry a command or file write after an ambiguous
 transport failure.
 
-Install the release packages after the first registry publication. Until then,
-install from a reviewed repository revision:
+Install either SDK directly from its public registry:
 
 ```console
 pip install brezel-sdk
 npm install @infercrane/brezel
-
-# source checkout, before registry publication
-pip install ./sdk/python
-npm install ./sdk/typescript
 ```
 
 <details open>
@@ -280,7 +276,7 @@ revision on that machine and run `make qualify-single-host` before use.
 | Supply chain | Pinned source, patches, images, VM artifacts, and runtime attestation |
 
 Not yet implemented: arbitrary OCI builds, interactive PTY/SSH, desktop or
-WebSocket transport, public full-state forks, published SDK packages,
+WebSocket transport, public full-state forks, resumable SDK stream attachment,
 multi-node scheduling, replicated state, OIDC/RBAC, GPU passthrough, and
 hostile shared-multitenant assurance. The [roadmap](docs/ROADMAP.md) defines the
 gates for those capabilities.

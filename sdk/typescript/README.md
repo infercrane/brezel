@@ -24,6 +24,4 @@ The SDK accepts command argument arrays, not shell strings. It never retries a
 command or file write because an interrupted transport can leave the outcome
 indeterminate.
 
-Requires Node.js 20 or newer. Until `0.1.0` is present on npm, install the same
-package from a reviewed Brezel source checkout with
-`npm install ./sdk/typescript`.
+Requires Node.js 20 or newer.
