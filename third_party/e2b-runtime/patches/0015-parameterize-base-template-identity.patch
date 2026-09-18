@@ -67,7 +67,7 @@ index ae2e52dff..af28384ea 100644
 +      type: 'RUN',
 +      force: true,
 +      args: [
-+        `set -eu; install -d -m 0700 /var/lib/brezel; swapfile=/var/lib/brezel/swapfile; rm -f "$swapfile"; fallocate -l ${swapBytes} "$swapfile"; chmod 0600 "$swapfile"; mkswap -f "$swapfile" >/dev/null; swapon "$swapfile"; grep -Fq "$swapfile" /proc/swaps; sync`,
++        `set -eu; install -d -m 0700 /var/lib/brezel; swapfile=/var/lib/brezel/swapfile; rm -f "$swapfile"; fallocate -l ${swapBytes} "$swapfile"; chmod 0600 "$swapfile"; mkswap -f "$swapfile" >/dev/null; sync`,
 +        'root',
 +      ],
 +    })
