@@ -567,6 +567,25 @@ providers used different hosts and runners, and only ComputeSDK can produce an
 independent leaderboard entry. The checksummed report is under
 `evidence/qualification-2026-09-18/scaleway-fr-par-2-5438d3b`.
 
+Revision `1d32867` hardened that same 8-vCPU/16-GiB profile against transient
+compiler memory pressure with a 2-GiB guest swap reserve activated after every
+snapshot restore. The exact upstream ComputeSDK runner then completed two
+unchanged five-attempt sequences with 10 of 10 successful workloads and
+confirmed cleanup. Their total medians were 36.378 s and 36.272 s; the final
+sequence had a 36.728 s p95, with phase medians of 1.959 s prepare, 0.226 s Bun
+download, 0.411 s Bun unpack, 3.909 s clone, 8.297 s install, and 17.981 s
+typecheck. The host logged no guest OOM during either sequence, and a separate
+lifecycle probe observed the 2,097,148-KiB swap device before and after
+pause/resume. This is self-run evidence with platform ingest disabled, not an
+official rank. Its checksummed final sequence is under
+`evidence/qualification-2026-09-18/scaleway-fr-par-2-1d32867`.
+
+A fixed diagnostic arm remounted the root without synchronous discard before
+the same workload. Its five-attempt median was 37.013 s, 2.0 percent slower
+than the immediately following unchanged 36.272 s sequence, so the candidate
+was rejected and is not part of the runtime. This prevents a benchmark-only
+filesystem policy from entering the product without evidence.
+
 The entry gate is therefore:
 
 1. qualify an immutable DAX-compatible environment with 8 vCPU, 16 GiB memory,
