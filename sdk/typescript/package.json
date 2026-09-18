@@ -1,8 +1,11 @@
 {
   "name": "@infercrane/brezel",
-  "version": "0.0.0-development",
-  "description": "TypeScript client for a self-hosted Brezel runtime",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for stateful, self-hosted Brezel agent sandboxes",
   "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
   "engines": {
     "node": ">=20"
   },
@@ -19,7 +22,31 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check src/index.js"
+    "check": "node --check src/index.js",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/infercrane/brezel.git",
+    "directory": "sdk/typescript"
+  },
+  "homepage": "https://github.com/infercrane/brezel#python-and-typescript-sdks",
+  "bugs": {
+    "url": "https://github.com/infercrane/brezel/issues"
+  },
+  "keywords": [
+    "agents",
+    "firecracker",
+    "microvm",
+    "sandbox",
+    "self-hosted"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
   },
   "license": "Apache-2.0"
 }

@@ -6,6 +6,8 @@ export interface ClientOptions {
   fetch?: typeof globalThis.fetch;
 }
 
+export const VERSION: "0.1.0";
+
 export interface TokenFileOptions extends Omit<ClientOptions, "token"> {}
 
 export interface WorkspaceMount {

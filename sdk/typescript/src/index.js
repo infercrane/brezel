@@ -5,6 +5,8 @@ const MAX_JSON_BYTES = 4 << 20;
 const MAX_EVENT_BYTES = 2 << 20;
 const MAX_OUTPUT_BYTES = 64 << 20;
 
+export const VERSION = "0.1.0";
+
 export class BrezelError extends Error {
   constructor(message, { code = "", status = 0, cause } = {}) {
     super(message, cause === undefined ? undefined : { cause });

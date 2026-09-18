@@ -1,10 +1,10 @@
 # Brezel TypeScript SDK
 
-Dependency-free Node.js client with first-party TypeScript declarations for the
-supported Brezel developer-preview API.
+Dependency-free Node.js client with first-party TypeScript declarations for
+stateful, self-hosted Brezel agent sandboxes.
 
 ```bash
-npm install ./sdk/typescript
+npm install @infercrane/brezel
 ```
 
 ```ts
@@ -23,3 +23,7 @@ console.log(result.stdoutText);
 The SDK accepts command argument arrays, not shell strings. It never retries a
 command or file write because an interrupted transport can leave the outcome
 indeterminate.
+
+Requires Node.js 20 or newer. Until `0.1.0` is present on npm, install the same
+package from a reviewed Brezel source checkout with
+`npm install ./sdk/typescript`.

@@ -3,13 +3,14 @@
 </p>
 
 <p align="center">
-  <strong>A secure computer for agents that starts quickly, remembers its work, and stays out of the way.</strong>
+  <strong>Give every agent its own computer.</strong>
   <br>
-  Self-hosted Firecracker sandboxes with a small CLI and HTTP API.
+  Stateful Firecracker sandboxes that keep untrusted code away from your laptop and keys.
 </p>
 
 <p align="center">
-  <a href="docs/STATUS.md"><img alt="Status: developer preview" src="https://img.shields.io/badge/status-developer_preview-D97706?style=flat-square"></a>
+  <a href="https://github.com/infercrane/brezel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/infercrane/brezel/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="docs/GO-LIVE.md"><img alt="Deployment: self-hosted" src="https://img.shields.io/badge/deployment-self--hosted-33A67C?style=flat-square"></a>
   <a href="docs/ARCHITECTURE.md"><img alt="Engine: Firecracker" src="https://img.shields.io/badge/engine-Firecracker-6D8CFF?style=flat-square"></a>
   <a href="go.mod"><img alt="Go 1.26.6" src="https://img.shields.io/badge/Go-1.26.6-00ADD8?style=flat-square&logo=go&logoColor=white"></a>
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-33A67C?style=flat-square"></a>
@@ -17,10 +18,10 @@
 
 ---
 
-Brezel gives every agent a stateful Linux computer without making the caller
-manage Firecracker, network namespaces, guest credentials, or cleanup. The
-workspace can outlive disposable compute, previews put the result in front of a
-human, and commands never run on the developer's laptop.
+Brezel gives agents a stateful Linux computer without making you manage
+Firecracker, network namespaces, guest credentials, or cleanup. Workspaces
+survive disposable compute, previews put results in front of a human, and agent
+commands never run on your laptop.
 
 ```console
 $ brezel new --ttl 900 --standby-after 120
@@ -33,11 +34,13 @@ $ brezel stop sbx_01...
 standby
 ```
 
-> [!IMPORTANT]
-> Brezel is a **self-hosted developer preview**. The qualified deployment is one
-> organization on one dedicated Ubuntu 24.04 x86-64 host with KVM. It is not yet
-> a hostile shared-multitenant or highly available production system. Read the
-> exact [status and evidence boundary](docs/STATUS.md) before deployment.
+<table>
+  <tr>
+    <td><strong>Stateful</strong><br>Stop compute. Keep the workspace. Resume when the agent returns.</td>
+    <td><strong>Isolated</strong><br>Run untrusted code inside a Firecracker microVM, never on the caller's machine.</td>
+    <td><strong>Inspectable</strong><br>Stream commands, move files, and open short-lived previews for human review.</td>
+  </tr>
+</table>
 
 ## Start on a dedicated host
 
@@ -63,9 +66,9 @@ dedicated evaluation machine. It installs the pinned engine distribution,
 creates real microVMs, exercises the public product path twice, checks failure
 boundaries, and verifies cleanup.
 
-There is no curl installer or published package yet. Until the first signed
-preview release exists, building from a reviewed source revision is the honest
-installation path.
+Until the first signed binary release exists, build the runtime from a reviewed
+source revision. Python and TypeScript SDK packages have their own release path
+described below.
 
 ## A 60-second tour
 
@@ -160,11 +163,15 @@ remote plaintext endpoints, can read credentials from protected files, do not
 follow redirects, and never retry a command or file write after an ambiguous
 transport failure.
 
-Install them directly from a reviewed repository revision while Brezel remains
-in developer preview:
+Install the release packages after the first registry publication. Until then,
+install from a reviewed repository revision:
 
 ```console
-python3 -m pip install ./sdk/python
+pip install brezel-sdk
+npm install @infercrane/brezel
+
+# source checkout, before registry publication
+pip install ./sdk/python
 npm install ./sdk/typescript
 ```
 
@@ -226,8 +233,10 @@ try {
 
 </details>
 
-The packages are not published to PyPI or npm yet. Their source, package
-metadata, and mock-server contract tests live under [`sdk/`](sdk/).
+Package source, metadata, compatibility tests, and release automation live
+under [`sdk/`](sdk/). See the package READMEs for supported runtimes and the
+current publication state. Maintainers follow the tokenless
+[SDK release procedure](docs/SDK-RELEASE.md).
 
 ## Practical examples
 
@@ -256,9 +265,9 @@ It deliberately does not expose the Brezel API, attach a cloud service account,
 install mutable source, or claim the host is qualified. Clone the exact release
 revision on that machine and run `make qualify-single-host` before use.
 
-## What is implemented
+## What ships today
 
-| Area | Developer-preview capability |
+| Area | Capability |
 | --- | --- |
 | Isolation | Firecracker microVMs; no release container fallback |
 | Commands | Streaming output, deadlines, bounded replay, and confirmed exit status |
@@ -296,13 +305,14 @@ boundary are documented in [ADR 0002](docs/decisions/0002-runtime-substrate.md).
 The full [current architecture](docs/ARCHITECTURE.md#current-single-host-architecture)
 separates the lifecycle and guest-data paths and marks every trust boundary.
 
-## Go live without overstating the product
+## Deployment
 
-The repository is suitable for an open-source developer preview and a private
-evaluation by one trusted organization. It is not suitable for a public shared
-sandbox API. Before publishing or exposing an installation, follow the exact
-[go-live gates](docs/GO-LIVE.md), qualify the final commit on its deployment
-host, and keep the [status boundary](docs/STATUS.md) visible.
+Brezel is designed for self-hosted private deployment on dedicated KVM hosts.
+Before exposing an installation, follow the [go-live checklist](docs/GO-LIVE.md)
+and qualify the exact revision on its deployment host. Fleet, high-availability,
+and shared-multitenant profiles have separate gates in
+[Status](docs/STATUS.md); they are not silently implied by the single-host
+package.
 
 ## Verify and benchmark
 
@@ -337,6 +347,7 @@ result. Named-host qualification results and their limitations are retained in
 - [Artifact supply chain](docs/ARTIFACT-SUPPLY-CHAIN.md)
 - [Benchmark methodology](docs/BENCHMARKING.md)
 - [Go-live checklist](docs/GO-LIVE.md)
+- [SDK release](docs/SDK-RELEASE.md)
 - [Roadmap](docs/ROADMAP.md)
 
 ## Contributing and security

@@ -29,6 +29,7 @@ test:
 	go test ./...
 
 test-integrations:
+	python3 scripts/check-sdk-versions.py
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s sdk/python/tests -v
 	node --check sdk/typescript/src/index.js
 	node --test sdk/typescript/test/*.test.mjs

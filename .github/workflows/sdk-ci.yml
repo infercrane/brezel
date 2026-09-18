@@ -1,0 +1,64 @@
+name: sdk-ci
+
+on:
+  push:
+    paths:
+      - ".github/workflows/sdk-ci.yml"
+      - "sdk/**"
+      - "scripts/check-sdk-versions.py"
+  pull_request:
+    paths:
+      - ".github/workflows/sdk-ci.yml"
+      - "sdk/**"
+      - "scripts/check-sdk-versions.py"
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - run: python scripts/check-sdk-versions.py
+
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s sdk/python/tests -v
+      - if: matrix.python-version == '3.14'
+        run: |
+          python -m pip install --disable-pip-version-check build==1.6.1 twine==7.0.0
+          python -m build sdk/python --outdir sdk/python/dist
+          python -m twine check sdk/python/dist/*
+
+  typescript:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20.x", "22.x", "24.x"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: sdk/typescript
+      - run: npm run check && npm run typecheck && npm test
+        working-directory: sdk/typescript
+      - run: npm pack --dry-run
+        working-directory: sdk/typescript
