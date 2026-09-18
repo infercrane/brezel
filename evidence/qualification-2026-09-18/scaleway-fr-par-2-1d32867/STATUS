@@ -1,0 +1,15 @@
+passed
+
+scope=self-run exact upstream ComputeSDK DAX runner with platform ingest disabled
+source_revision=1d32867
+upstream_workload_revision=08fb47373509ba64b13441061314eeacf4264f51
+environment_revision=envr_11dd3cb53655e8a35ed79196
+attempts=5
+successful_attempts=5
+cleanup_confirmed=5
+total_median_ms=36272
+total_p95_ms=36728
+guest_swap_kib=2097148
+guest_swap_survives_pause_resume=true
+competitive_rank_claim=false
+
