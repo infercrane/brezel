@@ -16,4 +16,10 @@ dax_guest_total_median_ms=32635
 dax_provider_command_p50_ms=35119.705879
 dax_provider_command_p95_ms=36279.692292
 
+computesdk_official_runner_mode=self-run-no-ingest
+computesdk_official_runner_iterations=1
+computesdk_official_runner_phases=7/7
+computesdk_official_runner_success_rate=1
+computesdk_official_runner_total_ms=35536
+
 claim_boundary=self-run-rehearsal-not-official-computesdk-result

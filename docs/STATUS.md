@@ -134,6 +134,10 @@ the comparison is directional because this remains a self-run rehearsal on a
 different host and runner, not an independent ComputeSDK result. Raw evidence
 is retained under
 `evidence/qualification-2026-09-18/scaleway-fr-par-2-5438d3b`.
+The same endpoint then passed one no-ingest execution through ComputeSDK's
+unmodified public DAX runner and the proposed `@computesdk/brezel` provider:
+7 of 7 phases, 100 percent success, and a 35.536 s total. This validates adapter
+compatibility but remains self-run evidence rather than a leaderboard result.
 
 ## Next release gate
 

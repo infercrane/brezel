@@ -1,0 +1,84 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-09-18T07:37:37.109Z",
+  "environment": {
+    "node": "v23.11.0",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "config": {
+    "mode": "sandbox-dax",
+    "timeoutMs": 600000,
+    "scriptSource": "local",
+    "scriptPath": "/private/tmp/brezel-computesdk-benchmarks.O8TyD7/benchmarks/benchmarks/scripts/dax-benchmark.sh"
+  },
+  "results": [
+    {
+      "provider": "brezel",
+      "mode": "sandbox-dax",
+      "iterations": [
+        {
+          "totalMs": 35536,
+          "phasesCompleted": 7,
+          "phasesTotal": 7,
+          "prepareMs": 1952,
+          "cacheClearMs": 26,
+          "bunDownloadMs": 332,
+          "bunUnpackMs": 412,
+          "cloneMs": 3417,
+          "installMs": 7831,
+          "typecheckMs": 18319,
+          "diskAfterClone": 350002176,
+          "diskAfterInstall": 3,
+          "diskAfterTypecheck": 3,
+          "commit": "08fb47373509ba64b13441061314eeacf4264f51",
+          "bunVersion": "1.3.14",
+          "nodeVersion": "v24.14.1",
+          "architecture": "x86_64",
+          "kernel": "Linux 6.1.177+",
+          "logicalCpus": "8",
+          "cpuModel": "AMD EPYC",
+          "memoryKib": "16392004"
+        }
+      ],
+      "summary": {
+        "totalMs": {
+          "median": 35536,
+          "p95": 35536,
+          "p99": 35536
+        },
+        "prepareMs": {
+          "median": 1952,
+          "p95": 1952,
+          "p99": 1952
+        },
+        "bunDownloadMs": {
+          "median": 332,
+          "p95": 332,
+          "p99": 332
+        },
+        "bunUnpackMs": {
+          "median": 412,
+          "p95": 412,
+          "p99": 412
+        },
+        "cloneMs": {
+          "median": 3417,
+          "p95": 3417,
+          "p99": 3417
+        },
+        "installMs": {
+          "median": 7831,
+          "p95": 7831,
+          "p99": 7831
+        },
+        "typecheckMs": {
+          "median": 18319,
+          "p95": 18319,
+          "p99": 18319
+        }
+      },
+      "successRate": 1
+    }
+  ]
+}
