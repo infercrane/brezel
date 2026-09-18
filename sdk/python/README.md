@@ -20,6 +20,17 @@ with client.create_sandbox(template="base", ttl_seconds=900) as sandbox:
     print(result.stdout_text, end="")
 ```
 
+Use a prequalified immutable environment without creating or resolving a
+template alias:
+
+```python
+with client.create_sandbox(
+    environment_revision="envr_0123456789abcdef01234567",
+    ttl_seconds=900,
+) as sandbox:
+    print(sandbox.run(["node", "--version"]).stdout_text)
+```
+
 The SDK intentionally accepts command argument arrays, not shell strings. It
 does not retry commands or file writes because their outcome can be
 indeterminate after a transport interruption.

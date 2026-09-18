@@ -6,7 +6,7 @@ export interface ClientOptions {
   fetch?: typeof globalThis.fetch;
 }
 
-export const VERSION: "0.1.0";
+export const VERSION: "0.1.1";
 
 export interface TokenFileOptions extends Omit<ClientOptions, "token"> {}
 
@@ -17,6 +17,7 @@ export interface WorkspaceMount {
 
 export interface CreateSandboxOptions {
   template?: string;
+  environmentRevision?: string;
   ttlSeconds?: number;
   standbyAfterSeconds?: number;
   allowInternet?: boolean;

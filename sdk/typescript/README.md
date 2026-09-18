@@ -20,6 +20,16 @@ const result = await sandbox.run(["python3", "-c", "print(6 * 7)"]);
 console.log(result.stdoutText);
 ```
 
+Use a prequalified immutable environment without creating or resolving a
+template alias:
+
+```ts
+await using sandbox = await client.createSandbox({
+  environmentRevision: "envr_0123456789abcdef01234567",
+  ttlSeconds: 900,
+});
+```
+
 The SDK accepts command argument arrays, not shell strings. It never retries a
 command or file write because an interrupted transport can leave the outcome
 indeterminate.

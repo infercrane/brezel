@@ -96,13 +96,20 @@ class BrezelClient:
     def create_sandbox(
         self,
         *,
-        template: str = "base",
+        template: str | None = None,
+        environment_revision: str | None = None,
         ttl_seconds: int = 3600,
         standby_after_seconds: int = 0,
         allow_internet: bool = False,
         workspace_mounts: Sequence[Mapping[str, str]] = (),
     ) -> Sandbox:
-        revision = self._ensure_environment(template)
+        if template is not None and environment_revision is not None:
+            raise ValueError("template and environment_revision are mutually exclusive")
+        revision = (
+            self._ensure_environment(template if template is not None else "base")
+            if environment_revision is None
+            else _validate_environment_revision(environment_revision)
+        )
         lifecycle: dict[str, Any] = {"expires_after_seconds": ttl_seconds}
         if standby_after_seconds > 0:
             lifecycle.update(
@@ -406,6 +413,12 @@ def _validate_token(value: str) -> str:
 def _validate_project(value: str) -> str:
     if not value or "\n" in value or "\r" in value:
         raise ValueError("project is required")
+    return value
+
+
+def _validate_environment_revision(value: str) -> str:
+    if not isinstance(value, str) or not value or not _safe_name(value):
+        raise ValueError("environment_revision must be one non-empty resource ID")
     return value
 
 

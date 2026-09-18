@@ -1,6 +1,6 @@
 {
   "name": "@infercrane/brezel",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript SDK for stateful, self-hosted Brezel agent sandboxes",
   "type": "module",
   "sideEffects": false,

@@ -131,6 +131,21 @@ class ClientTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             BrezelClient(token="a-service-token-that-is-long-enough", base_url="http://example.com")
 
+    def test_immutable_environment_revision_skips_environment_mutation(self) -> None:
+        sandbox = self.client.create_sandbox(environment_revision="envr_exact")
+        try:
+            environment_requests = [request for request in Handler.requests if request[1] == "/v1/environments"]
+            self.assertEqual(environment_requests, [])
+            create = next(
+                request for request in Handler.requests
+                if request[0] == "POST" and request[1] == "/v1/sandboxes"
+            )
+            self.assertEqual(json.loads(create[3])["environment_revision"], "envr_exact")
+            with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+                self.client.create_sandbox(template="base", environment_revision="envr_exact")
+        finally:
+            sandbox.delete()
+
     def test_indeterminate_stream_fails_closed(self) -> None:
         original = self.client._open
 

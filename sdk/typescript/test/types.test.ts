@@ -11,7 +11,7 @@ const client = new BrezelClient({
 });
 
 async function exercisePublicTypes(): Promise<void> {
-  const sandbox = await client.createSandbox({ ttlSeconds: 900 });
+  const sandbox = await client.createSandbox({ environmentRevision: "envr_exact", ttlSeconds: 900 });
   const events: CommandEvent[] = [];
   try {
     const result = await sandbox.run(["python3", "-c", "print(42)"], {
@@ -30,4 +30,4 @@ async function exercisePublicTypes(): Promise<void> {
 }
 
 void exercisePublicTypes;
-VERSION satisfies "0.1.0";
+VERSION satisfies "0.1.1";

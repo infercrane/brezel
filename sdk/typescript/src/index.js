@@ -5,7 +5,7 @@ const MAX_JSON_BYTES = 4 << 20;
 const MAX_EVENT_BYTES = 2 << 20;
 const MAX_OUTPUT_BYTES = 64 << 20;
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 export class BrezelError extends Error {
   constructor(message, { code = "", status = 0, cause } = {}) {
@@ -50,13 +50,19 @@ export class BrezelClient {
   }
 
   async createSandbox({
-    template = "base",
+    template,
+    environmentRevision,
     ttlSeconds = 3600,
     standbyAfterSeconds = 0,
     allowInternet = false,
     workspaceMounts = [],
   } = {}) {
-    const revision = await this.#ensureEnvironment(template);
+    if (template !== undefined && environmentRevision !== undefined) {
+      throw new TypeError("template and environmentRevision are mutually exclusive");
+    }
+    const revision = environmentRevision === undefined
+      ? await this.#ensureEnvironment(template ?? "base")
+      : validateEnvironmentRevision(environmentRevision);
     const lifecycle = { expires_after_seconds: ttlSeconds };
     if (standbyAfterSeconds > 0) {
       Object.assign(lifecycle, {
@@ -381,6 +387,13 @@ function validateToken(value) {
 function validateProject(value) {
   if (typeof value !== "string" || !value || /[\r\n]/.test(value)) {
     throw new TypeError("project is required");
+  }
+  return value;
+}
+
+function validateEnvironmentRevision(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
+    throw new TypeError("environmentRevision must be one non-empty resource ID");
   }
   return value;
 }

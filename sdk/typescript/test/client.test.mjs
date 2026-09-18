@@ -74,6 +74,23 @@ test("supports create, run, files, preview, standby, resume, and cleanup", async
   assert.ok(requests.every((request) => request.headers["x-project-id"] === "project-a"));
 });
 
+test("creates from an immutable environment revision without mutating environments", async () => {
+  const client = new BrezelClient({ token: "a-service-token-that-is-long-enough", baseUrl, project: "project-a" });
+  const sandbox = await client.createSandbox({ environmentRevision: "envr_exact" });
+  try {
+    const environmentRequests = requests.filter((request) => request.url === "/v1/environments");
+    assert.equal(environmentRequests.length, 0);
+    const create = requests.find((request) => request.method === "POST" && request.url === "/v1/sandboxes");
+    assert.equal(JSON.parse(create.body.toString("utf8")).environment_revision, "envr_exact");
+    await assert.rejects(
+      () => client.createSandbox({ template: "base", environmentRevision: "envr_exact" }),
+      /mutually exclusive/,
+    );
+  } finally {
+    await sandbox.delete();
+  }
+});
+
 test("reads only private token files and rejects remote plaintext", () => {
   const directory = mkdtempSync(join(tmpdir(), "brezel-sdk-"));
   try {
