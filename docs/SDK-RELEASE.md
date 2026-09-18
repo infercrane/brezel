@@ -27,7 +27,7 @@ npm run check && npm run typecheck && npm test
 npm publish
 ```
 
-Then configure npm's trusted publisher with npm CLI 11.5.1 or newer:
+Then configure npm's trusted publisher with npm CLI 11.15.0 or newer:
 
 ```console
 npm trust github @infercrane/brezel \
