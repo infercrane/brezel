@@ -315,8 +315,12 @@ run_engine_fast_path_qualification() {
   cli exec "$ACTIVE_SANDBOX_ID" /bin/true >/dev/null
   expected_swap_mib=$BREZEL_GUEST_SWAP_MIB
   if [ "$expected_swap_mib" -gt 0 ]; then
+    # mkswap reserves a few KiB for its header, so /proc/swaps reports slightly
+    # less usable space than the backing file size. Bound that expected loss to
+    # at most 1 MiB instead of truncating 2047.996 MiB to 2047 and rejecting a
+    # correctly activated 2048 MiB swap file.
     if ! cli exec "$ACTIVE_SANDBOX_ID" /bin/sh -c \
-      'actual=$(awk '\''NR > 1 { kib += $3 } END { print int(kib / 1024) }'\'' /proc/swaps); [ "$actual" -ge "$1" ]' \
+      'actual_kib=$(awk '\''NR > 1 { kib += $3 } END { print int(kib) }'\'' /proc/swaps); minimum_kib=$((($1 * 1024) - 1024)); [ "$actual_kib" -ge "$minimum_kib" ]' \
       brezel-swap-qualification "$expected_swap_mib" >/dev/null; then
       echo "engine fast-path qualification did not observe the configured ${expected_swap_mib} MiB guest swap reserve" >&2
       return 1
