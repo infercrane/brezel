@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -110,8 +111,12 @@ func (f *fakeBackend) SetTimeout(_ context.Context, id string, ttlSeconds int64)
 
 func testConfig(t *testing.T, target int) Config {
 	t.Helper()
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatalf("restrict test state directory: %v", err)
+	}
 	return Config{
-		Path:             t.TempDir() + "/warm.db",
+		Path:             filepath.Join(directory, "warm.db"),
 		Target:           target,
 		TemplateID:       "base",
 		SlotTTL:          10 * time.Minute,

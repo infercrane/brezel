@@ -120,8 +120,14 @@ func openDatabase(path string) (*sql.DB, *os.File, error) {
 		return nil, nil, fmt.Errorf("create warm pool state directory: %w", err)
 	}
 	info, err := os.Lstat(directory)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 {
-		return nil, nil, errors.New("warm pool state directory must be a private real directory")
+	if err != nil {
+		return nil, nil, fmt.Errorf("inspect warm pool state directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("warm pool state path must be a real directory (mode %s)", info.Mode())
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return nil, nil, fmt.Errorf("warm pool state directory must not be group- or world-writable (mode %04o)", info.Mode().Perm())
 	}
 	if info, err := os.Lstat(path); err == nil {
 		if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
