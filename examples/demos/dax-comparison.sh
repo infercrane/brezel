@@ -32,7 +32,9 @@ else
   muted=
 fi
 
-printf '%sComputeSDK DAX%s  %slower is better%s\n\n' "$bold" "$reset" "$muted" "$reset"
+if [[ ${BREZEL_DEMO_COMPACT_HEADING:-false} != true ]]; then
+  printf '%sComputeSDK DAX%s  %slower is better%s\n\n' "$bold" "$reset" "$muted" "$reset"
+fi
 printf '  Isorun    %s█████████████%s                         32.09s\n' "$muted" "$reset"
 printf '  %sBrezel †%s  %s███████████████%s                       %s36.27s%s\n' \
   "$bold" "$reset" "$green" "$reset" "$green" "$reset"
