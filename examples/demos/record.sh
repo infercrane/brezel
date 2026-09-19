@@ -6,7 +6,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 OUTPUT_DIR="$ROOT/assets/demos"
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/brezel-recordings.XXXXXX")
 
-for command_name in asciinema agg ffmpeg; do
+for command_name in asciinema agg ffmpeg jq; do
   command -v "$command_name" >/dev/null 2>&1 || {
     printf 'missing recording dependency: %s\n' "$command_name" >&2
     exit 1
@@ -29,8 +29,10 @@ done
 mkdir -p "$OUTPUT_DIR"
 
 export BREZEL_CLI=${BREZEL_CLI:-$ROOT/bin/brezel}
-export BREZEL_DEMO_DELAY=${BREZEL_DEMO_DELAY:-0.55}
-export BREZEL_DEMO_LONG_DELAY=${BREZEL_DEMO_LONG_DELAY:-1.35}
+export BREZEL_DEMO_DELAY=${BREZEL_DEMO_DELAY:-0.65}
+export BREZEL_DEMO_LONG_DELAY=${BREZEL_DEMO_LONG_DELAY:-1.75}
+export BREZEL_DEMO_KEY_DELAY=${BREZEL_DEMO_KEY_DELAY:-0.014}
+export BREZEL_DEMO_CAPTION_DELAY=${BREZEL_DEMO_CAPTION_DELAY:-0.022}
 
 asciinema rec \
   --overwrite \

@@ -5,6 +5,8 @@ set -euo pipefail
 BREZEL_CLI=${BREZEL_CLI:-brezel}
 DEMO_DELAY=${BREZEL_DEMO_DELAY:-0.8}
 DEMO_LONG_DELAY=${BREZEL_DEMO_LONG_DELAY:-1.8}
+DEMO_KEY_DELAY=${BREZEL_DEMO_KEY_DELAY:-0.016}
+DEMO_CAPTION_DELAY=${BREZEL_DEMO_CAPTION_DELAY:-0.026}
 
 if [[ -t 1 ]]; then
   RESET=$'\033[0m'
@@ -61,8 +63,28 @@ demo_title() {
   demo_long_pause
 }
 
+demo_type() {
+  local text=$1
+  local delay=$2
+  local index
+  for ((index = 0; index < ${#text}; index++)); do
+    printf '%s' "${text:index:1}"
+    sleep "$delay"
+  done
+}
+
+demo_scene() {
+  demo_clear
+  printf '%s#%s ' "$GOLD" "$RESET"
+  demo_type "$1" "$DEMO_CAPTION_DELAY"
+  printf '\n%s%s%s\n' "$MUTED" "$2" "$RESET"
+  demo_long_pause
+}
+
 demo_prompt() {
-  printf '\n%s$%s %s%s%s\n' "$GREEN" "$RESET" "$BOLD" "$1" "$RESET"
+  printf '\n%s$%s %s' "$GREEN" "$RESET" "$BOLD"
+  demo_type "$1" "$DEMO_KEY_DELAY"
+  printf '%s\n' "$RESET"
   demo_pause
 }
 
