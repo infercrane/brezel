@@ -107,4 +107,3 @@ demo_cleanup() {
     DEMO_WORKSPACE=
   fi
 }
-

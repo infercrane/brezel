@@ -30,4 +30,3 @@ HTML
     exit 2
     ;;
 esac
-
