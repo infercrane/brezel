@@ -41,4 +41,3 @@ printf '  Daytona   %s███████████████████�
 printf '  Modal     %s███████████████████████████████████████%s 94.59s\n' "$muted" "$reset"
 printf '\n%s† Five-run self-run median on the exact public workload.%s\n' "$gold" "$reset"
 printf '%s  Independent ComputeSDK verification is pending in PR #791.%s\n' "$muted" "$reset"
-
