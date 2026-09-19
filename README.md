@@ -25,6 +25,12 @@ Firecracker, network namespaces, guest credentials, or cleanup. Workspaces
 survive disposable compute, previews put results in front of a human, and agent
 commands never run on your laptop.
 
+<p align="center">
+  <img src="assets/demos/brezel-tour.gif" width="900" alt="A real Brezel terminal session creating an isolated sandbox, running an agent task, replacing the compute, and recovering the durable result">
+</p>
+
+<p align="center"><sub>Recorded against a qualified Firecracker host with the maintained <a href="examples/demos/readme-tour.sh">demo script</a>. Identifiers are shortened; commands and results are real.</sub></p>
+
 ```console
 $ brezel new --ttl 900 --standby-after 120
 sbx_01...    running
@@ -108,6 +114,27 @@ Run the maintained version of this walkthrough with
   explicit terminal states, restart reconciliation, and verified cleanup.
 - **Reproducible evidence.** Pinned inputs, conformance tests, destructive host
   qualification, raw benchmark attempts, and signed lifecycle receipts.
+
+## Competitive on useful work
+
+The ComputeSDK DAX benchmark runs a cold clone, dependency install, and full
+OpenCode typecheck inside a fresh sandbox. Lower is better.
+
+| Provider | Total | Evidence |
+| --- | ---: | --- |
+| Isorun | 32.09 s | Public leaderboard |
+| **Brezel** | **36.27 s** | Five-run self-run median, exact upstream workload |
+| Blaxel | 46.44 s | Public leaderboard |
+| Daytona | 75.70 s | Public leaderboard |
+| Modal | 94.59 s | Public leaderboard |
+
+Snapshot: 2026-09-19, using the public leaderboard's 2026-09-18 run. Brezel's
+number is retained, checksummed named-host evidence, but it is not an official
+rank. Independent inclusion is pending in
+[ComputeSDK PR #791](https://github.com/computesdk/computesdk/pull/791). See the
+[source snapshot](examples/demos/dax-comparison-2026-09-19.json), the
+[reproducible terminal comparison](examples/demos/dax-comparison.sh), and the
+[benchmark claim boundary](docs/BENCHMARKING.md) before quoting these numbers.
 
 ## One small interface
 

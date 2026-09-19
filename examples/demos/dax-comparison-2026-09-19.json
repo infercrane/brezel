@@ -1,0 +1,21 @@
+{
+  "workload": "ComputeSDK DAX",
+  "metric": "total duration in seconds; lower is better",
+  "public_source": "https://www.computesdk.com/benchmarks/sandboxes/dax/",
+  "public_last_run": "2026-09-18",
+  "retrieved_at": "2026-09-19",
+  "providers": [
+    { "name": "Isorun", "seconds": 32.09, "status": "public leaderboard" },
+    { "name": "Blaxel", "seconds": 46.44, "status": "public leaderboard" },
+    { "name": "Daytona", "seconds": 75.70, "status": "public leaderboard" },
+    { "name": "Modal", "seconds": 94.59, "status": "public leaderboard" }
+  ],
+  "brezel": {
+    "seconds": 36.272,
+    "attempts": 5,
+    "status": "self-run exact upstream workload; not an official leaderboard result",
+    "evidence": "evidence/qualification-2026-09-18/scaleway-fr-par-2-1d32867/computesdk-dax-upstream-runner.json",
+    "pull_request": "https://github.com/computesdk/computesdk/pull/791"
+  }
+}
+

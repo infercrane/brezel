@@ -1,4 +1,4 @@
-.PHONY: build check fmt-check shell-syntax verify-engine-patches test test-integrations test-race vet qualify-single-host qualify-rootdevice-reflink benchmark-single-host benchmark-dax-local
+.PHONY: build check demo-record fmt-check shell-syntax verify-engine-patches test test-integrations test-race vet qualify-single-host qualify-rootdevice-reflink benchmark-single-host benchmark-dax-local
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf dev)
 REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || printf unknown)
@@ -13,6 +13,9 @@ build:
 	go build $(GO_BUILD_FLAGS) -o bin/brezel-bench ./cmd/brezel-bench
 	go build $(GO_BUILD_FLAGS) -o bin/brezel-bench-compare ./cmd/brezel-bench-compare
 	go build $(GO_BUILD_FLAGS) -o bin/brezel ./cmd/brezel
+
+demo-record: build
+	./examples/demos/record.sh
 
 fmt-check:
 	@files="$$(find cmd internal spec deploy -type f -name '*.go' -print)"; \
