@@ -147,7 +147,7 @@ func TestCreateIncludesNonEmptyNetworkRules(t *testing.T) {
 		if len(allowOut) != 1 || allowOut[0] != "api.example.com:443" {
 			t.Fatalf("allowOut = %#v", allowOut)
 		}
-		if len(denyOut) != 1 || denyOut[0] != "169.254.169.254/32" {
+		if len(denyOut) != 2 || denyOut[0] != "169.254.169.254/32" || denyOut[1] != allOutboundTrafficCIDR {
 			t.Fatalf("denyOut = %#v", denyOut)
 		}
 		if _, exists := body["volumeMounts"]; exists {
@@ -170,6 +170,39 @@ func TestCreateIncludesNonEmptyNetworkRules(t *testing.T) {
 			AllowOut: []string{"api.example.com:443"},
 			DenyOut:  []string{"169.254.169.254/32"},
 		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateAddsEngineDenyAllSentinelForOfflineDomainAllowlist(t *testing.T) {
+	guest := newHealthyGuestServer(t, nil)
+	defer guest.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		network := body["network"].(map[string]any)
+		denyOut := network["denyOut"].([]any)
+		if len(denyOut) != 1 || denyOut[0] != allOutboundTrafficCIDR {
+			t.Fatalf("offline connector denyOut = %#v", denyOut)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"sandboxID":"upstream-1","envdAccessToken":"guest-token"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "test-key", server.Client(), WithGuestURLTemplate(guest.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Create(context.Background(), backend.CreateRequest{
+		LocalSandboxID: "sbx-1", ProjectID: "project-a", TemplateID: "template-1",
+		Lifecycle: domain.Lifecycle{ExpiresAfterSeconds: 3600},
+		Network:   domain.NetworkPolicy{AllowInternet: false, AllowOut: []string{"sandbox.example.com"}},
 	})
 	if err != nil {
 		t.Fatal(err)
