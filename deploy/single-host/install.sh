@@ -971,9 +971,35 @@ chmod 600 "$TOKEN_TMP"
 mv -f -- "$TOKEN_TMP" "$SECRETS_DIR/service.token"
 SERVICE_TOKEN_SHA256=$(sha256sum "$SECRETS_DIR/service.token" | awk '{print $1}')
 ACCESS_POLICY_TMP=$(mktemp "$SECRETS_DIR/.access-policy.XXXXXX")
-cat > "$ACCESS_POLICY_TMP" <<EOF
+if [ -s "$SECRETS_DIR/access-policy.json" ]; then
+  # Reconciliation owns the built-in operator entry but preserves separately
+  # provisioned project principals. Reinstalling the host must not silently
+  # revoke a control-plane credential. The API validates the complete policy
+  # before it starts and therefore still fails closed on malformed additions.
+  jq --arg digest "$SERVICE_TOKEN_SHA256" '
+    if .version != 1 or (.principals | type) != "array" then
+      error("unsupported Brezel access policy")
+    else
+      .principals = (
+        [.principals[] | select(.name != "single-host-operator")] +
+        [{
+          "name":"single-host-operator",
+          "token_sha256":$digest,
+          "projects":[
+            "brezel-default",
+            "brezel-conformance",
+            "brezel-conformance-isolation",
+            "brezel-benchmark"
+          ]
+        }]
+      )
+    end
+  ' "$SECRETS_DIR/access-policy.json" > "$ACCESS_POLICY_TMP"
+else
+  cat > "$ACCESS_POLICY_TMP" <<EOF
 {"version":1,"principals":[{"name":"single-host-operator","token_sha256":"$SERVICE_TOKEN_SHA256","projects":["brezel-default","brezel-conformance","brezel-conformance-isolation","brezel-benchmark"]}]}
 EOF
+fi
 chmod 600 "$ACCESS_POLICY_TMP"
 mv -f -- "$ACCESS_POLICY_TMP" "$SECRETS_DIR/access-policy.json"
 BREZEL_IMAGE=$(docker build -q \

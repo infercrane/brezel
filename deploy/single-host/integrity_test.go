@@ -2996,3 +2996,39 @@ func TestWorkspaceMountUsesHostNamespacePath(t *testing.T) {
 		t.Fatalf("engine override contains a container-only workspace mount target")
 	}
 }
+
+func TestInstallerPreservesProvisionedAccessPolicyPrincipals(t *testing.T) {
+	data, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installer := string(data)
+	for _, required := range []string{
+		`if [ -s "$SECRETS_DIR/access-policy.json" ]`,
+		`select(.name != "single-host-operator")`,
+		`[.principals[]`,
+		`"name":"single-host-operator"`,
+	} {
+		if !strings.Contains(installer, required) {
+			t.Fatalf("installer is missing access-policy reconciliation invariant %q", required)
+		}
+	}
+}
+
+func TestSingleHostComposeCanEnableConnectorBroker(t *testing.T) {
+	data, err := os.ReadFile("compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compose := string(data)
+	for _, required := range []string{
+		`BREZEL_CONNECTOR_GATEWAY_URL: ${BREZEL_CONNECTOR_GATEWAY_URL:-}`,
+		`BREZEL_SECRET_FILE_DIR: ${BREZEL_SECRET_FILE_DIR:-}`,
+	} {
+		if !strings.Contains(compose, required) {
+			t.Fatalf("single-host compose is missing optional connector setting %q", required)
+		}
+	}
+}

@@ -73,6 +73,11 @@ services:
       BREZEL_WARM_POOL_ALLOW_INTERNET: ${BREZEL_WARM_POOL_ALLOW_INTERNET:-false}
       BREZEL_WARM_POOL_STRICT: ${BREZEL_WARM_POOL_STRICT:-true}
       BREZEL_ACCESS_POLICY_FILE: /run/brezel-secrets/access-policy.json
+      # Both values are empty by default. Set them together to enable the
+      # endpoint-bound connector broker. Credential files remain in the
+      # existing protected, read-only secret mount and never enter a guest.
+      BREZEL_CONNECTOR_GATEWAY_URL: ${BREZEL_CONNECTOR_GATEWAY_URL:-}
+      BREZEL_SECRET_FILE_DIR: ${BREZEL_SECRET_FILE_DIR:-}
       # The API ignores this raw token when a policy is configured; the
       # conformance binary in the same image reads it for authenticated probes.
       BREZEL_SERVICE_TOKEN_FILE: /run/brezel-secrets/service.token
