@@ -35,6 +35,8 @@ type Client struct {
 	diagnostics       telemetry.CommandDiagnosticObserver
 }
 
+const allOutboundTrafficCIDR = "0.0.0.0/0"
+
 type Option func(*Client) error
 
 // WithGuestURLTemplate configures the guest-agent ingress used by self-hosted or test
@@ -182,8 +184,17 @@ func (c *Client) Create(ctx context.Context, in backend.CreateRequest) (backend.
 	if len(in.Network.AllowOut) > 0 {
 		network["allowOut"] = in.Network.AllowOut
 	}
-	if len(in.Network.DenyOut) > 0 {
-		network["denyOut"] = in.Network.DenyOut
+	denyOut := append([]string(nil), in.Network.DenyOut...)
+	// The engine interprets domain allowOut entries as a whitelist only when
+	// denyOut also contains its ALL_TRAFFIC sentinel. Brezel's policy already
+	// says AllowInternet=false, so materialize that semantic requirement at the
+	// substrate boundary instead of making callers know an engine-specific
+	// constant. Preserve narrower explicit denies for auditability.
+	if len(in.Network.AllowOut) > 0 && !in.Network.AllowInternet && !containsString(denyOut, allOutboundTrafficCIDR) {
+		denyOut = append(denyOut, allOutboundTrafficCIDR)
+	}
+	if len(denyOut) > 0 {
+		network["denyOut"] = denyOut
 	}
 	body := map[string]any{
 		"templateID":            in.TemplateID,
@@ -227,6 +238,15 @@ func (c *Client) Create(ctx context.Context, in backend.CreateRequest) (backend.
 	c.rememberGuestCredential(out)
 	c.rememberPortCredential(out)
 	return backend.Sandbox{ID: out.SandboxID, State: domain.SandboxRunning}, nil
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) Inspect(ctx context.Context, id string) (backend.Sandbox, error) {
