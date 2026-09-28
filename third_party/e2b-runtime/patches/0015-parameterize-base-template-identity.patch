@@ -5,7 +5,7 @@ index ae2e52dff..af28384ea 100644
 @@ -19,7 +19,16 @@ async function main() {
    const cpuCount = integer('BASE_TEMPLATE_CPU_COUNT', 2, 1, 32)
    const memoryMB = integer('BASE_TEMPLATE_MEMORY_MB', 512, 128, 262144)
-   const minFreeDiskMb = integer('BASE_TEMPLATE_MIN_FREE_DISK_MB', 512, 0, 25600)
+   const minFreeDiskMb = integer('BASE_TEMPLATE_MIN_FREE_DISK_MB', 512, 0, 131072)
 +  const swapMB = integer('BASE_TEMPLATE_SWAP_MB', 0, 0, 65536)
 +  if (swapMB > memoryMB) {
 +    throw new Error('BASE_TEMPLATE_SWAP_MB cannot exceed BASE_TEMPLATE_MEMORY_MB')

@@ -1,0 +1,71 @@
+{
+  "schema_version": "1",
+  "generated_at": "2026-09-28T20:29:00Z",
+  "status": "public_self_run",
+  "claim_boundary": "Exact upstream workload executed from the InferCrane public fork. This is reproducible comparative evidence, not an upstream-maintainer leaderboard result.",
+  "benchmark": {
+    "repository": "https://github.com/infercrane/hpc-sandbox-benchmarks",
+    "source_revision": "5c15af8f3fd7c9b8ddc6a28627009082fde40b70",
+    "suite": "cpu-node",
+    "metric": "node_web_tooling_runs_per_s",
+    "direction": "higher_is_better",
+    "target": {
+      "vcpus": 4,
+      "memory_gib": 8,
+      "minimum_disk_gib": 40
+    },
+    "replicate_sandboxes": 5,
+    "trials_per_sandbox": 2
+  },
+  "serialized_control": {
+    "run_id": "36474607700",
+    "url": "https://github.com/infercrane/hpc-sandbox-benchmarks/actions/runs/36474607700",
+    "replicates": [
+      { "index": 0, "samples": [29.56, 29.84], "median": 29.70 },
+      { "index": 1, "samples": [29.60, 29.81], "median": 29.705 },
+      { "index": 2, "samples": [29.64, 29.64], "median": 29.64 },
+      { "index": 3, "samples": [29.79, 29.85], "median": 29.82 },
+      { "index": 4, "samples": [29.52, 29.76], "median": 29.64 }
+    ],
+    "median_of_sandbox_medians": 29.70,
+    "cluster_bootstrap_95": [29.64, 29.82]
+  },
+  "isolated_candidate": {
+    "profile": "deploy/profiles/starsling-hpc-isolated-8c16t.env",
+    "run_id": "36477721355",
+    "url": "https://github.com/infercrane/hpc-sandbox-benchmarks/actions/runs/36477721355",
+    "replicates": [
+      { "index": 0, "samples": [29.77, 30.35], "median": 30.06 },
+      { "index": 1, "samples": [29.71, 30.09], "median": 29.90 },
+      { "index": 2, "samples": [29.82, 29.98], "median": 29.90 },
+      { "index": 3, "samples": [30.04, 30.13], "median": 30.085 },
+      { "index": 4, "samples": [29.68, 29.81], "median": 29.745 }
+    ],
+    "median_of_sandbox_medians": 29.90,
+    "cluster_bootstrap_95": [29.745, 30.085],
+    "relative_change_vs_control_percent": 0.6734,
+    "exact_cluster_comparison_vs_control": {
+      "method": "exact",
+      "p_value": 0.015873015873015872,
+      "separated_at_95_percent": true
+    },
+    "runtime_observation": {
+      "vcpu_allowed_host_cpus": [[1], [2], [3], [5]],
+      "vcpu_migrations_observed_per_thread": [0, 1, 1, 1],
+      "baseline_vcpu_migration_range_per_thread": [1854, 2292]
+    }
+  },
+  "published_reference": {
+    "dataset_run_id": "36333582902",
+    "leader": "boat",
+    "leader_median": 28.24,
+    "leader_cluster_bootstrap_95": [25.175, 28.98],
+    "brezel_relative_advantage_percent": 5.8782,
+    "exact_cluster_comparison": {
+      "method": "exact",
+      "p_value": 0.007936507936507936,
+      "separated_at_95_percent": true
+    },
+    "interpretation": "If admitted to the referenced leaderboard dataset under the same methodology, the Brezel self-run result ranks first for Node.js web tooling."
+  }
+}

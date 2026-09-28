@@ -115,7 +115,32 @@ Run the maintained version of this walkthrough with
 - **Reproducible evidence.** Pinned inputs, conformance tests, destructive host
   qualification, raw benchmark attempts, and signed lifecycle receipts.
 
-## Competitive on useful work
+## Performance, with receipts
+
+The public [Starsling HPC sandbox benchmark](https://github.com/starslingdev/hpc-sandbox-benchmarks)
+runs the same Node.js build-and-test loop inside a fresh 4-vCPU, 8-GiB
+sandbox. Brezel completed **29.90 runs/s** across five independent sandboxes
+with two trials each. That is **5.9% above** the published leader in the
+referenced dataset.
+
+<p align="center">
+  <a href="https://github.com/infercrane/hpc-sandbox-benchmarks/actions/runs/36477721355"><img src="assets/benchmarks/starsling-node-ranking.svg" width="900" alt="Brezel measured 29.90 Node.js web-tooling runs per second on the public Starsling workload, which would rank first against the published comparison dataset"></a>
+</p>
+
+This is a public, reproducible self-run of the exact upstream workload—not an
+upstream-maintainer leaderboard result. The run, raw artifacts, host shape,
+per-sandbox samples, cluster bootstrap interval, and comparison boundary are
+retained in the [public workflow](https://github.com/infercrane/hpc-sandbox-benchmarks/actions/runs/36477721355)
+and [evidence summary](evidence/hpc-sandbox-benchmarks/scaleway-2026-09-28/cpu-node-isolated-summary.json).
+
+The same campaign found and fixed a separate filesystem metadata bottleneck.
+In a three-sandbox public A/B, hardlink throughput increased from **3.33 to
+16.63 ops/s (4.99×)** while the medians for random and sequential read/write
+stayed within +0.2% to +0.6% of baseline. That candidate would rank fifth—not
+first—on the published hardlink field. See the [candidate run](https://github.com/infercrane/hpc-sandbox-benchmarks/actions/runs/36490565359)
+and [disk evidence](evidence/hpc-sandbox-benchmarks/scaleway-2026-09-28/disk-ext4-dir-index-summary.json).
+
+### ComputeSDK DAX
 
 The ComputeSDK DAX benchmark runs a cold clone, dependency install, and full
 OpenCode typecheck inside a fresh sandbox. Lower is better.
@@ -130,11 +155,12 @@ OpenCode typecheck inside a fresh sandbox. Lower is better.
 
 Snapshot: 2026-09-19, using the public leaderboard's 2026-09-18 run. Brezel's
 number is retained, checksummed named-host evidence, but it is not an official
-rank. Independent inclusion is pending in
-[ComputeSDK PR #791](https://github.com/computesdk/computesdk/pull/791). See the
-[source snapshot](examples/demos/dax-comparison-2026-09-19.json), the
-[reproducible terminal comparison](examples/demos/dax-comparison.sh), and the
-[benchmark claim boundary](docs/BENCHMARKING.md) before quoting these numbers.
+rank. The Brezel provider was merged upstream in
+[ComputeSDK PR #791](https://github.com/computesdk/computesdk/pull/791); public
+leaderboard admission remains independent. See the [source
+snapshot](examples/demos/dax-comparison-2026-09-19.json), the [reproducible
+terminal comparison](examples/demos/dax-comparison.sh), and the [benchmark
+claim boundary](docs/BENCHMARKING.md) before quoting these numbers.
 
 ## One small interface
 

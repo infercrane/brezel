@@ -1,0 +1,89 @@
+{
+  "schema_version": "1",
+  "generated_at": "2026-09-28T22:55:30Z",
+  "status": "public_self_run",
+  "claim_boundary": "Exact upstream workload executed from the InferCrane public fork. This is reproducible comparative evidence, not an upstream-maintainer leaderboard result.",
+  "benchmark": {
+    "repository": "https://github.com/infercrane/hpc-sandbox-benchmarks",
+    "source_revision": "5c15af8f3fd7c9b8ddc6a28627009082fde40b70",
+    "suite": "disk",
+    "target": {
+      "vcpus": 4,
+      "memory_gib": 8,
+      "minimum_disk_gib": 40
+    },
+    "replicate_sandboxes": 3,
+    "trials_per_sandbox": 2
+  },
+  "baseline": {
+    "profile": "deploy/profiles/starsling-hpc-isolated-8c16t.env",
+    "ext4_dir_index": false,
+    "run_id": "36482131182",
+    "url": "https://github.com/infercrane/hpc-sandbox-benchmarks/actions/runs/36482131182"
+  },
+  "candidate": {
+    "profile": "deploy/profiles/starsling-hpc-isolated-8c16t.env",
+    "ext4_dir_index": true,
+    "environment_revision": "envr_2f66c6909daf9514352a7e0c",
+    "run_id": "36490565359",
+    "url": "https://github.com/infercrane/hpc-sandbox-benchmarks/actions/runs/36490565359"
+  },
+  "rejected_nbd4_screen": {
+    "profile": "deploy/profiles/starsling-hpc-isolated-8c16t-nbd4.env",
+    "run_id": "36488006502",
+    "url": "https://github.com/infercrane/hpc-sandbox-benchmarks/actions/runs/36488006502",
+    "replicate_sandboxes": 1,
+    "trials_per_sandbox": 2,
+    "relative_change_range_percent": [0.0, 1.69],
+    "decision": "rejected_as_immaterial"
+  },
+  "metrics": {
+    "hardlink_bogo_ops_per_s": {
+      "direction": "higher_is_better",
+      "baseline_sandbox_medians": [3.245, 3.33, 3.35],
+      "baseline_median_of_sandbox_medians": 3.33,
+      "candidate_sandbox_medians": [16.59, 16.655, 16.63],
+      "candidate_median_of_sandbox_medians": 16.63,
+      "relative_change_percent": 399.3994,
+      "speedup": 4.994,
+      "cluster_bootstrap_ranges_do_not_overlap": true
+    },
+    "random_read_mb_per_s": {
+      "direction": "higher_is_better",
+      "baseline_sandbox_medians": [430.964736, 427.29472, 428.343296],
+      "baseline_median_of_sandbox_medians": 428.343296,
+      "candidate_sandbox_medians": [429.91616, 429.391872, 429.91616],
+      "candidate_median_of_sandbox_medians": 429.91616,
+      "relative_change_percent": 0.3672
+    },
+    "random_write_mb_per_s": {
+      "direction": "higher_is_better",
+      "baseline_sandbox_medians": [1698.168832, 1702.363136, 1693.974528],
+      "baseline_median_of_sandbox_medians": 1698.168832,
+      "candidate_sandbox_medians": [1698.168832, 1707.606016, 1707.081728],
+      "candidate_median_of_sandbox_medians": 1707.081728,
+      "relative_change_percent": 0.5249
+    },
+    "sequential_read_mb_per_s": {
+      "direction": "higher_is_better",
+      "baseline_sandbox_medians": [6636.961792, 6716.12928, 6634.86464],
+      "baseline_median_of_sandbox_medians": 6636.961792,
+      "candidate_sandbox_medians": [6733.955072, 6637.48608, 6649.020416],
+      "candidate_median_of_sandbox_medians": 6649.020416,
+      "relative_change_percent": 0.1817
+    },
+    "sequential_write_mb_per_s": {
+      "direction": "higher_is_better",
+      "baseline_sandbox_medians": [3058.696192, 3059.744768, 3052.929024],
+      "baseline_median_of_sandbox_medians": 3058.696192,
+      "candidate_sandbox_medians": [3049.259008, 3075.473408, 3112.173568],
+      "candidate_median_of_sandbox_medians": 3075.473408,
+      "relative_change_percent": 0.5485
+    }
+  },
+  "published_reference": {
+    "dataset_run_id": "36333582902",
+    "hardlink_rank_if_admitted": 5,
+    "interpretation": "The ext4 directory-index candidate removes a material metadata bottleneck without regressing the four reported bulk-I/O medians. It does not lead the published hardlink field."
+  }
+}
