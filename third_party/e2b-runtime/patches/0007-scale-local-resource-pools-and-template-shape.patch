@@ -23,7 +23,7 @@ index 476946e7d..f9cfc347f 100644
 +  }
 +  const cpuCount = integer('BASE_TEMPLATE_CPU_COUNT', 2, 1, 32)
 +  const memoryMB = integer('BASE_TEMPLATE_MEMORY_MB', 512, 128, 262144)
-+  const minFreeDiskMb = integer('BASE_TEMPLATE_MIN_FREE_DISK_MB', 512, 0, 25600)
++  const minFreeDiskMb = integer('BASE_TEMPLATE_MIN_FREE_DISK_MB', 512, 0, 131072)
 +  const sourceImage = process.env.BASE_TEMPLATE_SOURCE_IMAGE ?? 'e2bdev/base'
 +
 +  async function request(path, init = {}) {
