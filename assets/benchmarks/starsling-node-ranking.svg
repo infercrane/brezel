@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" role="img" aria-labelledby="title description">
+  <title id="title">Brezel Starsling Node.js web-tooling benchmark ranking</title>
+  <desc id="description">Brezel measured 29.90 runs per second in a public self-run of the exact Starsling Node.js web-tooling workload, ahead of the published comparison field led by Boat at 28.24.</desc>
+  <defs>
+    <style>
+      .surface { fill: #F8FAFC; }
+      .panel { fill: #FFFFFF; stroke: #E2E8F0; }
+      .title { fill: #0F172A; font: 700 38px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: -0.8px; }
+      .subtitle { fill: #475569; font: 500 18px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill: #0F172A; font: 650 17px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .value { fill: #0F172A; font: 700 17px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-variant-numeric: tabular-nums; }
+      .muted { fill: #64748B; font: 500 14px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .track { fill: #E2E8F0; }
+      .bar { fill: #94A3B8; }
+      .winner { fill: #16A77A; }
+      .badge { fill: #DDF8EF; stroke: #8BE4C8; }
+      .badge-text { fill: #087A58; font: 750 14px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0.3px; }
+      .rule { stroke: #E2E8F0; }
+      @media (prefers-color-scheme: dark) {
+        .surface { fill: #07111F; }
+        .panel { fill: #0F1B2D; stroke: #25334A; }
+        .title, .label, .value { fill: #F8FAFC; }
+        .subtitle { fill: #CBD5E1; }
+        .muted { fill: #94A3B8; }
+        .track { fill: #25334A; }
+        .bar { fill: #64748B; }
+        .winner { fill: #33D6A6; }
+        .badge { fill: #123D34; stroke: #287E68; }
+        .badge-text { fill: #8CF1D2; }
+        .rule { stroke: #25334A; }
+      }
+    </style>
+  </defs>
+
+  <rect class="surface" width="1200" height="700" rx="24"/>
+  <rect class="panel" x="28" y="28" width="1144" height="644" rx="18"/>
+
+  <text class="title" x="78" y="94">Useful work, measured.</text>
+  <text class="subtitle" x="78" y="130">Node.js web-tooling throughput · exact Starsling workload · 4 vCPU / 8 GiB</text>
+  <rect class="badge" x="942" y="67" width="164" height="42" rx="21"/>
+  <text class="badge-text" x="1024" y="93" text-anchor="middle">WOULD RANK #1</text>
+
+  <line class="rule" x1="78" y1="158" x2="1122" y2="158"/>
+
+  <g transform="translate(0 2)">
+    <text class="label" x="78" y="205">Brezel</text>
+    <rect class="track" x="250" y="185" width="710" height="26" rx="6"/>
+    <rect class="winner" x="250" y="185" width="708" height="26" rx="6"/>
+    <text class="value" x="990" y="205">29.90</text>
+
+    <text class="label" x="78" y="265">Boat</text>
+    <rect class="track" x="250" y="245" width="710" height="26" rx="6"/>
+    <rect class="bar" x="250" y="245" width="668" height="26" rx="6"/>
+    <text class="value" x="990" y="265">28.24</text>
+
+    <text class="label" x="78" y="325">Namespace</text>
+    <rect class="track" x="250" y="305" width="710" height="26" rx="6"/>
+    <rect class="bar" x="250" y="305" width="629" height="26" rx="6"/>
+    <text class="value" x="990" y="325">26.56</text>
+
+    <text class="label" x="78" y="385">Daytona</text>
+    <rect class="track" x="250" y="365" width="710" height="26" rx="6"/>
+    <rect class="bar" x="250" y="365" width="467" height="26" rx="6"/>
+    <text class="value" x="990" y="385">19.73</text>
+
+    <text class="label" x="78" y="445">Blaxel</text>
+    <rect class="track" x="250" y="425" width="710" height="26" rx="6"/>
+    <rect class="bar" x="250" y="425" width="462" height="26" rx="6"/>
+    <text class="value" x="990" y="445">19.53</text>
+
+    <text class="label" x="78" y="505">Modal VM</text>
+    <rect class="track" x="250" y="485" width="710" height="26" rx="6"/>
+    <rect class="bar" x="250" y="485" width="374" height="26" rx="6"/>
+    <text class="value" x="990" y="505">15.82</text>
+
+    <text class="label" x="78" y="565">E2B</text>
+    <rect class="track" x="250" y="545" width="710" height="26" rx="6"/>
+    <rect class="bar" x="250" y="545" width="235" height="26" rx="6"/>
+    <text class="value" x="990" y="565">9.91</text>
+  </g>
+
+  <line class="rule" x1="78" y1="606" x2="1122" y2="606"/>
+  <text class="muted" x="78" y="638">Brezel: public self-run, 5 sandboxes × 2 trials, median of sandbox medians.</text>
+  <text class="muted" x="1122" y="638" text-anchor="end">Published comparison snapshot · 2026-09-28</text>
+</svg>

@@ -3,11 +3,13 @@ package singlehost
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -78,6 +80,92 @@ func TestPinnedEngineAndPatchIntegrity(t *testing.T) {
 		if got := hex.EncodeToString(digest[:]); got != values[lockKey] {
 			t.Fatalf("%s digest = %s, lock = %s", name, got, values[lockKey])
 		}
+	}
+}
+
+func TestStarslingIsolatedProfileMatchesEightCoreHost(t *testing.T) {
+	profilePath := filepath.Join("..", "profiles", "starsling-hpc-isolated-8c16t.env")
+	if _, err := os.Stat(profilePath); err != nil {
+		t.Fatal(err)
+	}
+	meminfo := filepath.Join(t.TempDir(), "meminfo")
+	if err := os.WriteFile(meminfo, []byte("MemTotal: 67108864 kB\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	topology := filepath.Join(t.TempDir(), "cpu-topology.csv")
+	var rows strings.Builder
+	for cpu := 0; cpu < 16; cpu++ {
+		fmt.Fprintf(&rows, "%d,0,0,%d\n", cpu, cpu%8)
+	}
+	if err := os.WriteFile(topology, []byte(rows.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", "-c", `BREZEL_TEST_MEMINFO_FILE="$2" BREZEL_TEST_CPU_COUNT=16 BREZEL_TEST_CPU_TOPOLOGY_FILE="$3" BREZEL_TEST_AVAILABLE_DISK_KIB=209715200 exec sh ../profiles/run.sh "$1" sh capacity-contract.sh plan`, "profile", profilePath, meminfo, topology)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("isolated Starsling profile rejected: %v: %s", err, output)
+	}
+	for _, want := range []string{
+		`"guest_vcpus":4`,
+		`"max_active_sandboxes":1`,
+		`"exclusive_cpu_topology":true`,
+		`"firecracker_cpuset_cpus":"1,2,3,4,5,9,10,11,12,13"`,
+		`"firecracker_vcpu_cpus":"1,2,3,5"`,
+		`"firecracker_vmm_cpus":"4,12"`,
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("isolated Starsling profile result omitted %s: %s", want, output)
+		}
+	}
+}
+
+func TestStarslingIsolatedNBD4ProfileChangesOnlyStorageQueueCount(t *testing.T) {
+	baselinePath := filepath.Join("..", "profiles", "starsling-hpc-isolated-8c16t.env")
+	candidatePath := filepath.Join("..", "profiles", "starsling-hpc-isolated-8c16t-nbd4.env")
+	for _, profilePath := range []string{baselinePath, candidatePath} {
+		if _, err := os.Stat(profilePath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	meminfo := filepath.Join(t.TempDir(), "meminfo")
+	if err := os.WriteFile(meminfo, []byte("MemTotal: 67108864 kB\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	topology := filepath.Join(t.TempDir(), "cpu-topology.csv")
+	var rows strings.Builder
+	for cpu := 0; cpu < 16; cpu++ {
+		fmt.Fprintf(&rows, "%d,0,0,%d\n", cpu, cpu%8)
+	}
+	if err := os.WriteFile(topology, []byte(rows.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(profilePath string) (string, map[string]any) {
+		t.Helper()
+		command := exec.Command("sh", "-c", `BREZEL_TEST_MEMINFO_FILE="$2" BREZEL_TEST_CPU_COUNT=16 BREZEL_TEST_CPU_TOPOLOGY_FILE="$3" BREZEL_TEST_AVAILABLE_DISK_KIB=209715200 exec sh ../profiles/run.sh "$1" sh capacity-contract.sh plan`, "profile", profilePath, meminfo, topology)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Starsling profile rejected: %v: %s", err, output)
+		}
+		var plan map[string]any
+		if err := json.Unmarshal(output, &plan); err != nil {
+			t.Fatalf("Starsling profile returned a malformed plan: %v: %s", err, output)
+		}
+		return string(output), plan
+	}
+
+	baseline, baselinePlan := run(baselinePath)
+	candidate, candidatePlan := run(candidatePath)
+	if !strings.Contains(baseline, `"nbd_connections_per_device":1`) {
+		t.Fatalf("baseline does not retain one NBD queue: %s", baseline)
+	}
+	if !strings.Contains(candidate, `"nbd_connections_per_device":4`) {
+		t.Fatalf("candidate does not select four NBD queues: %s", candidate)
+	}
+	delete(baselinePlan, "nbd_connections_per_device")
+	delete(candidatePlan, "nbd_connections_per_device")
+	if !reflect.DeepEqual(baselinePlan, candidatePlan) {
+		t.Fatalf("storage A/B profiles differ beyond NBD queue count\nbaseline=%s\ncandidate=%s", baseline, candidate)
 	}
 }
 
