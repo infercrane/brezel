@@ -18,6 +18,23 @@ if (!sourceImage.includes('@sha256:')) {
   throw new Error('BROWSER_SOURCE_IMAGE must be digest-pinned');
 }
 
+function integer(name, fallback, minimum, maximum) {
+  const raw = process.env[name] ?? String(fallback);
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`${name} must be an integer`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+const cpuCount = integer('BROWSER_TEMPLATE_CPU_COUNT', 4, 1, 32);
+const memoryMB = integer('BROWSER_TEMPLATE_MEMORY_MB', 8192, 128, 262144);
+// The engine expands the root device to the sandbox's requested disk shape at
+// allocation time. This value is build-time free space, not the advertised
+// runtime disk capacity.
+const minFreeDiskMb = integer('BROWSER_TEMPLATE_MIN_FREE_DISK_MB', 512, 0, 131072);
+
 const templateName =
   process.env.BROWSER_TEMPLATE_NAME ?? `brezel_browser_${sourceCommit.slice(0, 8)}`;
 if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(templateName)) {
@@ -51,9 +68,9 @@ const build = await request('/v3/templates', {
   method: 'POST',
   body: JSON.stringify({
     name: templateName,
-    cpuCount: 4,
-    memoryMB: 8192,
-    minFreeDiskMb: 40960,
+    cpuCount,
+    memoryMB,
+    minFreeDiskMb,
   }),
 });
 
@@ -105,6 +122,7 @@ process.stdout.write(
     reference: `${build.templateID}:${build.buildID}`,
     source_commit: sourceCommit,
     source_image: sourceImage,
+    template_shape: { cpu_count: cpuCount, memory_mb: memoryMB, min_free_disk_mb: minFreeDiskMb },
     template_id: build.templateID,
   })}\n`,
 );

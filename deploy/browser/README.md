@@ -13,7 +13,9 @@ template; it does not claim arbitrary per-request OCI builds.
 `build-template.mjs` creates that immutable template through the private engine
 API. It requires a full source commit and a digest-pinned source image, embeds
 the launcher and CDP relay from the same checkout, and prints the resulting
-`templateID:buildID` reference for the environment record.
+`templateID:buildID` reference for the environment record. Build-time free
+space is deliberately separate from the disk shape requested when a sandbox
+is allocated; the engine expands the root device for the latter.
 
 Chromium runs as an unprivileged user: `pwuser` when the launcher is invoked by
 root while assembling an image, or the current sandbox user during ordinary
