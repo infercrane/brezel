@@ -1,6 +1,6 @@
 # ADR 0012: path-bound browser computer connections
 
-Status: accepted for implementation; production qualification pending
+Status: accepted; named-host qualification completed 2026-10-04
 
 ## Context
 
@@ -24,10 +24,13 @@ direction. The node relay receives a generation-bound, single-operation
 the life of the connection. Substrate routing credentials stay on the private
 node-to-engine hop.
 
-Browser profile data may live in an explicitly mounted durable workspace.
-Stopping compute does not promise to preserve a live Chromium process, open
-sockets, timers, or external sessions; a resumed sandbox starts a new browser
-against the durable profile.
+Browser profile data may live in an explicitly mounted durable workspace. The
+live profile runs on the microVM-local filesystem because Chromium's
+lock-heavy active profile stalled when placed directly on the workspace block
+path. An explicit browser stop atomically checkpoints the quiesced profile to
+the workspace; a start restores it locally. Stopping compute does not promise
+to preserve a live Chromium process, open sockets, timers, external sessions,
+or changes since the last explicit browser stop.
 
 ## Consequences
 
@@ -42,6 +45,11 @@ against the durable profile.
   microVM, not a shared container, is the isolation boundary.
 - Managed residential proxies, CAPTCHA bypass, fingerprint spoofing, session
   recording, and arbitrary public TCP tunnels are outside this decision.
-- The feature remains a developer preview until named-host tests cover lease
-  expiry, wrong-path rejection, byte and time bounds, restart, cleanup, and a
-  real Playwright workflow.
+- Named-host qualification covers a real public Playwright workflow, exact-path
+  rejection, generic-preview WebSocket rejection, lease expiry, per-sandbox
+  lease overload, API loss, private-node loss and recovery, cross-microVM
+  profile persistence, and confirmed cleanup. The cumulative byte bound is
+  covered by the same bridge's deterministic unit test rather than transferring
+  256 MiB through the production edge merely to trigger the limit. The
+  sanitized receipt is under
+  `evidence/browser-computer-qualification-2026-10-04/`.
