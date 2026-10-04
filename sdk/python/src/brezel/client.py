@@ -53,6 +53,16 @@ class CommandResult:
         return self.stderr.decode("utf-8", errors="replace")
 
 
+@dataclass(frozen=True)
+class BrowserConnection:
+    """Short-lived, path-bound Chrome DevTools connection."""
+
+    websocket_url: str
+    expires_at: str
+    browser: str = ""
+    protocol_version: str = ""
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
         return None
@@ -359,6 +369,26 @@ class Sandbox:
         )
         path = _required_string(payload, "path")
         return urllib.parse.urljoin(self.client.base_url + "/", path.lstrip("/"))
+
+    def browser_connect(self, *, port: int = 9222, ttl_seconds: int = 180) -> BrowserConnection:
+        if not 1 <= port <= 65535:
+            raise ValueError("port must be between 1 and 65535")
+        if not 30 <= ttl_seconds <= 300:
+            raise ValueError("ttl_seconds must be between 30 and 300")
+        payload = self.client._json(
+            "POST",
+            f"/v1/sandboxes/{_segment(self.id)}/browser-leases",
+            body={"port": port, "ttl_seconds": ttl_seconds},
+        )
+        path = _required_string(payload, "connect_path")
+        parsed = urllib.parse.urlsplit(urllib.parse.urljoin(self.client.base_url + "/", path.lstrip("/")))
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        return BrowserConnection(
+            websocket_url=urllib.parse.urlunsplit((scheme, parsed.netloc, parsed.path, "", "")),
+            expires_at=_required_string(payload, "expires_at"),
+            browser=str(payload.get("browser") or ""),
+            protocol_version=str(payload.get("protocol_version") or ""),
+        )
 
     def pause(self) -> dict[str, Any]:
         return self._lifecycle("pause")

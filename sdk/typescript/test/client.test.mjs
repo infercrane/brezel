@@ -38,6 +38,13 @@ before(async () => {
       send(200, "stored", "application/octet-stream");
     } else if (request.method === "POST" && request.url === "/v1/sandboxes/sbx_test/ports/3000/leases") {
       send(201, { path: "/p/opaque/", expires_at: "2026-09-17T00:00:00Z" });
+    } else if (request.method === "POST" && request.url === "/v1/sandboxes/sbx_test/browser-leases") {
+      send(201, {
+        connect_path: "/b/browser-token/devtools/browser/browser-id",
+        expires_at: "2026-09-17T00:00:00Z",
+        browser: "Chrome/140",
+        protocol_version: "1.3",
+      });
     } else if (request.method === "POST" && request.url.endsWith(":pause")) {
       send(202, { resource: { id: "sbx_test", state: "standby" }, operation: { state: "succeeded" } });
     } else if (request.method === "POST" && request.url.endsWith(":resume")) {
@@ -67,6 +74,12 @@ test("supports create, run, files, preview, standby, resume, and cleanup", async
   assert.equal((await sandbox.writeFile("/workspace/value.txt", "stored")).size, 6);
   assert.equal(Buffer.from(await sandbox.readFile("/workspace/value.txt")).toString(), "stored");
   assert.equal(await sandbox.preview(3000), `${baseUrl}/p/opaque/`);
+  assert.deepEqual(await sandbox.browserConnect(), {
+    websocketUrl: `${baseUrl.replace("http:", "ws:")}/b/browser-token/devtools/browser/browser-id`,
+    expiresAt: "2026-09-17T00:00:00Z",
+    browser: "Chrome/140",
+    protocolVersion: "1.3",
+  });
   assert.equal((await sandbox.pause()).state, "standby");
   assert.equal((await sandbox.resume()).state, "running");
   assert.equal((await sandbox.delete()).state, "deleted");

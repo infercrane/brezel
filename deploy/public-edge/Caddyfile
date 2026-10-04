@@ -64,6 +64,10 @@
 		method POST
 		path_regexp lease ^/v1/sandboxes/[^/]+/ports/[0-9]+/leases$
 	}
+	@sandbox_browser_lease {
+		method POST
+		path_regexp browser_lease ^/v1/sandboxes/[^/]+/browser-leases$
+	}
 	@sandbox_checkpoint {
 		method POST
 		path_regexp sandbox_checkpoint ^/v1/sandboxes/[^/]+/checkpoints$
@@ -87,6 +91,10 @@
 	@preview {
 		method GET HEAD POST PUT PATCH DELETE OPTIONS
 		path /p/*
+	}
+	@browser_tunnel {
+		method GET
+		path /b/*
 	}
 
 	handle @readiness {
@@ -138,6 +146,9 @@
 	handle @sandbox_lease {
 		reverse_proxy 127.0.0.1:8080
 	}
+	handle @sandbox_browser_lease {
+		reverse_proxy 127.0.0.1:8080
+	}
 	handle @sandbox_checkpoint {
 		reverse_proxy 127.0.0.1:8080
 	}
@@ -154,6 +165,9 @@
 		reverse_proxy 127.0.0.1:8080
 	}
 	handle @preview {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @browser_tunnel {
 		reverse_proxy 127.0.0.1:8080
 	}
 	handle {

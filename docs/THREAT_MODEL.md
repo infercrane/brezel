@@ -260,8 +260,16 @@ lease until the upstream response closes. The proxy removes substrate routing
 headers, guest-management credentials, cookies, referrers, origins, untrusted
 forwarding headers, hop-by-hop response headers, and `Set-Cookie`. Absolute-path
 redirects remain inside the opaque preview prefix. Preview lease paths must be
-redacted from access logs. WebSockets and raw TCP are rejected until they have a
-separate bounded tunnel and revocation design.
+redacted from access logs. Generic WebSockets and raw TCP are rejected.
+
+The browser-computer preview has its own bounded tunnel and revocation design.
+The API discovers and pins one exact Chromium browser CDP path, uses a distinct
+opaque lease, limits lifetime to five minutes, and caps traffic at 256 MiB per
+direction. The node capability is single-operation and generation-bound. A
+browser profile stored in a durable workspace may contain cookies and tokens;
+operators must treat that workspace and any checkpoint derived from it as
+secret-bearing state. Live browser processes and sockets are not durable-state
+semantics. See [ADR 0012](decisions/0012-browser-computer-connection.md).
 
 ### Developer-preview connector limits
 

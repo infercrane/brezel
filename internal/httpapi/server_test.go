@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/conformance"
 	"github.com/infercrane/brezel/internal/connector"
@@ -45,6 +47,7 @@ type testBackend struct {
 	lastCommand                backend.CommandRequest
 	lastPort                   uint16
 	lastPortPath               string
+	browserWebSocketURL        string
 	files                      map[string][]byte
 	sandboxMounts              map[string][]backend.WorkspaceMount
 	workspaceFiles             map[string][]byte
@@ -405,6 +408,17 @@ func (b *testBackend) RoundTripPort(_ context.Context, id string, port uint16, r
 	}
 	b.lastPort = port
 	b.lastPortPath = request.URL.RequestURI()
+	if request.URL.Path == "/json/version" && b.browserWebSocketURL != "" {
+		body, _ := json.Marshal(map[string]string{
+			"Browser": "Chrome/140", "Protocol-Version": "1.3",
+			"webSocketDebuggerUrl": b.browserWebSocketURL,
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	}
 	body := "preview-ok"
 	if data := b.readFileLocked(id, "/workspace/brezel-conformance.txt"); data != nil {
 		body = string(data)
@@ -414,6 +428,24 @@ func (b *testBackend) RoundTripPort(_ context.Context, id string, port uint16, r
 		Header:     http.Header{"Content-Type": []string{"text/plain"}, "X-Access-Token": []string{"must-not-leak"}},
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}, nil
+}
+
+func (b *testBackend) OpenPortWebSocket(ctx context.Context, id string, port uint16, path string) (*websocket.Conn, *http.Response, error) {
+	b.mu.Lock()
+	endpoint := b.browserWebSocketURL
+	_, exists := b.sandboxes[id]
+	b.mu.Unlock()
+	if !exists {
+		return nil, nil, backend.ErrNotFound
+	}
+	if err := b.ValidatePort(port); err != nil {
+		return nil, nil, err
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || endpoint == "" || parsed.Path != path {
+		return nil, nil, errors.New("browser WebSocket path mismatch")
+	}
+	return websocket.Dial(ctx, endpoint, nil)
 }
 
 type harness struct {
@@ -431,6 +463,10 @@ func newHarness(t *testing.T) harness {
 }
 
 func newHarnessWithServiceOptions(t *testing.T, options ...service.Option) harness {
+	return newHarnessWithBackend(t, nil, options...)
+}
+
+func newHarnessWithBackend(t *testing.T, configure func(*testBackend), options ...service.Option) harness {
 	t.Helper()
 	directory := t.TempDir()
 	if err := os.Chmod(directory, 0o700); err != nil {
@@ -447,6 +483,9 @@ func newHarnessWithServiceOptions(t *testing.T, options ...service.Option) harne
 	}
 	signer, _ := receipt.NewSigner(private)
 	be := newTestBackend()
+	if configure != nil {
+		configure(be)
+	}
 	svc, err := service.New(st, be, signer, options...)
 	if err != nil {
 		t.Fatal(err)
@@ -1379,6 +1418,72 @@ func TestAuthenticatedPortLeaseProxiesWithoutServiceCredential(t *testing.T) {
 	websocketResponse.Body.Close()
 	if websocketResponse.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("WebSocket preview returned %d", websocketResponse.StatusCode)
+	}
+}
+
+func TestBrowserLeasePinsExactCDPPathAndBridgesMessages(t *testing.T) {
+	browser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/devtools/browser/browser-id" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		messageType, payload, err := conn.Read(r.Context())
+		if err == nil {
+			_ = conn.Write(r.Context(), messageType, payload)
+		}
+	}))
+	defer browser.Close()
+
+	h := newHarnessWithBackend(t, func(be *testBackend) {
+		be.capabilities.AuthenticatedWebSockets = true
+		be.browserWebSocketURL = "ws" + strings.TrimPrefix(browser.URL, "http") + "/devtools/browser/browser-id"
+	})
+	defer h.close()
+	environment := createEnvironment(t, h, "project-a")
+	sandboxID, _ := createSandbox(t, h, "project-a", environment, "sandbox-browser-0001", nil)
+	response, payload := request(t, h, http.MethodPost, "/v1/sandboxes/"+sandboxID+"/browser-leases", "project-a", "", map[string]any{"port": 9222, "ttl_seconds": 60})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create browser lease: %d %#v", response.StatusCode, payload)
+	}
+	connectPath := payload["connect_path"].(string)
+	if !strings.HasSuffix(connectPath, "/devtools/browser/browser-id") {
+		t.Fatalf("connect path = %q", connectPath)
+	}
+
+	wrongPath := strings.TrimSuffix(connectPath, "browser-id") + "other-id"
+	wrongResponse, err := h.server.Client().Get(h.server.URL + wrongPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongResponse.Body.Close()
+	if wrongResponse.StatusCode != http.StatusBadRequest && wrongResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("wrong browser path returned %d", wrongResponse.StatusCode)
+	}
+
+	connectURL := "ws" + strings.TrimPrefix(h.server.URL, "http") + connectPath
+	conn, _, err := websocket.Dial(context.Background(), connectURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"id":1,"method":"Browser.getVersion"}`)); err != nil {
+		t.Fatal(err)
+	}
+	messageType, echoed, err := conn.Read(ctx)
+	if err != nil || messageType != websocket.MessageText || string(echoed) != `{"id":1,"method":"Browser.getVersion"}` {
+		t.Fatalf("browser echo = type %v body %q err %v", messageType, echoed, err)
+	}
+
+	previewResponse, previewPayload := request(t, h, http.MethodGet, strings.Replace(connectPath, "/b/", "/p/", 1), "", "", nil)
+	if previewResponse.StatusCode == http.StatusOK {
+		t.Fatalf("browser lease crossed into generic preview: %#v", previewPayload)
 	}
 }
 

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sandbox.runtime.dev/spec/v1alpha1/browser-lease.schema.json",
+  "title": "Brezel Browser Connection Lease",
+  "description": "A short-lived, path-pinned WebSocket lease for one Chromium browser-level CDP endpoint.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sandboxId", "port", "ttlSeconds"],
+  "properties": {
+    "sandboxId": {
+      "type": "string",
+      "pattern": "^sbx_[a-f0-9]{32}$"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 65535,
+      "not": { "const": 49983 }
+    },
+    "ttlSeconds": {
+      "type": "integer",
+      "minimum": 30,
+      "maximum": 300
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "brezel.browser-computer.named-host-qualification",
+  "completed_at": "2026-10-04T16:52:55Z",
+  "result": "pass",
+  "identity": {
+    "browser_artifact_source_commit": "7fa8447d0fded17c173eaa0d8bf9a40fe5eee82b",
+    "control_plane_source_commit": "a0ba9a8a9c7b9ed40106bc932c41d97e6c10dad6",
+    "engine_template_ref": "4evni17gmj8dnk772wvk:dca5ac63-cb3e-4394-bee4-a961b3eb8595",
+    "environment_revision": "envr_40dfb123094394b68fa73816",
+    "source_image": "mcr.microsoft.com/playwright:v1.55.0-noble@sha256:ffc33305f7b4b04057ae4a0caa70aad4fde87454fb403a1a22e7f931707dfcf9",
+    "browser": "Chrome/140.0.7339.16",
+    "cdp_protocol": "1.3"
+  },
+  "host": {
+    "provider": "Scaleway",
+    "product": "EM-B230E-NVME",
+    "cpu": "AMD EPYC 4345P",
+    "physical_cores": 8,
+    "memory_gb": 64
+  },
+  "guest_observed": {
+    "vcpus": 4,
+    "memory_kib": 8147608,
+    "root_bytes": 46640926720,
+    "root_available_bytes": 43553169408
+  },
+  "gates": {
+    "public_playwright_navigation": "pass",
+    "exact_path_rejection_http_status": 404,
+    "generic_preview_websocket_http_status": 501,
+    "lease_expiry_seconds": 30,
+    "expired_lease_rejected": true,
+    "api_restart_invalidated_old_lease": true,
+    "api_restart_new_lease_probe": "pass",
+    "accepted_concurrent_leases_per_sandbox": 16,
+    "next_lease_rejected": true,
+    "private_node_loss_failed_closed": true,
+    "private_node_recovery_probe": "pass",
+    "cross_microvm_profile_persistence": "pass",
+    "oci_root_launcher_smoke": "pass",
+    "oci_unprivileged_launcher_smoke": "pass",
+    "byte_budget_unit_test": "TestBridgeRejectsCumulativeBudgetOverrun",
+    "sandbox_cleanup_confirmed": true,
+    "workspace_cleanup_confirmed": true,
+    "active_sandboxes_after_cleanup": 0
+  },
+  "limitations": {
+    "inner_chromium_sandbox": "disabled; dedicated Firecracker microVM is the isolation boundary",
+    "profile_durability": "changes are durable only after an explicit browser stop",
+    "public_tcp_tunnel": false,
+    "stealth_or_captcha_features": false
+  }
+}

@@ -51,6 +51,7 @@ const (
 	CapabilityReadFile   CapabilityOperation = "file.read"
 	CapabilityWriteFile  CapabilityOperation = "file.write"
 	CapabilityProxyPort  CapabilityOperation = "port.proxy"
+	CapabilityWebSocket  CapabilityOperation = "port.websocket"
 )
 
 // CapabilityBounds are interpreted according to the capability's sole
@@ -433,6 +434,10 @@ func validateBounds(operation CapabilityOperation, bounds CapabilityBounds) erro
 		if bounds.Port == 0 || bounds.MaxDurationMillis == 0 || bounds.MaxRequestBytes == 0 || bounds.MaxResponseBytes == 0 {
 			return errors.New("port proxy requires port, duration, request, and response bounds")
 		}
+	case CapabilityWebSocket:
+		if bounds.Port == 0 || bounds.MaxDurationMillis == 0 || bounds.MaxRequestBytes == 0 || bounds.MaxResponseBytes == 0 {
+			return errors.New("WebSocket tunnel requires port, duration, request, and response bounds")
+		}
 	default:
 		return errors.New("unsupported operation")
 	}
@@ -441,7 +446,7 @@ func validateBounds(operation CapabilityOperation, bounds CapabilityBounds) erro
 
 func validOperation(operation CapabilityOperation) bool {
 	switch operation {
-	case CapabilityRunCommand, CapabilityReadFile, CapabilityWriteFile, CapabilityProxyPort:
+	case CapabilityRunCommand, CapabilityReadFile, CapabilityWriteFile, CapabilityProxyPort, CapabilityWebSocket:
 		return true
 	default:
 		return false

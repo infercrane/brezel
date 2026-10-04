@@ -3,6 +3,7 @@
 from .client import (
     BrezelClient,
     BrezelError,
+    BrowserConnection,
     CommandExitError,
     CommandResult,
     Sandbox,
@@ -14,6 +15,7 @@ __all__ = [
     "__version__",
     "BrezelClient",
     "BrezelError",
+    "BrowserConnection",
     "CommandExitError",
     "CommandResult",
     "Sandbox",

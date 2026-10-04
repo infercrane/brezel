@@ -56,6 +56,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == "/v1/sandboxes/sbx_test/ports/3000/leases":
             self._json(201, {"path": "/p/opaque/", "expires_at": "2026-09-17T00:00:00Z"})
+        elif self.path == "/v1/sandboxes/sbx_test/browser-leases":
+            self._json(201, {
+                "connect_path": "/b/browser-token/devtools/browser/browser-id",
+                "expires_at": "2026-09-17T00:00:00Z",
+                "browser": "Chrome/140",
+                "protocol_version": "1.3",
+            })
         elif self.path.endswith(":pause") or self.path.endswith(":resume"):
             state = "standby" if self.path.endswith(":pause") else "running"
             self._json(202, {"resource": {"id": "sbx_test", "state": state}, "operation": {"state": "succeeded"}})
@@ -111,6 +118,9 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(sandbox.write_file("/workspace/value.txt", b"stored")["size"], 6)
             self.assertEqual(sandbox.read_file("/workspace/value.txt"), b"stored")
             self.assertEqual(sandbox.preview(3000), self.base_url + "/p/opaque/")
+            browser = sandbox.browser_connect()
+            self.assertEqual(browser.websocket_url, self.base_url.replace("http:", "ws:") + "/b/browser-token/devtools/browser/browser-id")
+            self.assertEqual(browser.browser, "Chrome/140")
             self.assertEqual(sandbox.pause()["state"], "standby")
             self.assertEqual(sandbox.resume()["state"], "running")
         self.assertTrue(any(method == "DELETE" for method, _, _, _ in Handler.requests))

@@ -22,9 +22,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/coder/websocket"
 	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/nodeledger"
 	"github.com/infercrane/brezel/internal/telemetry"
+	"github.com/infercrane/brezel/internal/websocketbridge"
 )
 
 const (
@@ -36,6 +38,8 @@ const (
 	relayMaxFileDuration    = 5 * time.Minute
 	relayMaxProxyRequest    = 32 << 20
 	relayMaxProxyResponse   = 64 << 20
+	relayMaxWebSocketBytes  = 256 << 20
+	relayMaxWebSocketTime   = 5 * time.Minute
 	relayMaxURLBytes        = 16 << 10
 	relayReadyTimeout       = 2 * time.Second
 	relayDefaultMaxInFlight = 64
@@ -139,6 +143,7 @@ func (s *RelayServer) routes() {
 	s.mux.HandleFunc("GET /v1/files", s.readFile)
 	s.mux.HandleFunc("/v1/ports/{port}", s.proxyPort)
 	s.mux.HandleFunc("/v1/ports/{port}/{path...}", s.proxyPort)
+	s.mux.HandleFunc("GET /v1/websockets/{port}/{path...}", s.webSocket)
 }
 
 func (s *RelayServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +172,7 @@ func relayDataRequest(r *http.Request) bool {
 	if r == nil || r.URL == nil {
 		return false
 	}
-	return r.URL.Path == "/v1/commands" || r.URL.Path == "/v1/files" || strings.HasPrefix(r.URL.Path, "/v1/ports/")
+	return r.URL.Path == "/v1/commands" || r.URL.Path == "/v1/files" || strings.HasPrefix(r.URL.Path, "/v1/ports/") || strings.HasPrefix(r.URL.Path, "/v1/websockets/")
 }
 
 func (s *RelayServer) health(w http.ResponseWriter, _ *http.Request) {
@@ -520,6 +525,56 @@ func (s *RelayServer) proxyPort(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(responseBody)
 	}
+}
+
+func (s *RelayServer) webSocket(w http.ResponseWriter, r *http.Request) {
+	portValue, err := strconv.ParseUint(r.PathValue("port"), 10, 16)
+	path := "/" + strings.TrimPrefix(r.PathValue("path"), "/")
+	if err != nil || portValue == 0 || !validRelayWebSocketPath(path) || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		writeRelayError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	port := uint16(portValue)
+	authorization, ok := s.authenticate(w, r, CapabilityWebSocket)
+	if !ok {
+		return
+	}
+	if authorization.claims.Bounds.Port != uint32(port) ||
+		authorization.claims.Bounds.MaxDurationMillis < 1 || authorization.claims.Bounds.MaxDurationMillis > relayMaxWebSocketTime.Milliseconds() ||
+		authorization.claims.Bounds.MaxRequestBytes < 1 || authorization.claims.Bounds.MaxRequestBytes > relayMaxWebSocketBytes ||
+		authorization.claims.Bounds.MaxResponseBytes < 1 || authorization.claims.Bounds.MaxResponseBytes > relayMaxWebSocketBytes {
+		writeRelayError(w, http.StatusForbidden, "bounds_exceeded")
+		return
+	}
+	canonical, err := canonicalRelayJSON(relayWebSocketRequest{Path: path})
+	if err != nil {
+		writeRelayError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	digest, _ := RequestDigest(CapabilityWebSocket, canonical)
+	binding, release, authorized := s.authorize(w, authorization, digest)
+	if !authorized {
+		return
+	}
+	defer release()
+	defer binding.Revoke()
+	if err := s.dataPlane.ValidatePort(port); err != nil {
+		writeRelayError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(authorization.claims.Bounds.MaxDurationMillis)*time.Millisecond)
+	defer cancel()
+	upstream, _, err := s.dataPlane.OpenPortWebSocket(ctx, binding, port, path)
+	if err != nil {
+		writeRelayError(w, http.StatusBadGateway, "execution_failed")
+		return
+	}
+	downstream, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		_ = upstream.CloseNow()
+		return
+	}
+	_ = websocketbridge.Bridge(ctx, downstream, upstream, authorization.claims.Bounds.MaxRequestBytes, authorization.claims.Bounds.MaxResponseBytes)
 }
 
 type relayAuthorization struct {
