@@ -44,6 +44,7 @@ test-integrations:
 	node --check benchmarks/computesdk/dax-rehearsal.mjs
 	node --check benchmarks/computesdk/dax-paired-ab.mjs
 	node --check benchmarks/computesdk/burst-rehearsal.mjs
+	node --check deploy/browser/build-template.mjs
 	node --check deploy/browser/qualify.mjs
 
 test-race:
