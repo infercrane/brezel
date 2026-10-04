@@ -35,7 +35,10 @@ against the durable profile.
 - Browser automation clients can connect with Playwright or CDP without a
   public Chrome debugging port.
 - The first browser environment is a pinned Playwright/Chromium image and runs
-  Chromium as an unprivileged user with its sandbox enabled.
+  Chromium as an unprivileged user. Chromium's nested namespace sandbox is
+  disabled because the browser already runs inside a dedicated Firecracker
+  microVM and Ubuntu 24.04 otherwise requires a host-installed AppArmor policy.
+  The microVM, not a shared container, is the isolation boundary.
 - Managed residential proxies, CAPTCHA bypass, fingerprint spoofing, session
   recording, and arbitrary public TCP tunnels are outside this decision.
 - The feature remains a developer preview until named-host tests cover lease

@@ -7,12 +7,13 @@ FROM mcr.microsoft.com/playwright:v1.55.0-noble@sha256:ffc33305f7b4b04057ae4a0ca
 USER root
 
 COPY launch-browser.sh /usr/local/bin/brezel-browser
+COPY cdp-relay.py /usr/local/bin/brezel-cdp-relay
 
 RUN set -eux; \
     browser="$(find /ms-playwright -type f \( -path '*/chrome-linux/chrome' -o -path '*/chrome-linux64/chrome' \) -print -quit)"; \
     test -n "$browser"; \
     ln -s "$browser" /usr/local/bin/brezel-chromium; \
-    chmod 0755 /usr/local/bin/brezel-browser; \
+    chmod 0755 /usr/local/bin/brezel-browser /usr/local/bin/brezel-cdp-relay; \
     install -d -o pwuser -g pwuser -m 0700 /home/pwuser/.cache /workspace
 
 LABEL org.opencontainers.image.source="https://github.com/infercrane/brezel" \
