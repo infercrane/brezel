@@ -98,6 +98,18 @@ A preview lease is short-lived and checked against project, sandbox state,
 generation, and port. The shared-origin proxy strips cookies, referrers, and
 internal credentials. WebSockets are rejected.
 
+## Browser connections
+
+```text
+POST /v1/sandboxes/{sandbox_id}/browser-leases
+GET  /b/{opaque_lease}/devtools/browser/{browser_id}  (WebSocket only)
+```
+
+The create call accepts `port` and `ttl_seconds`. Brezel probes Chromium's
+internal `/json/version` endpoint and returns a `connect_path` pinned to the
+exact CDP browser path it observed. Leases last 30–300 seconds. They do not
+authorize HTTP, a second CDP target, or a generic WebSocket path.
+
 ## Internal node relay
 
 The node relay protocol is an internal, versioned implementation boundary, not
@@ -110,6 +122,7 @@ GET  /healthz
 GET  /readyz
 GET  /v1/routes/{opaque_route_id}
 POST /v1/commands
+GET  /v1/websockets/{port}/{path...}
 PUT  /v1/files?path={absolute_path}
 GET  /v1/files?path={absolute_path}
 ANY  /v1/ports/{port}/{application_path}

@@ -156,6 +156,7 @@ func (c *Client) Capabilities() backend.Capabilities {
 		CommandStreaming:         true,
 		FileReadWrite:            true,
 		AuthenticatedPorts:       true,
+		AuthenticatedWebSockets:  true,
 		DurableWorkspaces:        c.durableWorkspaces,
 	}
 }

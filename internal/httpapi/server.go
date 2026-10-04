@@ -12,25 +12,31 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/domain"
 	"github.com/infercrane/brezel/internal/service"
 	"github.com/infercrane/brezel/internal/telemetry"
+	"github.com/infercrane/brezel/internal/websocketbridge"
 )
 
 const (
-	maxBodyBytes        = 1 << 20
-	maxPortRequestBytes = 32 << 20
-	maxPortLeaseSeconds = 15 * 60
-	maxPortLeases       = 4096
-	maxSandboxLeases    = 16
-	defaultMaxInFlight  = 512
+	maxBodyBytes           = 1 << 20
+	maxPortRequestBytes    = 32 << 20
+	maxPortLeaseSeconds    = 15 * 60
+	maxPortLeases          = 4096
+	maxSandboxLeases       = 16
+	maxBrowserLeaseSeconds = 5 * 60
+	maxBrowserProbeBytes   = 1 << 20
+	maxBrowserTunnelBytes  = 256 << 20
+	defaultMaxInFlight     = 512
 )
 
 type Server struct {
@@ -64,10 +70,11 @@ func (token trustedOperatorToken) Authorize(candidate, _ string) (bool, bool) {
 }
 
 type portLease struct {
-	ProjectID string
-	SandboxID string
-	Port      uint16
-	ExpiresAt time.Time
+	ProjectID     string
+	SandboxID     string
+	Port          uint16
+	ExpiresAt     time.Time
+	WebSocketPath string
 }
 
 type Option func(*Server)
@@ -168,8 +175,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /v1/sandboxes/{id}/files", s.writeFile)
 	s.mux.HandleFunc("GET /v1/sandboxes/{id}/files", s.readFile)
 	s.mux.HandleFunc("POST /v1/sandboxes/{id}/ports/{port}/leases", s.createPortLease)
+	s.mux.HandleFunc("POST /v1/sandboxes/{id}/browser-leases", s.createBrowserLease)
 	s.mux.HandleFunc("/p/{token}", s.proxyPort)
 	s.mux.HandleFunc("/p/{token}/{path...}", s.proxyPort)
+	s.mux.HandleFunc("GET /b/{token}/{path...}", s.proxyBrowserWebSocket)
 	s.mux.HandleFunc("POST /v1/sandboxes/{action}", s.sandboxAction)
 	s.mux.HandleFunc("POST /v1/sandboxes/{id}/checkpoints", s.createCheckpoint)
 	s.mux.HandleFunc("DELETE /v1/checkpoints/{id}", s.deleteCheckpoint)
@@ -231,6 +240,9 @@ func (s *Server) proxyPort(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
 	s.leaseMu.Lock()
 	lease, ok := s.leases[token]
+	if ok && lease.WebSocketPath != "" {
+		ok = false
+	}
 	if ok && !s.now().Before(lease.ExpiresAt) {
 		delete(s.leases, token)
 		ok = false
@@ -268,6 +280,141 @@ func (s *Server) proxyPort(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(w, response.Body)
+}
+
+func (s *Server) createBrowserLease(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Port       uint16 `json:"port,omitempty"`
+		TTLSeconds int64  `json:"ttl_seconds,omitempty"`
+	}
+	if !decodeBody(w, r, &in) {
+		return
+	}
+	if in.Port == 0 {
+		in.Port = 9222
+	}
+	if in.TTLSeconds == 0 {
+		in.TTLSeconds = 180
+	}
+	if in.TTLSeconds < 30 || in.TTLSeconds > maxBrowserLeaseSeconds {
+		writeError(w, http.StatusBadRequest, "invalid_request", "ttl_seconds must be between 30 and 300")
+		return
+	}
+	if err := s.service.ValidateWebSocketAccess(r.Context(), project(r), r.PathValue("id"), in.Port); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	probe := &http.Request{
+		Method: http.MethodGet,
+		URL:    &url.URL{Path: "/json/version"},
+		Header: http.Header{"Accept": []string{"application/json"}},
+		Body:   http.NoBody,
+	}
+	probeCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	response, err := s.service.RoundTripPort(probeCtx, project(r), r.PathValue("id"), in.Port, probe)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		writeError(w, http.StatusBadGateway, "browser_unavailable", "browser debugging endpoint is not ready")
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxBrowserProbeBytes+1))
+	if err != nil || len(data) == 0 || len(data) > maxBrowserProbeBytes {
+		writeError(w, http.StatusBadGateway, "browser_unavailable", "browser debugging metadata is invalid")
+		return
+	}
+	var version struct {
+		Browser              string `json:"Browser"`
+		ProtocolVersion      string `json:"Protocol-Version"`
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.Unmarshal(data, &version); err != nil {
+		writeError(w, http.StatusBadGateway, "browser_unavailable", "browser debugging metadata is invalid")
+		return
+	}
+	endpoint, err := url.Parse(version.WebSocketDebuggerURL)
+	if err != nil || (endpoint.Scheme != "ws" && endpoint.Scheme != "wss") || endpoint.Host == "" || endpoint.RawQuery != "" || endpoint.Fragment != "" || !validBrowserWebSocketPath(endpoint.Path) {
+		writeError(w, http.StatusBadGateway, "browser_unavailable", "browser debugging endpoint is invalid")
+		return
+	}
+	token, err := opaqueToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not create browser lease")
+		return
+	}
+	expiresAt := s.now().Add(time.Duration(in.TTLSeconds) * time.Second)
+	s.leaseMu.Lock()
+	s.removeExpiredLeasesLocked()
+	if len(s.leases) >= maxPortLeases || s.sandboxLeaseCountLocked(project(r), r.PathValue("id")) >= maxSandboxLeases {
+		s.leaseMu.Unlock()
+		writeError(w, http.StatusTooManyRequests, "quota_exceeded", "active browser lease limit reached")
+		return
+	}
+	s.leases[token] = portLease{
+		ProjectID: project(r), SandboxID: r.PathValue("id"), Port: in.Port,
+		ExpiresAt: expiresAt, WebSocketPath: endpoint.Path,
+	}
+	s.leaseMu.Unlock()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"connect_path":     "/b/" + token + endpoint.Path,
+		"expires_at":       expiresAt,
+		"browser":          version.Browser,
+		"protocol_version": version.ProtocolVersion,
+	})
+}
+
+func validBrowserWebSocketPath(value string) bool {
+	const prefix = "/devtools/browser/"
+	if !strings.HasPrefix(value, prefix) || len(value) <= len(prefix) || len(value) > 1024 || strings.ContainsAny(value, "\x00\r\n?#") {
+		return false
+	}
+	for _, character := range strings.TrimPrefix(value, prefix) {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '-' && character != '_' && character != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) proxyBrowserWebSocket(w http.ResponseWriter, r *http.Request) {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") || r.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "browser endpoint requires a WebSocket upgrade")
+		return
+	}
+	token := r.PathValue("token")
+	rest := strings.TrimPrefix(r.URL.Path, "/b/"+token)
+	s.leaseMu.Lock()
+	lease, ok := s.leases[token]
+	if ok && !s.now().Before(lease.ExpiresAt) {
+		delete(s.leases, token)
+		ok = false
+	}
+	if ok && (lease.WebSocketPath == "" || rest != lease.WebSocketPath) {
+		ok = false
+	}
+	s.leaseMu.Unlock()
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "browser lease not found, expired, or path-mismatched")
+		return
+	}
+	ctx, cancel := context.WithDeadline(r.Context(), lease.ExpiresAt)
+	defer cancel()
+	upstream, release, err := s.service.OpenPortWebSocket(ctx, lease.ProjectID, lease.SandboxID, lease.Port, lease.WebSocketPath)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	defer release()
+	downstream, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		_ = upstream.CloseNow()
+		return
+	}
+	_ = websocketbridge.Bridge(ctx, downstream, upstream, maxBrowserTunnelBytes, maxBrowserTunnelBytes)
 }
 
 func (s *Server) sandboxLeaseCountLocked(projectID, sandboxID string) int {
@@ -910,7 +1057,7 @@ func (s *Server) serveMetrics(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" || strings.HasPrefix(r.URL.Path, "/p/") || (s.connector != nil && strings.HasPrefix(r.URL.Path, "/connector/")) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" || strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/b/") || (s.connector != nil && strings.HasPrefix(r.URL.Path, "/connector/")) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -945,7 +1092,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		if strings.HasPrefix(r.URL.Path, "/p/") {
+		if strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/b/") {
 			next.ServeHTTP(w, r)
 			return
 		}

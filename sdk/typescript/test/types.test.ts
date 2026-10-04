@@ -22,6 +22,8 @@ async function exercisePublicTypes(): Promise<void> {
     await sandbox.writeFile("/workspace/value.txt", "42\n");
     await sandbox.readFile("/workspace/value.txt");
     await sandbox.preview(3000);
+    const browser = await sandbox.browserConnect();
+    browser.websocketUrl.toUpperCase();
   } catch (error) {
     if (error instanceof CommandExitError) error.result.exitCode.toFixed();
   } finally {

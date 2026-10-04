@@ -29,6 +29,7 @@ shared-multitenant, or public-production system.
 | Commands | Streamed output, bounded response, deadline, and confirmed exit status; an interrupted stream reconnects to the same process through a bounded generation-bound cursor journal and never reruns the command; unavailable or evicted suffixes fail closed |
 | Files | Authenticated guest path, absolute-path validation, bounded upload/download |
 | HTTP previews | Opaque 30–900 second lease, state recheck, credential stripping; no WebSockets |
+| Browser computer preview | Path-bound CDP WebSocket lease, 30–300 second lifetime, 256 MiB directional bounds; named-host qualification pending |
 | Workspaces | Host-backed, durable across sandbox replacement, single writer |
 | Checkpoints | Filesystem capture and restore with lineage and deletion protection |
 | Automatic standby | Activity and grace deadlines, operation fencing, restart recovery |
@@ -50,7 +51,7 @@ and engine credentials are read from protected files.
 ## Not implemented
 
 - arbitrary OCI environment builds
-- interactive PTY, SSH, desktop, or WebSocket transport
+- interactive PTY, SSH, desktop streaming, or general-purpose WebSocket transport
 - public full-state checkpoint and fork operations
 - caller-controlled cancellation and resumable SDK stream attachment
 - node enrollment, online certificate and signing-key rotation, durable node-operation receipts, and service-unit upgrade or rollback packaging

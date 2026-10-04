@@ -179,6 +179,9 @@ brezel get sbx_01... /workspace/result.json ./result.json
 # Temporary HTTP preview
 brezel open --ttl 300 sbx_01... 3000
 
+# Short-lived Playwright/CDP connection to Chromium in the sandbox
+brezel browser connect --port 9222 --ttl 180 sbx_01...
+
 # Durable state and lifecycle
 brezel workspace create agent-state
 brezel checkpoint create --name before-refactor sbx_01...
@@ -320,7 +323,7 @@ revision on that machine and run `make qualify-single-host` before use.
 | --- | --- |
 | Isolation | Firecracker microVMs; no release container fallback |
 | Commands | Streaming output, deadlines, bounded replay, and confirmed exit status |
-| Files and ports | Bounded upload/download and short-lived authenticated HTTP previews |
+| Files and ports | Bounded upload/download, short-lived authenticated HTTP previews, and a path-bound browser CDP preview |
 | State | Durable single-writer workspaces and filesystem checkpoint/restore |
 | Lifecycle | Expiration, automatic standby, same-host resume, cleanup, and restart recovery |
 | Network | Deny by default; explicit internet opt-in; narrow private connector preview |
@@ -329,7 +332,7 @@ revision on that machine and run `make qualify-single-host` before use.
 | Supply chain | Pinned source, patches, images, VM artifacts, and runtime attestation |
 
 Not yet implemented: arbitrary OCI builds, interactive PTY/SSH, desktop or
-WebSocket transport, public full-state forks, resumable SDK stream attachment,
+general-purpose WebSocket transport, public full-state forks, resumable SDK stream attachment,
 multi-node scheduling, replicated state, OIDC/RBAC, GPU passthrough, and
 hostile shared-multitenant assurance. The [roadmap](docs/ROADMAP.md) defines the
 gates for those capabilities.

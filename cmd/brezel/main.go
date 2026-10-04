@@ -138,6 +138,8 @@ func run(args []string) error {
 		return c.file(remaining[1:])
 	case "port":
 		return c.port(remaining[1:])
+	case "browser":
+		return c.browser(remaining[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return nil
@@ -739,6 +741,58 @@ func (c *client) port(args []string) error {
 	return nil
 }
 
+func (c *client) browser(args []string) error {
+	if len(args) == 0 || args[0] != "connect" {
+		return usageError("browser requires connect")
+	}
+	flags := flag.NewFlagSet("browser connect", flag.ContinueOnError)
+	port := flags.Uint64("port", 9222, "Chromium remote-debugging port")
+	ttl := flags.Int64("ttl", 180, "connection lease lifetime in seconds")
+	asJSON := flags.Bool("json", false, "write connection metadata as JSON")
+	if err := flags.Parse(args[1:]); err != nil {
+		return usageError(err.Error())
+	}
+	if flags.NArg() != 1 {
+		return usageError("browser connect requires SANDBOX_ID")
+	}
+	if *port == 0 || *port > 65535 {
+		return usageError("--port must be between 1 and 65535")
+	}
+	var result struct {
+		ConnectPath     string    `json:"connect_path"`
+		ExpiresAt       time.Time `json:"expires_at"`
+		Browser         string    `json:"browser"`
+		ProtocolVersion string    `json:"protocol_version"`
+	}
+	path := "/v1/sandboxes/" + url.PathEscape(flags.Arg(0)) + "/browser-leases"
+	body := map[string]any{"port": *port, "ttl_seconds": *ttl}
+	if err := c.json(context.Background(), http.MethodPost, path, body, &result, ""); err != nil {
+		return err
+	}
+	reference, err := url.Parse(result.ConnectPath)
+	if err != nil || !strings.HasPrefix(result.ConnectPath, "/b/") {
+		return errors.New("Brezel returned an invalid browser connection path")
+	}
+	connectURL := c.base.ResolveReference(reference)
+	switch connectURL.Scheme {
+	case "http":
+		connectURL.Scheme = "ws"
+	case "https":
+		connectURL.Scheme = "wss"
+	default:
+		return errors.New("Brezel returned an invalid browser connection scheme")
+	}
+	output := map[string]any{
+		"connect_url": connectURL.String(), "expires_at": result.ExpiresAt,
+		"browser": result.Browser, "protocol_version": result.ProtocolVersion,
+	}
+	if *asJSON {
+		return prettyJSON(os.Stdout, output)
+	}
+	fmt.Printf("%s\texpires %s\n", connectURL.String(), result.ExpiresAt.Format(time.RFC3339))
+	return nil
+}
+
 func (c *client) json(ctx context.Context, method, path string, body any, out any, idempotency string) error {
 	var reader io.Reader
 	if body != nil {
@@ -859,7 +913,8 @@ Advanced:
   exec [--cwd PATH] [--timeout SECONDS] [--env KEY=VALUE] SANDBOX_ID COMMAND [ARG...]
   file put SANDBOX_ID GUEST_PATH LOCAL_PATH
   file get SANDBOX_ID GUEST_PATH LOCAL_PATH_OR_DASH
-  port open [--ttl SECONDS] SANDBOX_ID PORT`)
+  port open [--ttl SECONDS] SANDBOX_ID PORT
+  browser connect [--port PORT] [--ttl SECONDS] [--json] SANDBOX_ID`)
 }
 
 func printVersion(destination io.Writer, args []string) error {

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/nodeidentity"
 	"github.com/infercrane/brezel/internal/nodeledger"
@@ -30,6 +31,8 @@ const (
 	relayClientMaxFileDownload    = 64 << 20
 	relayClientMaxPortRequest     = 32 << 20
 	relayClientMaxPortResponse    = 64 << 20
+	relayClientMaxWebSocketBytes  = 256 << 20
+	relayClientMaxWebSocketTime   = 5 * time.Minute
 	relayClientDefaultCommandTime = 5 * time.Minute
 	relayClientMaxOperationTime   = time.Hour
 )
@@ -113,7 +116,7 @@ func (d *RelayDataPlane) Capabilities() Capabilities {
 	if d == nil || d.baseURL == nil || d.client == nil || d.signer == nil {
 		return Capabilities{}
 	}
-	return Capabilities{CommandStreaming: true, FileReadWrite: true, AuthenticatedPorts: true}
+	return Capabilities{CommandStreaming: true, FileReadWrite: true, AuthenticatedPorts: true, AuthenticatedWebSockets: true}
 }
 
 // Ready verifies the authenticated node data listener and its engine-backed
@@ -419,6 +422,56 @@ func (d *RelayDataPlane) RoundTripPort(ctx context.Context, binding SandboxBindi
 	}
 	response.Body = &relayBoundedReadCloser{source: response.Body, reader: relayBoundedReader{source: response.Body, remaining: relayClientMaxPortResponse}}
 	return response, nil
+}
+
+func (d *RelayDataPlane) OpenPortWebSocket(ctx context.Context, binding SandboxBinding, port uint16, path string) (*websocket.Conn, *http.Response, error) {
+	if err := d.ValidatePort(port); err != nil {
+		return nil, nil, err
+	}
+	if !validRelayWebSocketPath(path) {
+		return nil, nil, errors.New("invalid node WebSocket path")
+	}
+	resolved, err := d.authorizedRoute(ctx, binding)
+	if err != nil {
+		return nil, nil, err
+	}
+	protocolRequest := relayWebSocketRequest{Path: path}
+	canonical, err := canonicalRelayJSON(protocolRequest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode node WebSocket descriptor: %w", err)
+	}
+	duration := relayOperationDuration(ctx, relayClientMaxWebSocketTime)
+	if duration > relayClientMaxWebSocketTime {
+		duration = relayClientMaxWebSocketTime
+	}
+	token, err := d.issue(binding, resolved, CapabilityWebSocket, canonical, CapabilityBounds{
+		Port:              uint32(port),
+		MaxDurationMillis: duration.Milliseconds(),
+		MaxRequestBytes:   relayClientMaxWebSocketBytes,
+		MaxResponseBytes:  relayClientMaxWebSocketBytes,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	base := *d.baseURL
+	switch base.Scheme {
+	case "https":
+		base.Scheme = "wss"
+	default:
+		return nil, nil, errors.New("node relay WebSocket requires HTTPS")
+	}
+	base.Path = strings.TrimSuffix(base.Path, "/") + "/v1/websockets/" + strconv.FormatUint(uint64(port), 10) + path
+	base.RawPath = ""
+	base.RawQuery = ""
+	base.Fragment = ""
+	header := make(http.Header)
+	header.Set(RelayRouteHeader, resolved.Route.RouteID)
+	header.Set("Authorization", RelayCapabilityScheme+" "+token)
+	conn, response, err := websocket.Dial(ctx, base.String(), &websocket.DialOptions{HTTPClient: d.client, HTTPHeader: header})
+	if err != nil {
+		return nil, response, fmt.Errorf("call node WebSocket relay: %w", err)
+	}
+	return conn, response, nil
 }
 
 func (d *RelayDataPlane) authorizedRoute(ctx context.Context, binding SandboxBinding) (relayRouteResponse, error) {

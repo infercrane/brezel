@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/infercrane/brezel/internal/backend"
 )
 
@@ -19,9 +20,10 @@ import (
 // enforce. They are the intersection of the engine's declared capabilities
 // and the interfaces it actually implements.
 type Capabilities struct {
-	CommandStreaming   bool
-	FileReadWrite      bool
-	AuthenticatedPorts bool
+	CommandStreaming        bool
+	FileReadWrite           bool
+	AuthenticatedPorts      bool
+	AuthenticatedWebSockets bool
 }
 
 var (
@@ -153,15 +155,17 @@ type DataPlane interface {
 	ReadFile(context.Context, SandboxBinding, string, io.Writer) (backend.FileInfo, error)
 	ValidatePort(uint16) error
 	RoundTripPort(context.Context, SandboxBinding, uint16, *http.Request) (*http.Response, error)
+	OpenPortWebSocket(context.Context, SandboxBinding, uint16, string) (*websocket.Conn, *http.Response, error)
 }
 
 // BackendDataPlane adapts the initial in-process engine to the owned node
 // boundary. E2B-specific routing and guest credentials remain encapsulated by
 // its backend implementation.
 type BackendDataPlane struct {
-	guest backend.GuestRuntime
-	ports backend.PortRuntime
-	caps  Capabilities
+	guest      backend.GuestRuntime
+	ports      backend.PortRuntime
+	webSockets backend.WebSocketPortRuntime
+	caps       Capabilities
 }
 
 func (*BackendDataPlane) ownedNodeDataPlane() {}
@@ -173,13 +177,16 @@ func NewBackendDataPlane(engine backend.Backend) *BackendDataPlane {
 	declared := engine.Capabilities()
 	guest, hasGuest := engine.(backend.GuestRuntime)
 	ports, hasPorts := engine.(backend.PortRuntime)
+	webSockets, hasWebSockets := engine.(backend.WebSocketPortRuntime)
 	return &BackendDataPlane{
-		guest: guest,
-		ports: ports,
+		guest:      guest,
+		ports:      ports,
+		webSockets: webSockets,
 		caps: Capabilities{
-			CommandStreaming:   declared.CommandStreaming && hasGuest,
-			FileReadWrite:      declared.FileReadWrite && hasGuest,
-			AuthenticatedPorts: declared.AuthenticatedPorts && hasPorts,
+			CommandStreaming:        declared.CommandStreaming && hasGuest,
+			FileReadWrite:           declared.FileReadWrite && hasGuest,
+			AuthenticatedPorts:      declared.AuthenticatedPorts && hasPorts,
+			AuthenticatedWebSockets: declared.AuthenticatedWebSockets && hasWebSockets,
 		},
 	}
 }
@@ -236,6 +243,16 @@ func (d *BackendDataPlane) RoundTripPort(ctx context.Context, binding SandboxBin
 		return nil, backend.ErrCapabilityUnavailable
 	}
 	return d.ports.RoundTripPort(ctx, binding.backendID, port, request)
+}
+
+func (d *BackendDataPlane) OpenPortWebSocket(ctx context.Context, binding SandboxBinding, port uint16, path string) (*websocket.Conn, *http.Response, error) {
+	if err := binding.validate(); err != nil {
+		return nil, nil, err
+	}
+	if d == nil || d.webSockets == nil || !d.caps.AuthenticatedWebSockets {
+		return nil, nil, backend.ErrCapabilityUnavailable
+	}
+	return d.webSockets.OpenPortWebSocket(ctx, binding.backendID, port, path)
 }
 
 var _ DataPlane = (*BackendDataPlane)(nil)

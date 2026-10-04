@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/infercrane/brezel/internal/backend"
 )
 
@@ -50,6 +51,49 @@ func (c *Client) RoundTripPort(ctx context.Context, sandboxID string, port uint1
 		return nil, fmt.Errorf("application port request: %w", err)
 	}
 	return response, nil
+}
+
+// OpenPortWebSocket opens an authenticated WebSocket to one application port.
+// The substrate traffic credential is injected only on this internal hop and
+// is never returned to the product caller.
+func (c *Client) OpenPortWebSocket(ctx context.Context, sandboxID string, port uint16, path string) (*websocket.Conn, *http.Response, error) {
+	if err := c.ValidatePort(port); err != nil {
+		return nil, nil, err
+	}
+	if !validWebSocketPath(path) {
+		return nil, nil, errors.New("application WebSocket path is invalid")
+	}
+	connection, err := c.portConnection(ctx, sandboxID, port)
+	if err != nil {
+		return nil, nil, err
+	}
+	target := cloneURL(connection.baseURL)
+	switch target.Scheme {
+	case "http":
+		target.Scheme = "ws"
+	case "https":
+		target.Scheme = "wss"
+	default:
+		return nil, nil, errors.New("application WebSocket endpoint has an invalid scheme")
+	}
+	target.Path = joinURLPath(connection.baseURL.Path, path)
+	target.RawPath = ""
+	target.RawQuery = ""
+	target.Fragment = ""
+	outgoing := make(http.Header)
+	connection.setRoutingHeaders(outgoing)
+	conn, response, err := websocket.Dial(ctx, target.String(), &websocket.DialOptions{
+		HTTPClient: c.guestHTTPClient,
+		HTTPHeader: outgoing,
+	})
+	if err != nil {
+		return nil, response, fmt.Errorf("application WebSocket: %w", err)
+	}
+	return conn, response, nil
+}
+
+func validWebSocketPath(value string) bool {
+	return strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") && !strings.ContainsAny(value, "\x00\r\n?#")
 }
 
 func (c *Client) ValidatePort(port uint16) error {
@@ -173,3 +217,4 @@ func stripHopHeaders(header http.Header) {
 }
 
 var _ backend.PortRuntime = (*Client)(nil)
+var _ backend.WebSocketPortRuntime = (*Client)(nil)

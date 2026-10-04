@@ -44,6 +44,8 @@ Remaining before a broader operational label:
   ComputeSDK inclusion
 - disk-full, interrupted-upgrade, longer soak, backup/restore, and rollback
   evidence
+- named-host browser-computer qualification covering Playwright, lease expiry,
+  wrong-path rejection, byte/time bounds, restart, and confirmed cleanup
 
 Current label: **self-hosted private-tenant developer preview**. The paired-host
 qualification is evidence for two independent installations, not a cluster,

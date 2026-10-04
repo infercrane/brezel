@@ -49,6 +49,13 @@ export interface RunOptions {
   onEvent?: (event: CommandEvent) => void;
 }
 
+export interface BrowserConnection {
+  websocketUrl: string;
+  expiresAt: string;
+  browser: string;
+  protocolVersion: string;
+}
+
 export class BrezelError extends Error {
   readonly code: string;
   readonly status: number;
@@ -77,6 +84,7 @@ export class Sandbox implements AsyncDisposable {
   writeFile(path: string, data: string | Uint8Array): Promise<Record<string, unknown>>;
   readFile(path: string): Promise<Uint8Array>;
   preview(port: number, options?: { ttlSeconds?: number }): Promise<string>;
+  browserConnect(options?: { port?: number; ttlSeconds?: number }): Promise<BrowserConnection>;
   pause(): Promise<Record<string, unknown>>;
   resume(): Promise<Record<string, unknown>>;
   delete(): Promise<Record<string, unknown>>;

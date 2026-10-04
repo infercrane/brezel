@@ -240,10 +240,11 @@ drain, standby, rebind, release, and removal. It never returns a private engine
 identity. This separation keeps streaming data deadlines from weakening route
 control limits.
 
-The relay protocol has explicit command, file, and port endpoints, bounded
+The relay protocol has explicit command, file, HTTP port, and browser WebSocket endpoints, bounded
 headers, bodies, output, and operation duration, and no content logger. It
 streams command events but currently buffers file bodies and proxied HTTP
-bodies. Terminal sessions, WebSockets, raw TCP, capability delegation, and
+bodies. The WebSocket endpoint is limited to a path-bound browser lease;
+terminal sessions, general WebSockets, raw TCP, capability delegation, and
 multi-hop forwarding are not part of this milestone.
 
 The packaged single-host profile selects this relay for admitted command, file,
@@ -522,8 +523,13 @@ API does not serve until startup recovery and priming complete.
 
 The current HTTP preview path uses an opaque, short-lived lease, rechecks
 sandbox state, and never exposes the guest-management API. It does not yet
-provide a public hosted ingress service, custom domains, WebSockets, or
+provide a public hosted ingress service, custom domains, general WebSockets, or
 independent per-route rate limits.
+
+Browser computers use a separate opaque lease. The API validates Chromium's
+reported CDP endpoint, binds the lease to that exact browser path, and forwards
+only a bounded WebSocket upgrade through the generation-fenced node relay.
+See [ADR 0012](decisions/0012-browser-computer-connection.md).
 
 A future hosted proxy may wake a standby sandbox. It must cap queued bytes,
 connections, and resume attempts to prevent a cheap denial of service.

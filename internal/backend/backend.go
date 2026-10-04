@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/coder/websocket"
 	"github.com/infercrane/brezel/internal/domain"
 )
 
@@ -34,6 +35,7 @@ type Capabilities struct {
 	CommandStreaming         bool `json:"command_streaming"`
 	FileReadWrite            bool `json:"file_read_write"`
 	AuthenticatedPorts       bool `json:"authenticated_ports"`
+	AuthenticatedWebSockets  bool `json:"authenticated_websockets"`
 	DurableWorkspaces        bool `json:"durable_workspaces"`
 }
 
@@ -86,6 +88,13 @@ type GuestRuntime interface {
 type PortRuntime interface {
 	ValidatePort(uint16) error
 	RoundTripPort(context.Context, string, uint16, *http.Request) (*http.Response, error)
+}
+
+// WebSocketPortRuntime is a separate optional capability because a bounded
+// HTTP preview does not imply authority to create a long-lived duplex tunnel.
+type WebSocketPortRuntime interface {
+	ValidatePort(uint16) error
+	OpenPortWebSocket(context.Context, string, uint16, string) (*websocket.Conn, *http.Response, error)
 }
 
 type CreateRequest struct {

@@ -46,7 +46,8 @@ beside that boundary.
 | **Integrate later** | Temporal and other workflow engines | Useful above Brezel, but not runtime truth or a release blocker |
 | **Integrate later** | ComputeSDK | External benchmark and discovery channel; the adapter is intentionally thin |
 | **Integrate later** | OpenAI Agents, Anthropic, MCP, OpenHands | Add after the core SDK contract stabilizes and only with conformance tests |
-| **Defer** | Desktop streaming and first-party browser automation | Separate product category and large support surface |
+| **Build narrowly** | Path-bound Chromium CDP connection for Playwright | Real browser work inside the agent computer without opening a general tunnel |
+| **Defer** | Desktop streaming, managed stealth/proxies, and browser session recording | Separate product categories and large abuse/support surfaces |
 | **Defer** | GPU passthrough | Different isolation, cleanup, scheduling, and economics profile |
 | **Defer** | Shared mutable distributed drive | Coherency and cross-tenant risk; workspaces cover the first customer jobs |
 | **Defer** | Multi-region continuity and live migration | Premature before one region is operationally correct |

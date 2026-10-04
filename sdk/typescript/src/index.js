@@ -277,6 +277,28 @@ export class Sandbox {
     return new URL(requiredString(payload, "path").replace(/^\/+/, ""), `${this.client.baseUrl}/`).toString();
   }
 
+  async browserConnect({ port = 9222, ttlSeconds = 180 } = {}) {
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+      throw new TypeError("port must be between 1 and 65535");
+    }
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 30 || ttlSeconds > 300) {
+      throw new TypeError("ttlSeconds must be between 30 and 300");
+    }
+    const payload = await this.client.requestJSON(
+      "POST",
+      `/v1/sandboxes/${segment(this.id)}/browser-leases`,
+      { body: { port, ttl_seconds: ttlSeconds } },
+    );
+    const url = new URL(requiredString(payload, "connect_path").replace(/^\/+/, ""), `${this.client.baseUrl}/`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return {
+      websocketUrl: url.toString(),
+      expiresAt: requiredString(payload, "expires_at"),
+      browser: typeof payload.browser === "string" ? payload.browser : "",
+      protocolVersion: typeof payload.protocol_version === "string" ? payload.protocol_version : "",
+    };
+  }
+
   pause() {
     return this.#lifecycle("pause");
   }

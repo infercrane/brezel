@@ -59,6 +59,10 @@ type relayPortRequest struct {
 	BodySHA256 string              `json:"body_sha256,omitempty"`
 }
 
+type relayWebSocketRequest struct {
+	Path string `json:"path"`
+}
+
 func portProtocolRequest(method, path, rawQuery string, header http.Header, body []byte) relayPortRequest {
 	request := relayPortRequest{Method: method, Path: path, RawQuery: rawQuery, Header: canonicalPortHeaders(header), BodySize: int64(len(body))}
 	if len(body) > 0 {
@@ -66,6 +70,10 @@ func portProtocolRequest(method, path, rawQuery string, header http.Header, body
 		request.BodySHA256 = base64.RawURLEncoding.EncodeToString(digest[:])
 	}
 	return request
+}
+
+func validRelayWebSocketPath(value string) bool {
+	return strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") && len(value) <= relayMaxURLBytes && !strings.ContainsAny(value, "\x00\r\n?#")
 }
 
 func canonicalRelayJSON(value any) ([]byte, error) {
