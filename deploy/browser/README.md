@@ -27,4 +27,3 @@ Mount a durable workspace at `/workspace` when cookies and local browser state
 should outlive disposable compute. A filesystem checkpoint or fork does not
 copy a live browser process or open connection. Stop Chromium or place it at an
 explicit quiescence point before checkpointing profile state.
-

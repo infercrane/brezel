@@ -17,4 +17,3 @@ RUN set -eux; \
 
 LABEL org.opencontainers.image.source="https://github.com/infercrane/brezel" \
       org.opencontainers.image.description="Pinned Chromium environment for Brezel browser computers"
-

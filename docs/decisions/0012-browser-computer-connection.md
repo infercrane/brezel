@@ -41,4 +41,3 @@ against the durable profile.
 - The feature remains a developer preview until named-host tests cover lease
   expiry, wrong-path rejection, byte and time bounds, restart, cleanup, and a
   real Playwright workflow.
-
