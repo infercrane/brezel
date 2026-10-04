@@ -40,7 +40,7 @@ case "$profile" in
 esac
 printf '%s' "$profile" | grep -q '[[:cntrl:]]' && fail "profile path is invalid"
 
-runtime=/tmp/brezel-browser
+runtime=/tmp/brezel-browser-$(id -u)
 browser_pid_file=$runtime/chromium.pid
 relay_pid_file=$runtime/relay.pid
 log_file=$runtime/chromium.log
@@ -83,8 +83,18 @@ case "$command" in
     fi
     stop_pid "$relay_pid_file"
     stop_pid "$browser_pid_file"
-    install -d -o pwuser -g pwuser -m 0700 "$runtime" "$profile"
-    chown pwuser:pwuser "$profile"
+    if [ "$(id -u)" -eq 0 ]; then
+      browser_user=pwuser
+      browser_group=pwuser
+      browser_home=/home/pwuser
+      install -d -o "$browser_user" -g "$browser_group" -m 0700 "$runtime" "$profile"
+      chown "$browser_user:$browser_group" "$profile"
+    else
+      browser_user=$(id -un)
+      browser_group=$(id -gn)
+      browser_home=${HOME:-/tmp}
+      install -d -m 0700 "$runtime" "$profile"
+    fi
     # Chromium's nested user-namespace sandbox is deliberately disabled in
     # this profile. The browser is already isolated inside a dedicated
     # Firecracker microVM, and Ubuntu 24.04 rejects Chromium's unprivileged
@@ -94,28 +104,40 @@ case "$command" in
     if [ "$port" -eq 65535 ]; then
       debug_port=65534
     fi
-    nohup setpriv --reuid=pwuser --regid=pwuser --init-groups \
-      env HOME=/home/pwuser /usr/local/bin/brezel-chromium \
-        --headless=new \
-        --no-sandbox \
-        --disable-dev-shm-usage \
-        --disable-background-networking \
-        --disable-component-update \
-        --disable-default-apps \
-        --disable-sync \
-        --metrics-recording-only \
-        --no-first-run \
-        --no-default-browser-check \
-        --remote-debugging-address=127.0.0.1 \
-        --remote-debugging-port="$debug_port" \
-        --remote-allow-origins='*' \
-        --user-data-dir="$profile" \
-        about:blank >"$log_file" 2>&1 &
+    set -- /usr/local/bin/brezel-chromium \
+      --headless=new \
+      --no-sandbox \
+      --disable-dev-shm-usage \
+      --disable-background-networking \
+      --disable-component-update \
+      --disable-default-apps \
+      --disable-sync \
+      --metrics-recording-only \
+      --no-first-run \
+      --no-default-browser-check \
+      --remote-debugging-address=127.0.0.1 \
+      --remote-debugging-port="$debug_port" \
+      --remote-allow-origins='*' \
+      --user-data-dir="$profile" \
+      about:blank
+    if [ "$(id -u)" -eq 0 ]; then
+      nohup setpriv --reuid="$browser_user" --regid="$browser_group" --init-groups \
+        env HOME="$browser_home" "$@" >"$log_file" 2>&1 &
+    else
+      nohup env HOME="$browser_home" "$@" >"$log_file" 2>&1 &
+    fi
     browser_pid=$!
     printf '%s\n' "$browser_pid" >"$browser_pid_file"
-    nohup /usr/local/bin/brezel-cdp-relay \
-      --listen-port "$port" --target-port "$debug_port" \
-      >"$relay_log_file" 2>&1 &
+    if [ "$(id -u)" -eq 0 ]; then
+      nohup setpriv --reuid="$browser_user" --regid="$browser_group" --init-groups \
+        /usr/local/bin/brezel-cdp-relay \
+        --listen-port "$port" --target-port "$debug_port" \
+        >"$relay_log_file" 2>&1 &
+    else
+      nohup /usr/local/bin/brezel-cdp-relay \
+        --listen-port "$port" --target-port "$debug_port" \
+        >"$relay_log_file" 2>&1 &
+    fi
     relay_pid=$!
     printf '%s\n' "$relay_pid" >"$relay_pid_file"
     chmod 0600 "$browser_pid_file" "$relay_pid_file" "$log_file" "$relay_log_file"

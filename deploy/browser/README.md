@@ -10,12 +10,14 @@ digest, and use that immutable image as the input to a dedicated Brezel browser
 template. The current single-host distribution installs one selected base
 template; it does not claim arbitrary per-request OCI builds.
 
-Chromium runs as the unprivileged `pwuser`, but its nested namespace sandbox is
-disabled. The isolation boundary for this profile is the dedicated Firecracker
-microVM. This avoids depending on a host-wide Ubuntu AppArmor exception while
-keeping the debugging port private and reachable only through Brezel's
-path-bound CDP capability. Do not run this profile as an ordinary shared Docker
-container and treat it as an equivalent security boundary.
+Chromium runs as an unprivileged user: `pwuser` when the launcher is invoked by
+root while assembling an image, or the current sandbox user during ordinary
+CLI and SDK use. Its nested namespace sandbox is disabled. The isolation
+boundary for this profile is the dedicated Firecracker microVM. This avoids
+depending on a host-wide Ubuntu AppArmor exception while keeping the debugging
+port private and reachable only through Brezel's path-bound CDP capability. Do
+not run this profile as an ordinary shared Docker container and treat it as an
+equivalent security boundary.
 
 Recent Chromium builds keep their debugging listener on loopback even when an
 external bind address is requested. A byte-transparent relay inside the guest
