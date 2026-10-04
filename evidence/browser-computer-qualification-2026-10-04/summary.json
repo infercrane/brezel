@@ -38,6 +38,8 @@
     "private_node_loss_failed_closed": true,
     "private_node_recovery_probe": "pass",
     "cross_microvm_profile_persistence": "pass",
+    "oci_root_launcher_smoke": "pass",
+    "oci_unprivileged_launcher_smoke": "pass",
     "byte_budget_unit_test": "TestBridgeRejectsCumulativeBudgetOverrun",
     "sandbox_cleanup_confirmed": true,
     "workspace_cleanup_confirmed": true,

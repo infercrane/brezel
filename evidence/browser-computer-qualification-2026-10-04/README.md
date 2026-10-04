@@ -42,6 +42,8 @@ Live negative and recovery tests passed:
   with `quota_exceeded`;
 - stopping the private node made new connections fail closed, and starting the
   node restored a successful Playwright probe without replacing the guest;
+- the pinned OCI artifact completed start, metadata, stop, persisted-profile,
+  restart, and stop smokes when invoked as root and as `pwuser`;
 - both microVMs and the qualification workspace were confirmed deleted;
 - the final active-sandbox count was zero.
 
