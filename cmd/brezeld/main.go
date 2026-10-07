@@ -21,11 +21,13 @@ import (
 	"github.com/infercrane/brezel/internal/backend"
 	"github.com/infercrane/brezel/internal/backend/e2b"
 	"github.com/infercrane/brezel/internal/backend/warm"
+	"github.com/infercrane/brezel/internal/buildinfo"
 	"github.com/infercrane/brezel/internal/connector"
 	"github.com/infercrane/brezel/internal/domain"
 	"github.com/infercrane/brezel/internal/httpapi"
 	"github.com/infercrane/brezel/internal/node"
 	"github.com/infercrane/brezel/internal/nodeidentity"
+	"github.com/infercrane/brezel/internal/qualification"
 	"github.com/infercrane/brezel/internal/receipt"
 	"github.com/infercrane/brezel/internal/securefile"
 	"github.com/infercrane/brezel/internal/service"
@@ -216,6 +218,16 @@ func run() error {
 		return err
 	}
 	apiOptions = append(apiOptions, httpapi.WithMaxInFlightRequests(maxInFlight), httpapi.WithRequestLogger(log.Default()), httpapi.WithPhaseMetrics(phaseMetrics), httpapi.WithCommandDiagnostics(commandDiagnostics))
+	if qualificationFile := strings.TrimSpace(os.Getenv("BREZEL_QUALIFICATION_FILE")); qualificationFile != "" {
+		runningRevision := buildinfo.Current().Revision
+		apiOptions = append(apiOptions, httpapi.WithQualificationReporter(func() (string, string) {
+			status, qualificationErr := qualification.Read(qualificationFile, runningRevision, time.Now().UTC())
+			if qualificationErr != nil {
+				return "unverified", "No complete exact-revision qualification receipt is available."
+			}
+			return status.Qualification, status.Note
+		}))
+	}
 	api, err := httpapi.New(svc, token, apiOptions...)
 	if err != nil {
 		return err

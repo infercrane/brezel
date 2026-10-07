@@ -7,6 +7,7 @@ INSTALL_DIR=${BREZEL_INSTALL_DIR:-"$REPO_DIR/.brezel"}
 TOKEN_FILE="$INSTALL_DIR/secrets/service.token"
 TEMPLATE_REFERENCE_FILE="$INSTALL_DIR/artifacts/base-template.reference"
 DISTRIBUTION_MANIFEST="$INSTALL_DIR/distribution.manifest"
+RUNTIME_ATTESTATION_MANIFEST="$INSTALL_DIR/runtime-attestation.manifest"
 QUALIFICATION_DIR="$INSTALL_DIR/qualification"
 ENGINE_COMPOSE="$INSTALL_DIR/engine/embed/compose/compose.yaml"
 ENGINE_ENV="$INSTALL_DIR/engine/embed/compose/.env"
@@ -39,6 +40,14 @@ printf '%s\n' "$TEMPLATE_REFERENCE" | grep -Eq '^[a-z0-9_-]+:[0-9a-f]{8}-[0-9a-f
   echo "installed distribution manifest is missing; run install.sh again" >&2
   exit 1
 }
+RUNTIME_REVISION=$(awk -F= '$1 == "source.revision" { if (++count > 1) exit 2; print substr($0, index($0, "=") + 1) } END { if (count != 1) exit 1 }' "$RUNTIME_ATTESTATION_MANIFEST") || {
+  echo "installed runtime attestation has no unique source revision" >&2
+  exit 1
+}
+printf '%s\n' "$RUNTIME_REVISION" | grep -Eq '^[0-9a-f]{40}$' || {
+  echo "installed runtime attestation has an invalid source revision" >&2
+  exit 1
+}
 INSTALLED_TEMPLATE_NAME=$(awk -F= '$1 == "artifact.template.name" { if (++count > 1) exit 2; print substr($0, index($0, "=") + 1) } END { if (count != 1) exit 1 }' "$DISTRIBUTION_MANIFEST") || {
   echo "installed distribution manifest has no unique base-template name" >&2
   exit 1
@@ -64,6 +73,7 @@ chmod 700 "$QUALIFICATION_DIR"
 
 export BREZEL_STATE_DIR="$INSTALL_DIR/state"
 export BREZEL_SECRETS_DIR="$INSTALL_DIR/secrets"
+export BREZEL_QUALIFICATION_DIR="$QUALIFICATION_DIR"
 export BREZEL_UID="$(id -u)"
 export BREZEL_GID="$(id -g)"
 
@@ -404,5 +414,26 @@ run_node_restart_recovery "$TARGET-node-restart"
 # dependency readiness, idempotency-index, and engine reconnection failures.
 run_conformance "$TARGET-post-restart"
 
+trap - EXIT HUP INT TERM
+receipt_tmp=$(mktemp "$QUALIFICATION_DIR/.receipt.XXXXXX")
+trap 'rm -f -- "$receipt_tmp"' EXIT HUP INT TERM
+qualified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+conformance_file="$TARGET.json"
+engine_fast_path_file="$TARGET-engine-fast-path.json"
+controller_restart_file="$TARGET-active-restart.json"
+node_restart_file="$TARGET-node-restart.json"
+post_restart_file="$TARGET-post-restart.json"
+conformance_sha=$(sha256sum "$QUALIFICATION_DIR/$conformance_file" | awk '{print $1}')
+engine_fast_path_sha=$(sha256sum "$QUALIFICATION_DIR/$engine_fast_path_file" | awk '{print $1}')
+controller_restart_sha=$(sha256sum "$QUALIFICATION_DIR/$controller_restart_file" | awk '{print $1}')
+node_restart_sha=$(sha256sum "$QUALIFICATION_DIR/$node_restart_file" | awk '{print $1}')
+post_restart_sha=$(sha256sum "$QUALIFICATION_DIR/$post_restart_file" | awk '{print $1}')
+printf '%s\n' \
+  "{\"schema_version\":1,\"qualification\":\"sandbox_runtime_conformant\",\"runtime_revision\":\"$RUNTIME_REVISION\",\"qualified_at\":\"$qualified_at\",\"reports\":[{\"name\":\"conformance\",\"file\":\"$conformance_file\",\"sha256\":\"$conformance_sha\"},{\"name\":\"engine_fast_path\",\"file\":\"$engine_fast_path_file\",\"sha256\":\"$engine_fast_path_sha\"},{\"name\":\"controller_restart\",\"file\":\"$controller_restart_file\",\"sha256\":\"$controller_restart_sha\"},{\"name\":\"node_restart\",\"file\":\"$node_restart_file\",\"sha256\":\"$node_restart_sha\"},{\"name\":\"post_restart\",\"file\":\"$post_restart_file\",\"sha256\":\"$post_restart_sha\"}]}" \
+  > "$receipt_tmp"
+chmod 600 "$receipt_tmp"
+sync -f "$receipt_tmp"
+mv -f -- "$receipt_tmp" "$QUALIFICATION_DIR/current.json"
+sync -f "$QUALIFICATION_DIR"
 trap - EXIT HUP INT TERM
 echo "Qualification reports: $QUALIFICATION_DIR/$TARGET.json, $QUALIFICATION_DIR/$TARGET-engine-fast-path.json, $QUALIFICATION_DIR/$TARGET-active-restart.json, $QUALIFICATION_DIR/$TARGET-node-restart.json, and $QUALIFICATION_DIR/$TARGET-post-restart.json"

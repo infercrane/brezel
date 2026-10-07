@@ -82,6 +82,7 @@ services:
       # conformance binary in the same image reads it for authenticated probes.
       BREZEL_SERVICE_TOKEN_FILE: /run/brezel-secrets/service.token
       BREZEL_RECEIPT_PRIVATE_KEY_FILE: /run/brezel-secrets/receipt.key
+      BREZEL_QUALIFICATION_FILE: /run/brezel-qualification/current.json
       BREZEL_NODE_DATA_URL: https://127.0.0.1:8443
       BREZEL_NODE_CONTROL_URL: https://127.0.0.1:8444
       BREZEL_NODE_ID: node-a
@@ -108,6 +109,7 @@ services:
     volumes:
       - ${BREZEL_STATE_DIR:?set BREZEL_STATE_DIR to an absolute protected directory}:/var/lib/brezel
       - ${BREZEL_SECRETS_DIR:?set BREZEL_SECRETS_DIR to an absolute protected directory}:/run/brezel-secrets:ro
+      - ${BREZEL_QUALIFICATION_DIR:?set BREZEL_QUALIFICATION_DIR to an absolute protected directory}:/run/brezel-qualification:ro
     depends_on:
       - brezel-node
     healthcheck:

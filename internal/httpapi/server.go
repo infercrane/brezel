@@ -53,6 +53,7 @@ type Server struct {
 	metrics            requestMetrics
 	phaseMetrics       *telemetry.Registry
 	commandDiagnostics telemetry.CommandDiagnosticObserver
+	qualification      func() (string, string)
 }
 
 // Authorizer authenticates an opaque bearer credential and independently
@@ -114,6 +115,13 @@ func WithCommandDiagnostics(observer telemetry.CommandDiagnosticObserver) Option
 	return func(s *Server) { s.commandDiagnostics = observer }
 }
 
+// WithQualificationReporter supplies the qualification state for the exact
+// running revision. The reporter is evaluated for every capabilities request
+// so an atomically published or invalidated receipt takes effect immediately.
+func WithQualificationReporter(reporter func() (string, string)) Option {
+	return func(s *Server) { s.qualification = reporter }
+}
+
 func New(svc *service.Service, token string, options ...Option) (*Server, error) {
 	if svc == nil {
 		return nil, errors.New("service is required")
@@ -121,7 +129,16 @@ func New(svc *service.Service, token string, options ...Option) (*Server, error)
 	if token != "" && len(token) < 32 {
 		return nil, errors.New("service token must be at least 32 characters")
 	}
-	s := &Server{service: svc, mux: http.NewServeMux(), leases: make(map[string]portLease), now: func() time.Time { return time.Now().UTC() }, maxInFlight: defaultMaxInFlight}
+	s := &Server{
+		service:     svc,
+		mux:         http.NewServeMux(),
+		leases:      make(map[string]portLease),
+		now:         func() time.Time { return time.Now().UTC() },
+		maxInFlight: defaultMaxInFlight,
+		qualification: func() (string, string) {
+			return "unverified", "Run conformance on the exact deployment before making assurance or performance claims."
+		},
+	}
 	if token != "" {
 		s.authorizer = trustedOperatorToken(token)
 	}
@@ -133,6 +150,9 @@ func New(svc *service.Service, token string, options ...Option) (*Server, error)
 	}
 	if s.maxInFlight < 1 {
 		return nil, errors.New("maximum in-flight requests must be positive")
+	}
+	if s.qualification == nil {
+		return nil, errors.New("qualification reporter is required")
 	}
 	s.inFlight = make(chan struct{}, s.maxInFlight)
 	s.routes()
@@ -471,11 +491,16 @@ func copyResponseHeaders(destination, source http.Header) {
 }
 
 func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
+	qualification, qualificationNote := s.qualification()
+	if strings.TrimSpace(qualification) == "" || strings.TrimSpace(qualificationNote) == "" {
+		qualification = "unverified"
+		qualificationNote = "No complete exact-revision qualification receipt is available."
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"runtime":            backend.DefaultName,
 		"implemented":        s.service.Capabilities(),
-		"qualification":      "unverified",
-		"qualification_note": "Run conformance on the exact deployment before making assurance or performance claims.",
+		"qualification":      qualification,
+		"qualification_note": qualificationNote,
 	})
 }
 
