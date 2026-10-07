@@ -76,6 +76,15 @@ under Docker Compose restart policies. The product API listens only on
 engine, node data listener, and node control listener are reachable; it does
 not prove the host has completed qualification.
 
+`/v1/capabilities` is the release-evidence boundary. The single-host
+qualification suite atomically publishes a private receipt only after the
+conformance, engine fast-path, controller-restart, node-restart, and
+post-restart reports all complete. `brezeld` verifies every report digest and
+requires the receipt to name the exact running 40-character Git revision. A
+missing, stale, incomplete, or modified evidence set is reported as
+`unverified`; an upgrade invalidates the previous receipt before the new
+qualification run.
+
 On hosts where UFW is installed, the installer requires it to be active. The
 pinned engine exposes host-network guest-service listeners that Firecracker
 guests must reach, so a default-deny host firewall must keep those listeners

@@ -1677,6 +1677,27 @@ func TestProjectBoundCredentialCannotSelectAnotherTenant(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesUseExactRevisionQualificationReporter(t *testing.T) {
+	h := newHarness(t)
+	h.server.Close()
+	api, err := New(h.service, testToken, WithQualificationReporter(func() (string, string) {
+		return "sandbox_runtime_conformant", "Exact runtime revision qualified."
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server = httptest.NewServer(api.Handler())
+	defer h.close()
+
+	resp, body := request(t, h, http.MethodGet, "/v1/capabilities", "project-a", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("capabilities returned %d: %#v", resp.StatusCode, body)
+	}
+	if body["qualification"] != "sandbox_runtime_conformant" || body["qualification_note"] != "Exact runtime revision qualified." {
+		t.Fatalf("unexpected qualification: %#v", body)
+	}
+}
+
 func TestReadinessFailsWhenBackendIsUnavailable(t *testing.T) {
 	h := newHarness(t)
 	defer h.close()

@@ -7,6 +7,7 @@ INSTALL_DIR=${BREZEL_INSTALL_DIR:-"$REPO_DIR/.brezel"}
 ENGINE_DIR="$INSTALL_DIR/engine"
 STATE_DIR="$INSTALL_DIR/state"
 SECRETS_DIR="$INSTALL_DIR/secrets"
+QUALIFICATION_DIR="$INSTALL_DIR/qualification"
 WORKSPACE_DIR="$STATE_DIR/workspaces"
 LOCK_FILE="$SCRIPT_DIR/engine.lock"
 ENGINE_OVERRIDE="$SCRIPT_DIR/engine.override.yaml"
@@ -659,8 +660,8 @@ export BREZEL_ENGINE_POSTGRES_IMAGE BREZEL_ENGINE_REDIS_IMAGE BREZEL_ENGINE_CLIC
 export E2B_DB_MIGRATOR_IMAGE E2B_CLIENT_PROXY_IMAGE E2B_CLICKHOUSE_MIGRATOR_IMAGE E2B_TOOLS_IMAGE E2B_NODE_E2B_IMAGE E2B_SEED_IMAGE
 
 umask 077
-mkdir -p "$INSTALL_DIR" "$STATE_DIR" "$SECRETS_DIR" "$WORKSPACE_DIR"
-chmod 700 "$INSTALL_DIR" "$STATE_DIR" "$SECRETS_DIR" "$WORKSPACE_DIR"
+mkdir -p "$INSTALL_DIR" "$STATE_DIR" "$SECRETS_DIR" "$WORKSPACE_DIR" "$QUALIFICATION_DIR"
+chmod 700 "$INSTALL_DIR" "$STATE_DIR" "$SECRETS_DIR" "$WORKSPACE_DIR" "$QUALIFICATION_DIR"
 
 if [ ! -s "$SECRETS_DIR/engine-volume-token.key" ]; then
   printf 'HMAC:' > "$SECRETS_DIR/engine-volume-token.key"
@@ -872,7 +873,7 @@ docker compose --env-file "$ENGINE_ENV" -f "$ENGINE_COMPOSE" -f "$ENGINE_OVERRID
 # not leave an old controller serving against a partially upgraded engine.
 # Stop the API before the node so no new data operation can be admitted while
 # the relay is taken out of service.
-export BREZEL_STATE_DIR="$STATE_DIR" BREZEL_SECRETS_DIR="$SECRETS_DIR"
+export BREZEL_STATE_DIR="$STATE_DIR" BREZEL_SECRETS_DIR="$SECRETS_DIR" BREZEL_QUALIFICATION_DIR="$QUALIFICATION_DIR"
 export BREZEL_UID="$(id -u)" BREZEL_GID="$(id -g)"
 PUBLIC_DRAIN_STARTED=true
 docker compose -f "$SCRIPT_DIR/compose.yaml" stop brezeld
@@ -1106,7 +1107,7 @@ chmod 600 "$SECRETS_DIR/engine.token" "$SECRETS_DIR/service.token" "$SECRETS_DIR
   "$SECRETS_DIR/node-capability-keys.json" "$SECRETS_DIR/node-ca.crt" "$SECRETS_DIR/node-ca.key" \
   "$SECRETS_DIR/node.crt" "$SECRETS_DIR/node.key" "$SECRETS_DIR/api.crt" "$SECRETS_DIR/api.key"
 
-BREZEL_STATE_DIR="$STATE_DIR" BREZEL_SECRETS_DIR="$SECRETS_DIR" \
+BREZEL_STATE_DIR="$STATE_DIR" BREZEL_SECRETS_DIR="$SECRETS_DIR" BREZEL_QUALIFICATION_DIR="$QUALIFICATION_DIR" \
 BREZEL_UID="$(id -u)" BREZEL_GID="$(id -g)" \
   docker compose -f "$SCRIPT_DIR/compose.yaml" up -d --build --wait
 
@@ -1115,6 +1116,7 @@ BREZEL_UID="$(id -u)" BREZEL_GID="$(id -g)" \
 "$RUNTIME_ATTESTATION" verify "$INSTALL_DIR/runtime-attestation.manifest" \
   "$REPO_DIR" "$SCRIPT_DIR/compose.yaml" "$BREZEL_SOURCE_REVISION" >/dev/null
 
+rm -f -- "$QUALIFICATION_DIR/current.json"
 "$SCRIPT_DIR/qualify.sh"
 
 INSTALL_SUCCEEDED=true

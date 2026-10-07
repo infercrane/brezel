@@ -3120,3 +3120,53 @@ func TestSingleHostComposeCanEnableConnectorBroker(t *testing.T) {
 		}
 	}
 }
+
+func TestSingleHostQualificationPublishesExactRevisionReceipt(t *testing.T) {
+	composeData, err := os.ReadFile("compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"BREZEL_QUALIFICATION_FILE: /run/brezel-qualification/current.json",
+		"BREZEL_QUALIFICATION_DIR",
+		"/run/brezel-qualification:ro",
+	} {
+		if !strings.Contains(string(composeData), required) {
+			t.Fatalf("single-host compose is missing qualification boundary %q", required)
+		}
+	}
+
+	qualificationData, err := os.ReadFile("qualify.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualification := string(qualificationData)
+	for _, required := range []string{
+		`RUNTIME_ATTESTATION_MANIFEST="$INSTALL_DIR/runtime-attestation.manifest"`,
+		`source.revision`,
+		`\"qualification\":\"sandbox_runtime_conformant\"`,
+		`\"name\":\"conformance\"`,
+		`\"name\":\"engine_fast_path\"`,
+		`\"name\":\"controller_restart\"`,
+		`\"name\":\"node_restart\"`,
+		`\"name\":\"post_restart\"`,
+		`sha256sum`,
+		`mv -f -- "$receipt_tmp" "$QUALIFICATION_DIR/current.json"`,
+		`sync -f "$QUALIFICATION_DIR"`,
+	} {
+		if !strings.Contains(qualification, required) {
+			t.Fatalf("qualification receipt publisher is missing %q", required)
+		}
+	}
+
+	installerData, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := string(installerData)
+	invalidate := strings.LastIndex(installer, `rm -f -- "$QUALIFICATION_DIR/current.json"`)
+	requalify := strings.LastIndex(installer, `"$SCRIPT_DIR/qualify.sh"`)
+	if invalidate < 0 || requalify <= invalidate {
+		t.Fatal("installer does not invalidate stale evidence immediately before requalification")
+	}
+}
