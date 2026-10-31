@@ -8,7 +8,7 @@ require (
 	connectrpc.com/connect v1.18.1
 	github.com/coder/websocket v1.8.15
 	golang.org/x/sys v0.34.0
-	google.golang.org/protobuf v1.36.10
+	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.38.2
 )
 
